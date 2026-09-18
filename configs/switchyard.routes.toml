@@ -1,0 +1,35 @@
+# HarnessMesh example for NVIDIA NeMo Switchyard.
+#
+# This file intentionally uses placeholder model IDs. Replace them with models
+# available through your configured provider.
+#
+# Start Switchyard separately:
+#   switchyard-server --config configs/switchyard.routes.toml --host 127.0.0.1 --port 4000
+#
+# HarnessMesh can then point Claude Code and Codex at the same route endpoint.
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.efficient]
+id = "REPLACE_WITH_EFFICIENT_MODEL"
+llm_client = "openrouter"
+
+[targets.capable]
+id = "REPLACE_WITH_CAPABLE_MODEL"
+llm_client = "openrouter"
+
+[routes.switchyard]
+id = "switchyard"
+type = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "efficient_first"
+confidence_threshold = 0.5
+context_window = 200000
+tool_calling = true
+reasoning = true

@@ -1,0 +1,8 @@
+.git
+.github
+.harnessmesh
+bin
+.env
+harnessmesh.json
+*.log
+.DS_Store

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./cmd/harnessmesh
+
+      - name: Validate examples
+        run: |
+          python3 -m json.tool configs/harnessmesh.example.json >/dev/null
+          python3 -m json.tool configs/harnessmesh.switchyard.example.json >/dev/null
+
+      - name: Docker build
+        run: docker build .

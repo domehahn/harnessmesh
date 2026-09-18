@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+set -eu
+go test ./...
+go vet ./...
+go build ./cmd/harnessmesh
+echo "HarnessMesh smoke test: PASS"

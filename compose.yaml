@@ -1,0 +1,23 @@
+services:
+  harnessmesh:
+    build:
+      context: .
+    working_dir: /workspace
+    volumes:
+      - ${HARNESSMESH_REPO:-.}:/workspace
+      - ./harnessmesh.json:/etc/harnessmesh/harnessmesh.json:ro
+    environment:
+      HOME: /tmp/harnessmesh-home
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - /usr/local/bin/harnessmesh
+    command:
+      - print-config
+      - --config
+      - /etc/harnessmesh/harnessmesh.json

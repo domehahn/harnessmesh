@@ -1,0 +1,9 @@
+bin/
+harnessmesh.json
+.harnessmesh/
+.env
+*.log
+.DS_Store
+.idea/
+.vscode/
+coverage.out
