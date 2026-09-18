@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "harnessmesh": {
+      "args": [
+        "mcp",
+        "serve",
+        "--caller",
+        "antigravity",
+        "--config",
+        "/Users/dominikhahn/dev/workspace/harnessmesh/configs/antigravity-openai-peer.json",
+        "--repo",
+        "/Users/dominikhahn/dev/workspace/harnessmesh"
+      ],
+      "command": "/Users/dominikhahn/dev/workspace/harnessmesh/bin/harnessmesh"
+    }
+  }
+}

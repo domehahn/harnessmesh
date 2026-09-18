@@ -1,0 +1,87 @@
+{
+  "version": 2,
+  "collaboration": {
+    "max_peer_rounds": 3,
+    "max_peer_depth": 2,
+    "max_peer_calls": 10,
+    "max_parallel_peers": 3,
+    "selection_policy": "cheapest_suitable"
+  },
+  "workflow": {
+    "executor": "claude-executor",
+    "reviewer": "codex-reviewer",
+    "max_rounds": 3,
+    "max_wall_time_minutes": 120,
+    "stop_on_repeat": true,
+    "test_command": ["go", "test", "./..."]
+  },
+  "context": {
+    "max_diff_chars": 120000,
+    "max_test_output_chars": 30000,
+    "diff_context_lines": 30,
+    "include_untracked": true
+  },
+  "model_routing_backends": {
+    "direct-anthropic": {
+      "type": "fixed"
+    },
+    "direct-openai": {
+      "type": "fixed"
+    }
+  },
+  "agents": {
+    "claude-executor": {
+      "kind": "claude",
+      "role": "executor",
+      "writable": true,
+      "capabilities": {
+        "read_repository": true,
+        "write_repository": true,
+        "run_commands": true,
+        "review": false,
+        "answer_questions": true,
+        "submit_evidence": true
+      },
+      "economy": {
+        "tier": "capable",
+        "class": "capable",
+        "relative_cost": 3.0,
+        "latency": "normal"
+      },
+      "model_routing": {
+        "type": "fixed",
+        "backend": "direct-anthropic"
+      },
+      "mode": "acceptEdits",
+      "max_turns": 50,
+      "timeout_minutes": 45
+    },
+    "codex-reviewer": {
+      "kind": "codex",
+      "role": "reviewer",
+      "writable": false,
+      "capabilities": {
+        "read_repository": true,
+        "write_repository": false,
+        "run_commands": true,
+        "review": true,
+        "answer_questions": true,
+        "submit_evidence": true
+      },
+      "economy": {
+        "tier": "routine",
+        "class": "efficient",
+        "relative_cost": 1.0,
+        "latency": "low"
+      },
+      "model_routing": {
+        "type": "fixed",
+        "backend": "direct-openai"
+      },
+      "mode": "read-only",
+      "max_turns": 50,
+      "timeout_minutes": 45
+    }
+  }
+}
+

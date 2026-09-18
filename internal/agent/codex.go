@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,12 +16,75 @@ import (
 	"github.com/domehahn/harnessmesh/internal/protocol"
 )
 
-type CodexAgent struct {
+func init() {
+	factory := func(name string, cfg config.AgentConfig, sy config.SwitchyardConfig) (Harness, error) {
+		return &CodexAdapter{name: name, cfg: cfg, switchyard: sy}, nil
+	}
+	RegisterAdapter("codex", factory)
+}
+
+type CodexAdapter struct {
+	name       string
 	cfg        config.AgentConfig
 	switchyard config.SwitchyardConfig
 }
 
-func (a *CodexAgent) Name() string { return "codex" }
+type CodexAgent = CodexAdapter
+
+func (a *CodexAdapter) ID() string {
+	return a.Name()
+}
+
+func (a *CodexAdapter) AdapterType() string {
+	return "codex"
+}
+
+func (a *CodexAdapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return "codex"
+}
+
+func (a *CodexAdapter) Capabilities() config.AgentCapabilities {
+	return a.cfg.Capabilities
+}
+
+func (a *CodexAdapter) Health(ctx context.Context) error {
+	binary := a.cfg.Binary
+	if binary == "" {
+		binary = a.cfg.Command
+	}
+	if binary == "" {
+		binary = "codex"
+	}
+	binPath, err := exec.LookPath(binary)
+	if err != nil {
+		return &protocol.PeerUnavailableError{Peer: a.Name(), Reason: fmt.Sprintf("binary %q not found in PATH", binary)}
+	}
+	_, err = executil.Run(ctx, ".", nil, "", binPath, "--version")
+	return err
+}
+
+func (a *CodexAdapter) StartSession(ctx context.Context, repo string) (string, error) {
+	return a.Start(ctx, repo)
+}
+
+func (a *CodexAdapter) ResumeSession(ctx context.Context, sessionID, repo string) error {
+	return a.Resume(ctx, sessionID, repo)
+}
+
+func (a *CodexAdapter) CloseSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+
+func (a *CodexAdapter) Start(ctx context.Context, repo string) (string, error) {
+	return "", nil
+}
+
+func (a *CodexAdapter) Resume(ctx context.Context, sessionID, repo string) error {
+	return nil
+}
 
 type codexEvent struct {
 	Type     string         `json:"type"`
@@ -32,19 +96,32 @@ type codexEvent struct {
 	} `json:"item"`
 }
 
-func (a *CodexAgent) Run(parent context.Context, req Request) (protocol.AgentResult, error) {
+func (a *CodexAdapter) Invoke(parent context.Context, req InvokeRequest) (InvokeResult, error) {
 	timeout := time.Duration(a.cfg.TimeoutMinutes) * time.Minute
+	if timeout <= 0 {
+		timeout = 45 * time.Minute
+	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	binary := a.cfg.Command
+	binary := a.cfg.Binary
+	if binary == "" {
+		binary = a.cfg.Command
+	}
 	if binary == "" {
 		binary = "codex"
+	}
+	binPath, err := exec.LookPath(binary)
+	if err != nil {
+		return InvokeResult{AgentName: a.Name()}, &protocol.PeerUnavailableError{
+			Peer:   a.Name(),
+			Reason: fmt.Sprintf("codex binary %q not found in PATH. Run 'harnessmesh doctor'", binary),
+		}
 	}
 
 	tmpDir, err := os.MkdirTemp("", "harnessmesh-codex-*")
 	if err != nil {
-		return protocol.AgentResult{}, err
+		return InvokeResult{}, err
 	}
 	defer os.RemoveAll(tmpDir)
 
@@ -72,7 +149,7 @@ func (a *CodexAgent) Run(parent context.Context, req Request) (protocol.AgentRes
 	if req.ReviewMode && req.ReviewSchema != "" {
 		schemaPath := filepath.Join(tmpDir, "review-schema.json")
 		if err := os.WriteFile(schemaPath, []byte(req.ReviewSchema), 0600); err != nil {
-			return protocol.AgentResult{}, err
+			return InvokeResult{}, err
 		}
 		args = append(args, "--output-schema", schemaPath)
 	}
@@ -88,7 +165,7 @@ func (a *CodexAgent) Run(parent context.Context, req Request) (protocol.AgentRes
 	if a.cfg.WorkingDir != "" {
 		dir = a.cfg.WorkingDir
 	}
-	run, runErr := executil.Run(ctx, dir, agentEnv(a.cfg, a.switchyard), req.Prompt, binary, args...)
+	run, runErr := executil.Run(ctx, dir, agentEnv(a.cfg, a.switchyard), req.Prompt, binPath, args...)
 
 	sessionID, usage, fallbackText := parseCodexJSONL(run.Stdout)
 	lastRaw, _ := os.ReadFile(lastMessagePath)
@@ -100,21 +177,71 @@ func (a *CodexAgent) Run(parent context.Context, req Request) (protocol.AgentRes
 		sessionID = req.SessionID
 	}
 
-	result := protocol.AgentResult{
-		AgentName:  req.Name,
+	result := InvokeResult{
+		AgentName:  a.Name(),
 		SessionID:  sessionID,
 		Text:       text,
 		RawOutput:  run.Stdout,
 		Usage:      usage,
 		DurationMS: run.DurationMS,
 	}
+
+	if ctx.Err() == context.DeadlineExceeded || parent.Err() == context.DeadlineExceeded {
+		return result, &protocol.PeerTimeoutError{
+			Peer:    a.Name(),
+			Timeout: timeout,
+		}
+	}
+
 	if runErr != nil {
-		return result, runErr
+		diagnostic := strings.TrimSpace(run.Stderr)
+		if diagnostic == "" {
+			diagnostic = strings.TrimSpace(run.Stdout)
+		}
+		diagLower := strings.ToLower(diagnostic)
+		if strings.Contains(diagLower, "not logged in") ||
+			strings.Contains(diagLower, "auth") ||
+			strings.Contains(diagLower, "login") ||
+			strings.Contains(diagLower, "api key") ||
+			strings.Contains(diagLower, "credentials") {
+			return result, &protocol.HarnessAuthenticationRequiredError{
+				Agent:  a.Name(),
+				Reason: tailString(diagnostic, 4000),
+			}
+		}
+		return result, &protocol.HarnessInvocationFailedError{
+			Agent:  a.Name(),
+			Err:    runErr,
+			Stderr: tailString(diagnostic, 4000),
+		}
 	}
 	if text == "" {
-		return result, fmt.Errorf("Codex completed without a final message")
+		return result, &protocol.MalformedPeerResponseError{
+			Agent:  a.Name(),
+			Reason: "Codex completed without a final message",
+			Output: tailString(run.Stdout, 3000),
+		}
 	}
 	return result, nil
+}
+
+func (a *CodexAdapter) Run(parent context.Context, req Request) (protocol.AgentResult, error) {
+	inv, err := a.Invoke(parent, InvokeRequest{
+		Name:         req.Name,
+		Repo:         req.Repo,
+		Prompt:       req.Prompt,
+		SessionID:    req.SessionID,
+		ReviewMode:   req.ReviewMode,
+		ReviewSchema: req.ReviewSchema,
+	})
+	return protocol.AgentResult{
+		AgentName:  inv.AgentName,
+		SessionID:  inv.SessionID,
+		Text:       inv.Text,
+		RawOutput:  inv.RawOutput,
+		Usage:      inv.Usage,
+		DurationMS: inv.DurationMS,
+	}, err
 }
 
 func parseCodexJSONL(raw string) (string, map[string]any, string) {

@@ -1,3 +1,4 @@
+harnessmesh
 bin/
 harnessmesh.json
 .harnessmesh/
@@ -7,3 +8,5 @@ harnessmesh.json
 .idea/
 .vscode/
 coverage.out
+.mcp.json
+codex-mcp.json

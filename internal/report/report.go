@@ -16,10 +16,17 @@ func NewRunDir(repo string) (string, error) {
 	base := os.Getenv("HARNESSMESH_STATE_DIR")
 	if base == "" {
 		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
+		if err == nil {
+			dir := filepath.Join(home, ".harnessmesh")
+			testFile := filepath.Join(dir, ".permtest")
+			if os.MkdirAll(dir, 0700) == nil && os.WriteFile(testFile, []byte("ok"), 0600) == nil {
+				_ = os.Remove(testFile)
+				base = dir
+			}
 		}
-		base = filepath.Join(home, ".harnessmesh")
+		if base == "" {
+			base = ".harnessmesh"
+		}
 	}
 	key := repoKey(repo)
 	id := time.Now().UTC().Format("20060102T150405.000000000Z")
@@ -73,6 +80,14 @@ func renderMarkdown(r *protocol.RunResult) string {
 	fmt.Fprintf(&b, "## Task\n\n%s\n\n", r.Task)
 
 	for _, round := range r.Rounds {
+		if round.Number == 0 {
+			fmt.Fprintf(&b, "## Execution Failure (Pre-Review)\n\n")
+			if round.Executor.RawOutput != "" {
+				fmt.Fprintf(&b, "```\n%s\n```\n\n", round.Executor.RawOutput)
+			}
+			continue
+		}
+
 		fmt.Fprintf(&b, "## Round %d\n\n", round.Number)
 		fmt.Fprintf(&b, "### Executor\n\n%s\n\n", round.Executor.Text)
 		fmt.Fprintf(&b, "### Repository state\n\n")
@@ -82,7 +97,11 @@ func renderMarkdown(r *protocol.RunResult) string {
 			fmt.Fprintf(&b, "- Test exit code: `%d`\n", *round.Context.TestExitCode)
 		}
 		fmt.Fprintf(&b, "\n### Reviewer\n\n")
-		fmt.Fprintf(&b, "**Verdict:** `%s`\n\n%s\n\n", round.Review.Verdict, round.Review.Summary)
+		if round.Review.Verdict != "" {
+			fmt.Fprintf(&b, "**Verdict:** `%s`\n\n%s\n\n", round.Review.Verdict, round.Review.Summary)
+		} else if round.Reviewer.RawOutput != "" {
+			fmt.Fprintf(&b, "**Diagnostic Output / Error:**\n\n```\n%s\n```\n\n", round.Reviewer.RawOutput)
+		}
 		if len(round.Review.Findings) > 0 {
 			fmt.Fprintf(&b, "#### Findings\n\n")
 			for _, f := range round.Review.Findings {

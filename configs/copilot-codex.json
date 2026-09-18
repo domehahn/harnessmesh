@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "workspace": {
+    "single_writer": true
+  },
+  "collaboration": {
+    "max_peer_rounds": 3,
+    "max_peer_depth": 2,
+    "max_peer_calls": 10,
+    "max_parallel_peers": 3,
+    "peer_selection_policy": "first",
+    "session_timeout": "60m",
+    "max_idle_duration": "15m"
+  },
+  "workflow": {
+    "executor": "copilot-executor",
+    "reviewer": "codex-reviewer",
+    "max_rounds": 3,
+    "max_wall_time_minutes": 120,
+    "stop_on_repeat": true,
+    "test_command": []
+  },
+  "context": {
+    "max_context_chars": 100000,
+    "max_diff_chars": 60000,
+    "max_test_output_chars": 30000,
+    "max_file_chars": 20000,
+    "max_files": 25,
+    "diff_context_lines": 30,
+    "include_untracked": true
+  },
+  "agents": {
+    "copilot-executor": {
+      "adapter": "copilot-cli",
+      "role": "executor",
+      "roles": ["executor"],
+      "writable": true,
+      "command": "copilot",
+      "timeout_minutes": 45
+    },
+    "codex-reviewer": {
+      "adapter": "codex",
+      "role": "reviewer",
+      "roles": ["reviewer", "correctness_review"],
+      "writable": false,
+      "command": "codex",
+      "mode": "read-only",
+      "timeout_minutes": 45
+    }
+  },
+  "capability_routing": {
+    "review": ["codex-reviewer"],
+    "correctness_review": ["codex-reviewer"]
+  }
+}
+

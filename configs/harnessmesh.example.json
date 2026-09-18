@@ -1,5 +1,13 @@
 {
-  "schema_version": 1,
+  "version": 2,
+
+  "collaboration": {
+    "max_peer_rounds": 3,
+    "max_peer_depth": 2,
+    "max_peer_calls": 10,
+    "session_timeout": "60m",
+    "max_idle_duration": "15m"
+  },
 
   "workflow": {
     "executor": "claude-executor",
@@ -11,10 +19,15 @@
   },
 
   "context": {
-    "max_diff_chars": 120000,
-    "max_test_output_chars": 30000,
+    "max_context_chars": 100000,
+    "max_diff_chars": 50000,
+    "max_test_output_chars": 20000,
+    "max_file_chars": 20000,
+    "max_files": 20,
     "diff_context_lines": 30,
-    "include_untracked": true
+    "include_untracked": true,
+    "allowed_paths": [],
+    "denied_paths": []
   },
 
   "switchyard": {
@@ -27,7 +40,9 @@
 
   "agents": {
     "claude-executor": {
-      "kind": "claude",
+      "adapter": "claude-code",
+      "role": "executor",
+      "writable": true,
       "command": "claude",
       "model": "",
       "mode": "acceptEdits",
@@ -40,7 +55,9 @@
     },
 
     "codex-reviewer": {
-      "kind": "codex",
+      "adapter": "codex",
+      "role": "reviewer",
+      "writable": false,
       "command": "codex",
       "model": "",
       "mode": "read-only",

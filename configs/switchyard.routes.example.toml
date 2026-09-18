@@ -1,0 +1,63 @@
+# HarnessMesh example route configuration for NVIDIA NeMo Switchyard.
+#
+# This file defines route endpoints for routine, architecture, security, and coding tasks.
+# Start Switchyard separately:
+#   switchyard-server --config configs/switchyard.routes.example.toml --host 127.0.0.1 --port 4000
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.routine_target]
+id = "deepseek/deepseek-chat"
+llm_client = "openrouter"
+
+[targets.capable_target]
+id = "anthropic/claude-3.5-sonnet"
+llm_client = "openrouter"
+
+[targets.reasoning_target]
+id = "openai/o3-mini"
+llm_client = "openrouter"
+
+# Route for routine edits, syntax fixes, and routine reviews
+[routes.routine]
+id = "routine"
+type = "stage_router"
+capable_target = "capable_target"
+efficient_target = "routine_target"
+picker = "efficient_first"
+confidence_threshold = 0.5
+context_window = 128000
+tool_calling = true
+
+# Route for code generation, refactoring, and multi-file implementation
+[routes.coding]
+id = "coding"
+type = "stage_router"
+capable_target = "capable_target"
+efficient_target = "routine_target"
+picker = "efficient_first"
+confidence_threshold = 0.6
+context_window = 200000
+tool_calling = true
+
+# Route for architecture reviews, structural planning, and design decisions
+[routes.architecture]
+id = "architecture"
+type = "static_target"
+target = "capable_target"
+context_window = 200000
+reasoning = true
+
+# Route for security vulnerability analysis and critical audit
+[routes.security]
+id = "security"
+type = "static_target"
+target = "reasoning_target"
+context_window = 200000
+reasoning = true
+

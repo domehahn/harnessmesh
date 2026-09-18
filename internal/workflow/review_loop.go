@@ -13,6 +13,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/agent"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/store"
 )
 
 type Projector interface {
@@ -26,6 +27,7 @@ type Runner struct {
 	Executor  agent.Agent
 	Reviewer  agent.Agent
 	Projector Projector
+	Store     store.Store
 }
 
 func (r *Runner) Run(ctx context.Context, task string) (*protocol.RunResult, error) {
@@ -38,6 +40,21 @@ func (r *Runner) Run(ctx context.Context, task string) (*protocol.RunResult, err
 		Executor:      r.Config.Workflow.Executor,
 		Reviewer:      r.Config.Workflow.Reviewer,
 		StartedAt:     time.Now().UTC(),
+	}
+
+	if r.Store != nil {
+		_ = r.Store.SaveSession(ctx, &store.Session{
+			ID:        result.RunID,
+			RepoRoot:  r.Repo,
+			Task:      task,
+			Status:    "active",
+			CreatedAt: result.StartedAt,
+			UpdatedAt: result.StartedAt,
+			Participants: map[string]store.ParticipantInfo{
+				r.Config.Workflow.Executor: {AgentName: r.Config.Workflow.Executor, Role: "executor", Writable: true},
+				r.Config.Workflow.Reviewer: {AgentName: r.Config.Workflow.Reviewer, Role: "reviewer", Writable: false},
+			},
+		})
 	}
 
 	var executorSession string
@@ -55,6 +72,15 @@ func (r *Runner) Run(ctx context.Context, task string) (*protocol.RunResult, err
 		result.Status = "executor_failed"
 		result.StopReason = err.Error()
 		result.CompletedAt = time.Now().UTC()
+		result.Rounds = append(result.Rounds, protocol.Round{
+			Number:      0,
+			Executor:    execResult,
+			StartedAt:   result.StartedAt,
+			CompletedAt: time.Now().UTC(),
+		})
+		if r.Store != nil {
+			_ = r.Store.UpdateSessionStatus(ctx, result.RunID, result.Status, result.StopReason)
+		}
 		return result, err
 	}
 	executorSession = execResult.SessionID
@@ -111,11 +137,31 @@ func (r *Runner) Run(ctx context.Context, task string) (*protocol.RunResult, err
 			CompletedAt: time.Now().UTC(),
 		})
 
+		if r.Store != nil {
+			for _, f := range review.Findings {
+				_ = r.Store.SaveFinding(ctx, result.RunID, &protocol.FindingPayload{
+					ID:             f.ID,
+					SourceAgent:    r.Config.Workflow.Reviewer,
+					Severity:       f.Severity,
+					Claim:          f.Claim,
+					Evidence:       f.Evidence,
+					Recommendation: f.Recommendation,
+					File:           f.File,
+					Line:           f.Line,
+					Status:         protocol.FindingOpen,
+					Timestamp:      time.Now().UTC(),
+				})
+			}
+		}
+
 		switch review.Verdict {
 		case protocol.VerdictApprove:
 			result.Status = "approved"
 			result.StopReason = "reviewer approved repository state"
 			result.CompletedAt = time.Now().UTC()
+			if r.Store != nil {
+				_ = r.Store.UpdateSessionStatus(ctx, result.RunID, result.Status, result.StopReason)
+			}
 			return result, nil
 
 		case protocol.VerdictBlock:
@@ -154,6 +200,15 @@ func (r *Runner) Run(ctx context.Context, task string) (*protocol.RunResult, err
 			result.Status = "executor_failed"
 			result.StopReason = err.Error()
 			result.CompletedAt = time.Now().UTC()
+			result.Rounds = append(result.Rounds, protocol.Round{
+				Number:      roundNum + 1,
+				Executor:    execResult,
+				StartedAt:   time.Now().UTC(),
+				CompletedAt: time.Now().UTC(),
+			})
+			if r.Store != nil {
+				_ = r.Store.UpdateSessionStatus(ctx, result.RunID, result.Status, result.StopReason)
+			}
 			return result, err
 		}
 		executorSession = execResult.SessionID
