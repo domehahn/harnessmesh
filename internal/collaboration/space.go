@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
 )
@@ -73,10 +74,15 @@ func DefaultChannels(spaceID string) map[string]protocol.Channel {
 // SpaceService manages the lifecycle and contents of collaboration spaces.
 type SpaceService struct {
 	store store.Store
+	cfg   config.Config
 }
 
-func NewSpaceService(st store.Store) *SpaceService {
-	return &SpaceService{store: st}
+func NewSpaceService(st store.Store, cfg ...config.Config) *SpaceService {
+	ss := &SpaceService{store: st}
+	if len(cfg) > 0 {
+		ss.cfg = cfg[0]
+	}
+	return ss
 }
 
 // CreateSpace initializes a new collaboration space with default channels and participants.
@@ -112,11 +118,19 @@ func (s *SpaceService) CreateSpace(ctx context.Context, id, workspaceID, title, 
 		Purpose:           purpose,
 		LifecycleState:    protocol.SpaceStateActive,
 		WriterParticipant: writerParticipant,
-		Participants:      participants,
-		Channels:          DefaultChannels(id),
-		Metadata:          make(map[string]any),
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		Budget: protocol.BudgetStatus{
+			Known:              s.cfg.Collaboration.MaxCostUSD > 0 || s.cfg.Collaboration.MaxTotalTokens > 0 || s.cfg.Collaboration.MaxInputTokens > 0 || s.cfg.Collaboration.MaxOutputTokens > 0 || s.cfg.Collaboration.StrictTokenCeiling,
+			StrictTokenCeiling: s.cfg.Collaboration.StrictTokenCeiling,
+			MaxInputTokens:     s.cfg.Collaboration.MaxInputTokens,
+			MaxOutputTokens:    s.cfg.Collaboration.MaxOutputTokens,
+			MaxTotalTokens:     s.cfg.Collaboration.MaxTotalTokens,
+			MaxCostUSD:         s.cfg.Collaboration.MaxCostUSD,
+		},
+		Participants: participants,
+		Channels:     DefaultChannels(id),
+		Metadata:     make(map[string]any),
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 
 	if err := s.store.SaveSpace(ctx, space); err != nil {

@@ -411,15 +411,16 @@ type ReplyPayload struct {
 }
 
 type BudgetStatus struct {
-	Known            bool    `json:"known"`
-	MaxInputTokens   int64   `json:"max_input_tokens,omitempty"`
-	UsedInputTokens  int64   `json:"used_input_tokens,omitempty"`
-	MaxOutputTokens  int64   `json:"max_output_tokens,omitempty"`
-	UsedOutputTokens int64   `json:"used_output_tokens,omitempty"`
-	MaxTotalTokens   int64   `json:"max_total_tokens,omitempty"`
-	UsedTotalTokens  int64   `json:"used_total_tokens,omitempty"`
-	MaxCostUSD       float64 `json:"max_cost_usd,omitempty"`
-	UsedCostUSD      float64 `json:"used_cost_usd,omitempty"`
+	Known              bool    `json:"known"`
+	StrictTokenCeiling bool    `json:"strict_token_ceiling,omitempty"`
+	MaxInputTokens     int64   `json:"max_input_tokens,omitempty"`
+	UsedInputTokens    int64   `json:"used_input_tokens,omitempty"`
+	MaxOutputTokens    int64   `json:"max_output_tokens,omitempty"`
+	UsedOutputTokens   int64   `json:"used_output_tokens,omitempty"`
+	MaxTotalTokens     int64   `json:"max_total_tokens,omitempty"`
+	UsedTotalTokens    int64   `json:"used_total_tokens,omitempty"`
+	MaxCostUSD         float64 `json:"max_cost_usd,omitempty"`
+	UsedCostUSD        float64 `json:"used_cost_usd,omitempty"`
 }
 
 type StatusPayload struct {
@@ -546,6 +547,7 @@ type CollaborationSpace struct {
 	Purpose           string                      `json:"purpose"`
 	LifecycleState    SpaceLifecycleState         `json:"lifecycle_state"`
 	WriterParticipant string                      `json:"writer_participant"`
+	Budget            BudgetStatus                `json:"budget"`
 	Participants      map[string]SpaceParticipant `json:"participants"`
 	Channels          map[string]Channel          `json:"channels"`
 	Metadata          map[string]any              `json:"metadata,omitempty"`
@@ -1009,6 +1011,15 @@ type ThreadNotFoundError struct {
 
 func (e *ThreadNotFoundError) Error() string {
 	return fmt.Sprintf("thread %q not found", e.ThreadID)
+}
+
+type HardTokenLimitUnsupportedError struct {
+	Peer   string `json:"peer"`
+	Reason string `json:"reason"`
+}
+
+func (e *HardTokenLimitUnsupportedError) Error() string {
+	return fmt.Sprintf("hard token limit unsupported for peer %q: %s", e.Peer, e.Reason)
 }
 
 // -------------------------------------------------------------------------

@@ -89,7 +89,9 @@ func (a *FakeAdapter) Name() string {
 }
 
 func (a *FakeAdapter) Capabilities() config.AgentCapabilities {
-	return a.cfg.Capabilities
+	caps := a.cfg.Capabilities
+	caps.HardTokenLimitEnforced = true
+	return caps
 }
 
 func (a *FakeAdapter) Health(ctx context.Context) error {
@@ -131,21 +133,45 @@ func (a *FakeAdapter) Invoke(ctx context.Context, req InvokeRequest) (InvokeResu
 
 	for substr, resp := range responses {
 		if stringsContains(req.Prompt, substr) {
+			text := resp
+			outTokens := int64(len(text) / 4)
+			if req.MaxTokens > 0 && outTokens > req.MaxTokens {
+				outTokens = req.MaxTokens
+				if int(outTokens*4) < len(text) {
+					text = text[:int(outTokens*4)]
+				}
+			}
 			return InvokeResult{
 				AgentName:  a.Name(),
 				SessionID:  req.SessionID,
-				Text:       resp,
-				RawOutput:  resp,
+				Text:       text,
+				RawOutput:  text,
+				Usage: map[string]any{
+					"input_tokens":  int64(len(req.Prompt) / 4),
+					"output_tokens": outTokens,
+				},
 				DurationMS: 10,
 			}, nil
 		}
 	}
 
+	text := "fake response: " + req.Prompt
+	outTokens := int64(len(text) / 4)
+	if req.MaxTokens > 0 && outTokens > req.MaxTokens {
+		outTokens = req.MaxTokens
+		if int(outTokens*4) < len(text) {
+			text = text[:int(outTokens*4)]
+		}
+	}
 	return InvokeResult{
 		AgentName:  a.Name(),
 		SessionID:  req.SessionID,
-		Text:       "fake response: " + req.Prompt,
-		RawOutput:  "fake response: " + req.Prompt,
+		Text:       text,
+		RawOutput:  text,
+		Usage: map[string]any{
+			"input_tokens":  int64(len(req.Prompt) / 4),
+			"output_tokens": outTokens,
+		},
 		DurationMS: 5,
 	}, nil
 }

@@ -46,6 +46,7 @@ type CollaborationConfig struct {
 	PeerSelectionPolicy  string  `json:"peer_selection_policy"` // "first", "round_robin", "least_busy"
 	SessionTimeout       string  `json:"session_timeout"`
 	MaxIdleDuration      string  `json:"max_idle_duration"`
+	StrictTokenCeiling   bool    `json:"strict_token_ceiling,omitempty"`
 	MaxInputTokens       int64   `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens      int64   `json:"max_output_tokens,omitempty"`
 	MaxTotalTokens       int64   `json:"max_total_tokens,omitempty"`
@@ -104,12 +105,13 @@ type SwitchyardConfig struct {
 }
 
 type AgentCapabilities struct {
-	ReadRepository  bool `json:"read_repository"`
-	WriteRepository bool `json:"write_repository"`
-	RunCommands     bool `json:"run_commands"`
-	Review          bool `json:"review"`
-	AnswerQuestions bool `json:"answer_questions"`
-	SubmitEvidence  bool `json:"submit_evidence"`
+	ReadRepository         bool `json:"read_repository"`
+	WriteRepository        bool `json:"write_repository"`
+	RunCommands            bool `json:"run_commands"`
+	Review                 bool `json:"review"`
+	AnswerQuestions        bool `json:"answer_questions"`
+	SubmitEvidence         bool `json:"submit_evidence"`
+	HardTokenLimitEnforced bool `json:"hard_token_limit_enforced,omitempty"`
 }
 
 func DefaultCapabilities(role string, writable bool) AgentCapabilities {

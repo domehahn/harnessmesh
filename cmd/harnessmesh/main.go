@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/agent"
@@ -214,7 +216,8 @@ func collaborate(args []string) error {
 		defer st.Close()
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	if cfg.Workflow.MaxWallTimeMinutes > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(cfg.Workflow.MaxWallTimeMinutes)*time.Minute)
@@ -304,9 +307,11 @@ func mcpServe(args []string) error {
 		Projector: proj,
 		Harnesses: harnesses,
 	})
+	defer eng.Close()
 
 	server := mcp.NewServer(eng, *sessionID, *caller)
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 	return server.ServeStdio(ctx, os.Stdin, os.Stdout)
 }
 
@@ -1145,11 +1150,31 @@ func agentsCmd(args []string) error {
 	if len(args) == 0 {
 		return errors.New("agents subcommand required: list or show <name>")
 	}
-	cfg, err := loadConfigOrDefault("harnessmesh.json")
+	fs := flag.NewFlagSet("agents", flag.ContinueOnError)
+	configPath := fs.String("config", "harnessmesh.json", "config file")
+	subcmd := args[0]
+	var remaining []string
+	if strings.HasPrefix(subcmd, "-") {
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			return errors.New("agents subcommand required: list or show <name>")
+		}
+		subcmd = fs.Arg(0)
+		remaining = fs.Args()[1:]
+	} else {
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		remaining = fs.Args()
+	}
+
+	cfg, err := loadConfigOrDefault(*configPath)
 	if err != nil {
 		return err
 	}
-	switch args[0] {
+	switch subcmd {
 	case "list":
 		fmt.Printf("%-18s %-16s %-12s %-10s %s\n", "AGENT", "ADAPTER", "ROLE", "WRITABLE", "CAPABILITIES")
 		for name, a := range cfg.Agents {
@@ -1175,10 +1200,10 @@ func agentsCmd(args []string) error {
 		}
 		return nil
 	case "show":
-		if len(args) < 2 {
+		if len(remaining) < 1 {
 			return errors.New("usage: harnessmesh agents show <name>")
 		}
-		name := args[1]
+		name := remaining[0]
 		a, ok := cfg.Agents[name]
 		if !ok {
 			return fmt.Errorf("agent %q not found in config", name)
@@ -1187,7 +1212,7 @@ func agentsCmd(args []string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(a)
 	default:
-		return fmt.Errorf("unknown agents subcommand %q", args[0])
+		return fmt.Errorf("unknown agents subcommand %q", subcmd)
 	}
 }
 
@@ -2023,20 +2048,95 @@ func subscriptionsCmd(args []string) error {
 		}
 		return nil
 
-	case "remove":
-		if len(args) < 2 {
-			return errors.New("usage: harnessmesh subscriptions remove <subscription-id>")
+	case "add":
+		fs := flag.NewFlagSet("subscriptions add", flag.ContinueOnError)
+		spaceID := fs.String("space", "", "space ID (required)")
+		participant := fs.String("participant", "", "participant ID (required)")
+		channelsStr := fs.String("channels", "", "comma-separated channels")
+		eventsStr := fs.String("events", "", "comma-separated event types")
+		scopeStr := fs.String("scope", "", "comma-separated scope patterns")
+		modeStr := fs.String("mode", "active", "activity mode (active, passive, reviewer, coordinator)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
 		}
-		subID := args[1]
+		if *spaceID == "" {
+			return errors.New("--space is required")
+		}
+		if *participant == "" {
+			return errors.New("--participant is required")
+		}
 		st, err := store.OpenSQLite("")
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		if err := st.DeleteSubscription(context.Background(), subID); err != nil {
+
+		var channels []string
+		if *channelsStr != "" {
+			for _, c := range strings.Split(*channelsStr, ",") {
+				if tr := strings.TrimSpace(c); tr != "" {
+					channels = append(channels, tr)
+				}
+			}
+		}
+		var events []string
+		if *eventsStr != "" {
+			for _, e := range strings.Split(*eventsStr, ",") {
+				if tr := strings.TrimSpace(e); tr != "" {
+					events = append(events, tr)
+				}
+			}
+		}
+		var scopes []string
+		if *scopeStr != "" {
+			for _, s := range strings.Split(*scopeStr, ",") {
+				if tr := strings.TrimSpace(s); tr != "" {
+					scopes = append(scopes, tr)
+				}
+			}
+		}
+		sub := &protocol.Subscription{
+			ID:            fmt.Sprintf("sub_%d", time.Now().UnixNano()),
+			SpaceID:       *spaceID,
+			ParticipantID: *participant,
+			Channels:      channels,
+			EventTypes:    events,
+			ScopePatterns: scopes,
+			Mode:          protocol.ParticipantActivityMode(*modeStr),
+			CreatedAt:     time.Now().UTC(),
+		}
+		if err := st.SaveSubscription(context.Background(), sub); err != nil {
 			return err
 		}
-		fmt.Printf("✓ Removed subscription %s\n", subID)
+		fmt.Printf("✓ Created subscription %s for participant %s in space %s\n", sub.ID, sub.ParticipantID, *spaceID)
+		return nil
+
+	case "remove":
+		fs := flag.NewFlagSet("subscriptions remove", flag.ContinueOnError)
+		spaceID := fs.String("space", "", "space ID (required)")
+		id := fs.String("id", "", "subscription ID")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		subID := *id
+		if subID == "" && len(fs.Args()) > 0 {
+			subID = fs.Args()[0]
+		}
+		if *spaceID == "" {
+			return errors.New("--space is required")
+		}
+		if subID == "" {
+			return errors.New("subscription ID is required (use --id <id> or provide as argument)")
+		}
+		st, err := store.OpenSQLite("")
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		if err := st.DeleteSubscription(context.Background(), *spaceID, subID); err != nil {
+			return err
+		}
+		fmt.Printf("✓ Removed subscription %s from space %s\n", subID, *spaceID)
 		return nil
 
 	default:

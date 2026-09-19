@@ -172,10 +172,24 @@ func hashPayload(p []byte) string {
 // CheckPrivacyPolicy verifies if the candidate participant is authorized for the given scope.
 func (ac *ActivationController) CheckPrivacyPolicy(candidate *protocol.SpaceParticipant, scope []string) (bool, string) {
 	for _, file := range scope {
-		isSensitive := strings.Contains(file, "secret") || strings.HasSuffix(file, ".key") || strings.HasSuffix(file, ".pem") || strings.Contains(file, "token")
+		fileLower := strings.ToLower(file)
+		isSensitive := strings.Contains(fileLower, "secret") ||
+			strings.HasSuffix(fileLower, ".key") ||
+			strings.HasSuffix(fileLower, ".pem") ||
+			strings.HasSuffix(fileLower, ".p12") ||
+			strings.HasSuffix(fileLower, ".pfx") ||
+			strings.HasSuffix(fileLower, ".tfstate") ||
+			strings.Contains(fileLower, "token") ||
+			strings.Contains(fileLower, "credential") ||
+			strings.Contains(fileLower, "id_rsa") ||
+			strings.Contains(fileLower, "id_ed25519") ||
+			strings.Contains(fileLower, ".env")
 		if isSensitive {
-			// Cloud adapters (e.g. codex, claude) without local flag cannot access sensitive files
-			if candidate.Adapter == "codex" || candidate.Adapter == "claude" {
+			// Cloud and remote adapters (e.g. codex, claude, copilot) cannot access sensitive files
+			adapterLower := strings.ToLower(candidate.Adapter)
+			isCloud := adapterLower == "codex" || adapterLower == "claude" || adapterLower == "copilot" ||
+				strings.Contains(adapterLower, "cloud") || strings.Contains(adapterLower, "remote")
+			if isCloud {
 				return false, fmt.Sprintf("policy denied: cloud adapter %q cannot access sensitive file %q", candidate.Adapter, file)
 			}
 		}

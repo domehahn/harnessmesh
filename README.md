@@ -29,7 +29,7 @@ HarnessMesh is the **broker, control plane, and collaboration fabric** that enab
 ```text
 HarnessMesh (Agent Collaboration Plane)
     ├── Collaboration Control Plane & Session Broker
-    ├── Model Context Protocol (MCP) Server (10 Tools)
+    ├── Model Context Protocol (MCP) Server (20 Tools)
     ├── Peer Message Bus (`harnessmesh.peer/v1`)
     ├── Dynamic Adapter Registry & Lifecycle Manager
     ├── Capability-Based Peer Selection & Routing
@@ -45,6 +45,14 @@ Switchyard (Model Routing Plane - Optional)
 ```
 
 Switchyard is a model-routing plane. HarnessMesh is an agent-collaboration plane.
+
+## Compressed Knowledge Archive
+
+Every persisted message, collaboration event, finding, evidence record, and decision is also appended to a separate knowledge archive. The default path is `knowledge.hmkz` next to the SQLite database; override it with `HARNESSMESH_KNOWLEDGE_PATH`. Set `HARNESSMESH_KNOWLEDGE_DISABLED=1` only when archiving is intentionally disabled.
+
+The archive is an append-only stream of framed, block-compressed NDJSON using Zstandard. Records are flushed in bounded blocks, so memory usage does not grow with the history and the file can contain hundreds of millions of records without loading the complete transcript. The archive is the durable source for historical knowledge; SQLite remains the transactional operational store.
+
+Other harnesses can use the MCP tools `knowledge.search`, `knowledge.context`, and `knowledge.stats`. `knowledge.context` returns bounded text suitable for RAG prompt augmentation, with optional filtering by session, collaboration space, and record kind.
 
 ---
 

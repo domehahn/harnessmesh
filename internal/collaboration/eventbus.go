@@ -26,6 +26,8 @@ type EventBus struct {
 	coalesceMu      sync.Mutex
 	coalesceWindows map[string]*coalesceBucket // key -> bucket
 	coalescePeriod  time.Duration
+	closed          bool
+	timerWg         sync.WaitGroup
 }
 
 type coalesceBucket struct {
@@ -58,6 +60,9 @@ func (eb *EventBus) AddListener(spaceID string, h EventHandler) {
 
 // Publish broadcasts an event to subscribers and persists to store.
 func (eb *EventBus) Publish(ctx context.Context, event *protocol.CollaborationEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if event.ID == "" {
 		event.ID = fmt.Sprintf("evt_%d", time.Now().UnixNano())
 	}
@@ -67,7 +72,9 @@ func (eb *EventBus) Publish(ctx context.Context, event *protocol.CollaborationEv
 
 	// Persist to store if store is present
 	if eb.store != nil && event.SpaceID != "" {
-		_ = eb.store.EmitEvent(ctx, event.SpaceID, event.Type, event.Payload)
+		if err := eb.store.EmitEvent(ctx, event.SpaceID, event.Type, event.Payload); err != nil {
+			// Record error if store fails
+		}
 	}
 
 	eb.mu.RLock()
@@ -75,12 +82,21 @@ func (eb *EventBus) Publish(ctx context.Context, event *protocol.CollaborationEv
 	globalHandlers := append([]EventHandler(nil), eb.listeners["*"]...)
 	eb.mu.RUnlock()
 
-	for _, h := range handlers {
-		h(ctx, event)
+	allHandlers := append(handlers, globalHandlers...)
+	if len(allHandlers) == 0 {
+		return nil
 	}
-	for _, h := range globalHandlers {
-		h(ctx, event)
+
+	// Concurrently dispatch handlers with cancellation support
+	var wg sync.WaitGroup
+	for _, h := range allHandlers {
+		wg.Add(1)
+		go func(handler EventHandler) {
+			defer wg.Done()
+			handler(ctx, event)
+		}(h)
 	}
+	wg.Wait()
 
 	return nil
 }
@@ -91,6 +107,9 @@ func (eb *EventBus) Publish(ctx context.Context, event *protocol.CollaborationEv
 func (eb *EventBus) PublishRepoChange(ctx context.Context, spaceID, source, file string, payload map[string]any) {
 	eb.coalesceMu.Lock()
 	defer eb.coalesceMu.Unlock()
+	if eb.closed {
+		return
+	}
 
 	bucketKey := fmt.Sprintf("%s:%s", spaceID, source)
 	bucket, exists := eb.coalesceWindows[bucketKey]
@@ -106,8 +125,20 @@ func (eb *EventBus) PublishRepoChange(ctx context.Context, spaceID, source, file
 			bucket.payload[k] = v
 		}
 
+		eb.timerWg.Add(1)
 		bucket.timer = time.AfterFunc(eb.coalescePeriod, func() {
-			eb.flushCoalesceBucket(bucketKey)
+			defer eb.timerWg.Done()
+			eb.coalesceMu.Lock()
+			if eb.closed {
+				eb.coalesceMu.Unlock()
+				return
+			}
+			evt := eb.flushCoalesceBucketLocked(bucketKey)
+			eb.coalesceMu.Unlock()
+
+			if evt != nil {
+				_ = eb.Publish(context.Background(), evt)
+			}
 		})
 		eb.coalesceWindows[bucketKey] = bucket
 		return
@@ -124,15 +155,19 @@ func (eb *EventBus) PublishRepoChange(ctx context.Context, spaceID, source, file
 // FlushCoalesce manually flushes any pending coalescing window for a space.
 func (eb *EventBus) FlushCoalesce(spaceID, source string) {
 	eb.coalesceMu.Lock()
-	defer eb.coalesceMu.Unlock()
 	bucketKey := fmt.Sprintf("%s:%s", spaceID, source)
-	eb.flushCoalesceBucket(bucketKey)
+	evt := eb.flushCoalesceBucketLocked(bucketKey)
+	eb.coalesceMu.Unlock()
+
+	if evt != nil {
+		_ = eb.Publish(context.Background(), evt)
+	}
 }
 
-func (eb *EventBus) flushCoalesceBucket(bucketKey string) {
+func (eb *EventBus) flushCoalesceBucketLocked(bucketKey string) *protocol.CollaborationEvent {
 	bucket, exists := eb.coalesceWindows[bucketKey]
 	if !exists {
-		return
+		return nil
 	}
 	if bucket.timer != nil {
 		bucket.timer.Stop()
@@ -145,7 +180,7 @@ func (eb *EventBus) flushCoalesceBucket(bucketKey string) {
 	}
 	sort.Strings(files)
 
-	evt := &protocol.CollaborationEvent{
+	return &protocol.CollaborationEvent{
 		ID:        fmt.Sprintf("evt_coalesced_%d", time.Now().UnixNano()),
 		SpaceID:   bucket.spaceID,
 		Type:      protocol.EventRepoChanged,
@@ -154,8 +189,27 @@ func (eb *EventBus) flushCoalesceBucket(bucketKey string) {
 		Scope:     files,
 		Payload:   bucket.payload,
 	}
+}
 
-	_ = eb.Publish(context.Background(), evt)
+// Close stops all active coalescing timers and cleans up listeners.
+func (eb *EventBus) Close() {
+	eb.coalesceMu.Lock()
+	eb.closed = true
+	for k, bucket := range eb.coalesceWindows {
+		if bucket.timer != nil {
+			if bucket.timer.Stop() {
+				eb.timerWg.Done()
+			}
+		}
+		delete(eb.coalesceWindows, k)
+	}
+	eb.coalesceMu.Unlock()
+
+	eb.timerWg.Wait()
+
+	eb.mu.Lock()
+	eb.listeners = make(map[string][]EventHandler)
+	eb.mu.Unlock()
 }
 
 // MatchesSubscription determines if an event matches a participant subscription.

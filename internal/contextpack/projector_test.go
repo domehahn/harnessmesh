@@ -178,3 +178,94 @@ func TestProjector_TruncationMetadata(t *testing.T) {
 		t.Fatal("expected included chars > 0")
 	}
 }
+
+func TestRedactSecrets(t *testing.T) {
+	input := `
+# Configuration
+apiKey: "sk-abcdef12345678901234567890"
+anthropicKey = "sk-ant-api03-abcdef12345678901234567890"
+github_token := "ghp_123456789012345678901234567890"
+aws_key := "AKIA1234567890ABCDEF"
+authHeader := "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy.sig"
+private_key := "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
+normal_code := "func Calculate() int { return 42 }"
+`
+	redacted := RedactSecrets(input)
+	if strings.Contains(redacted, "sk-abcdef12345678901234567890") {
+		t.Errorf("expected OpenAI token to be redacted")
+	}
+	if strings.Contains(redacted, "sk-ant-api03-abcdef12345678901234567890") {
+		t.Errorf("expected Anthropic token to be redacted")
+	}
+	if strings.Contains(redacted, "ghp_123456789012345678901234567890") {
+		t.Errorf("expected GitHub token to be redacted")
+	}
+	if strings.Contains(redacted, "AKIA1234567890ABCDEF") {
+		t.Errorf("expected AWS key to be redacted")
+	}
+	if strings.Contains(redacted, "MIIEowIBAAKCAQEA") {
+		t.Errorf("expected private key to be redacted")
+	}
+	if !strings.Contains(redacted, "Calculate() int") {
+		t.Errorf("expected normal code to be preserved")
+	}
+}
+
+func TestProjector_HardContextLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create several files with content
+	for i := 0; i < 5; i++ {
+		filePath := filepath.Join(tmpDir, filepath.Clean(strings.Repeat("dir/", 0)+strings.TrimPrefix(filepath.Join("pkg", "file.go"), "/")))
+		_ = os.MkdirAll(filepath.Dir(filePath), 0755)
+		_ = os.WriteFile(filepath.Join(tmpDir, "pkg", strings.ReplaceAll(string(rune('a'+i))+".go", "", "")), []byte(strings.Repeat("X", 2000)), 0644)
+	}
+
+	p := New(tmpDir, config.ContextConfig{
+		MaxContextChars: 1500,
+		MaxFiles:        10,
+		MaxFileChars:    5000,
+	})
+
+	scope := []string{
+		filepath.Join("pkg", "a.go"),
+		filepath.Join("pkg", "b.go"),
+		filepath.Join("pkg", "c.go"),
+	}
+
+	proj, err := p.Project(context.Background(), ProjectRequest{
+		Task:  strings.Repeat("Task details ", 20),
+		Scope: scope,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !proj.Truncated {
+		t.Fatal("expected context to be truncated to obey limit")
+	}
+	if proj.IncludedChars > 1500 {
+		t.Fatalf("expected includedChars <= 1500, got %d", proj.IncludedChars)
+	}
+}
+
+func TestProjector_StrictTaskTruncation(t *testing.T) {
+	tmpDir := t.TempDir()
+	p := New(tmpDir, config.ContextConfig{
+		MaxContextChars: 100,
+	})
+
+	// Task with 1000 characters and no files
+	proj, err := p.Project(context.Background(), ProjectRequest{
+		Task: strings.Repeat("Very long task description ", 50),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !proj.Truncated {
+		t.Fatal("expected truncated=true")
+	}
+	if proj.IncludedChars > 100 {
+		t.Fatalf("expected includedChars <= 100, got %d", proj.IncludedChars)
+	}
+}

@@ -3,9 +3,11 @@ package collaboration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/domehahn/harnessmesh/internal/agent"
 	"github.com/domehahn/harnessmesh/internal/config"
@@ -150,6 +152,51 @@ func TestV03_EventBus_Coalescing(t *testing.T) {
 	}
 	if len(coalescedEvt.Scope) != 2 {
 		t.Fatalf("expected 2 unique coalesced files, got %v", coalescedEvt.Scope)
+	}
+}
+
+func TestV03_EventBus_Coalescing_TimerRace(t *testing.T) {
+	eng, _, _ := setupTestCollaborationEngine(t)
+	defer eng.Store().Close()
+
+	ctx := context.Background()
+	spaceID := "space_race_01"
+
+	var eventCount int
+	var mu sync.Mutex
+
+	eng.EventBus().AddListener(spaceID, func(ctx context.Context, evt *protocol.CollaborationEvent) {
+		if evt.Type == protocol.EventRepoChanged {
+			mu.Lock()
+			eventCount++
+			mu.Unlock()
+		}
+	})
+
+	// Concurrent writes and timer expiration without explicit FlushCoalesce
+	var wg sync.WaitGroup
+	for w := 0; w < 5; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for i := 0; i < 15; i++ {
+				file := fmt.Sprintf("file_%d_%d.go", workerID, i%3)
+				eng.EventBus().PublishRepoChange(ctx, spaceID, fmt.Sprintf("src_%d", workerID), file, map[string]any{"i": i})
+				time.Sleep(10 * time.Millisecond)
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// Wait for all coalesce timers to fire naturally
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	count := eventCount
+	mu.Unlock()
+
+	if count == 0 {
+		t.Fatal("expected at least one coalesced event fired by timer")
 	}
 }
 

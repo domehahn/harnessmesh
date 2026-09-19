@@ -44,7 +44,44 @@ func (a *ClaudeCodeAdapter) Name() string {
 }
 
 func (a *ClaudeCodeAdapter) Capabilities() config.AgentCapabilities {
-	return a.cfg.Capabilities
+	caps := a.cfg.Capabilities
+	caps.HardTokenLimitEnforced = false
+	return caps
+}
+
+func (a *ClaudeCodeAdapter) buildArgs(req InvokeRequest) []string {
+	args := []string{"-p", "--output-format", "json"}
+	if a.cfg.Model != "" {
+		args = append(args, "--model", a.cfg.Model)
+	}
+	if a.cfg.Mode != "" {
+		args = append(args, "--permission-mode", a.cfg.Mode)
+	}
+	if a.cfg.MaxTurns > 0 {
+		args = append(args, "--max-turns", fmt.Sprint(a.cfg.MaxTurns))
+	}
+	maxBudget := a.cfg.MaxBudgetUSD
+	if req.MaxCostUSD > 0 && (maxBudget == 0 || req.MaxCostUSD < maxBudget) {
+		maxBudget = req.MaxCostUSD
+	}
+	if maxBudget > 0 {
+		args = append(args, "--max-budget-usd", fmt.Sprintf("%.4f", maxBudget))
+	}
+	if req.ReviewMode {
+		args = append(args, "--tools", "")
+		if req.ReviewSchema != "" {
+			args = append(args, "--json-schema", req.ReviewSchema)
+		}
+	}
+	if req.MCPConfigPath != "" {
+		args = append(args, "--mcp-config", req.MCPConfigPath)
+	}
+	if req.SessionID != "" {
+		args = append(args, "--resume", req.SessionID)
+	}
+	args = append(args, a.cfg.ExtraArgs...)
+	args = append(args, req.Prompt)
+	return args
 }
 
 func (a *ClaudeCodeAdapter) Health(ctx context.Context) error {
@@ -102,39 +139,14 @@ func (a *ClaudeCodeAdapter) Invoke(parent context.Context, req InvokeRequest) (I
 		binary = "claude"
 	}
 
-	args := []string{"-p", "--output-format", "json"}
-	if a.cfg.Model != "" {
-		args = append(args, "--model", a.cfg.Model)
-	}
-	if a.cfg.Mode != "" {
-		args = append(args, "--permission-mode", a.cfg.Mode)
-	}
-	if a.cfg.MaxTurns > 0 {
-		args = append(args, "--max-turns", fmt.Sprint(a.cfg.MaxTurns))
-	}
-	if a.cfg.MaxBudgetUSD > 0 {
-		args = append(args, "--max-budget-usd", fmt.Sprintf("%.4f", a.cfg.MaxBudgetUSD))
-	}
-	if req.ReviewMode {
-		args = append(args, "--tools", "")
-		if req.ReviewSchema != "" {
-			args = append(args, "--json-schema", req.ReviewSchema)
-		}
-	}
-	if req.MCPConfigPath != "" {
-		args = append(args, "--mcp-config", req.MCPConfigPath)
-	}
-	if req.SessionID != "" {
-		args = append(args, "--resume", req.SessionID)
-	}
-	args = append(args, a.cfg.ExtraArgs...)
-	args = append(args, req.Prompt)
+	args := a.buildArgs(req)
 
 	dir := req.Repo
 	if a.cfg.WorkingDir != "" {
 		dir = a.cfg.WorkingDir
 	}
-	run, err := executil.Run(ctx, dir, agentEnv(a.cfg, a.switchyard), "", binary, args...)
+	env := agentEnv(a.cfg, a.switchyard)
+	run, err := executil.Run(ctx, dir, env, "", binary, args...)
 	if err != nil {
 		raw := strings.TrimSpace(run.Stdout + "\n" + run.Stderr)
 		var out claudeJSON

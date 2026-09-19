@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/domehahn/harnessmesh/internal/config"
@@ -96,5 +97,38 @@ func TestNewHarnessCapabilities(t *testing.T) {
 	adapters := RegisteredAdapters()
 	if len(adapters) < 4 {
 		t.Fatalf("expected at least 4 registered adapters, got %v", adapters)
+	}
+}
+
+func TestFakeAdapter_EnforcesMaxTokens(t *testing.T) {
+	fakeAdapter := NewFakeAdapter("fake", config.AgentConfig{})
+	ctx := context.Background()
+
+	// 1. Invoke without MaxTokens limit
+	res1, err := fakeAdapter.Invoke(ctx, InvokeRequest{
+		Name:   "fake",
+		Prompt: "A short prompt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res1.Text) == 0 {
+		t.Fatal("expected non-empty response")
+	}
+
+	// 2. Invoke with tight MaxTokens limit (e.g. 2 tokens = ~8 characters)
+	res2, err := fakeAdapter.Invoke(ctx, InvokeRequest{
+		Name:      "fake",
+		Prompt:    "A very long prompt that would normally produce a long fake response",
+		MaxTokens: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.Text) > 8 {
+		t.Fatalf("expected output truncated to at most 8 chars (2 tokens), got %d chars: %q", len(res2.Text), res2.Text)
+	}
+	if outTok, ok := res2.Usage["output_tokens"].(int64); ok && outTok > 2 {
+		t.Fatalf("expected output_tokens <= 2 in usage, got %d", outTok)
 	}
 }

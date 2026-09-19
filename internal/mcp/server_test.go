@@ -68,8 +68,8 @@ func TestMCPServerHandshakeAndTools(t *testing.T) {
 		t.Fatalf("unexpected tools/list result type: %T", resp.Result)
 	}
 	tools, ok := resMap["tools"].([]ToolDefinition)
-	if !ok || len(tools) != 20 {
-		t.Fatalf("expected 20 tools, got: %d", len(tools))
+	if !ok || len(tools) != 23 {
+		t.Fatalf("expected 23 tools, got: %d", len(tools))
 	}
 
 	// 3. tools/call peer.list
@@ -212,8 +212,8 @@ func TestMCPServer_StdioContract(t *testing.T) {
 	}
 	resMap := listResp.Result.(map[string]any)
 	toolsSlice := resMap["tools"].([]any)
-	if len(toolsSlice) != 20 {
-		t.Fatalf("expected 20 tools, got %d", len(toolsSlice))
+	if len(toolsSlice) != 23 {
+		t.Fatalf("expected 23 tools, got %d", len(toolsSlice))
 	}
 
 	// 3. Send peer.list over pipe

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -35,6 +36,36 @@ var defaultSecretPatterns = []string{
 	"**/.git/**",
 	".harnessmesh/**",
 	"**/.harnessmesh/**",
+}
+
+var (
+	privateKeyRegex     = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+	openAITokenRegex    = regexp.MustCompile(`\b(sk-[a-zA-Z0-9_\-]{20,})\b`)
+	anthropicTokenRegex = regexp.MustCompile(`\b(sk-ant-[a-zA-Z0-9_\-]{20,})\b`)
+	gitHubTokenRegex    = regexp.MustCompile(`\b(gh[pousr]_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{22,})\b`)
+	awsKeyRegex         = regexp.MustCompile(`\b((?:AKIA|ASIA|AROA)[0-9A-Z]{16})\b`)
+	bearerRegex         = regexp.MustCompile(`(?i)\b(Bearer\s+)[a-zA-Z0-9_\-\.]{20,}\b`)
+	configSecretRegex   = regexp.MustCompile(`(?i)\b((?:api[_-]?key|secret|password|passwd|auth[_-]?token)\s*[:=]\s*["'])([^"'\r\n]{8,})(["'])`)
+)
+
+// RedactSecrets scans string content and replaces sensitive credentials with safe placeholders.
+func RedactSecrets(s string) string {
+	if s == "" {
+		return s
+	}
+	s = privateKeyRegex.ReplaceAllString(s, "[REDACTED_PRIVATE_KEY]")
+	s = openAITokenRegex.ReplaceAllString(s, "[REDACTED_API_KEY]")
+	s = anthropicTokenRegex.ReplaceAllString(s, "[REDACTED_API_KEY]")
+	s = gitHubTokenRegex.ReplaceAllString(s, "[REDACTED_TOKEN]")
+	s = awsKeyRegex.ReplaceAllString(s, "[REDACTED_AWS_KEY]")
+	s = bearerRegex.ReplaceAllString(s, "${1}[REDACTED_BEARER_TOKEN]")
+	s = configSecretRegex.ReplaceAllString(s, "${1}[REDACTED_SECRET]${3}")
+	return s
+}
+
+// RedactSecrets wraps the package function as a method on Projector.
+func (p *Projector) RedactSecrets(s string) string {
+	return RedactSecrets(s)
 }
 
 type Projector struct {
@@ -123,9 +154,9 @@ func (p *Projector) Project(ctx context.Context, req ProjectRequest) (*Projected
 	denied = append(denied, req.DeniedPaths...)
 
 	proj := &ProjectedContext{
-		Task:         req.Task,
-		Plan:         req.Plan,
-		Question:     req.Question,
+		Task:         RedactSecrets(req.Task),
+		Plan:         RedactSecrets(req.Plan),
+		Question:     RedactSecrets(req.Question),
 		RepoRoot:     p.repo,
 		Head:         strings.TrimSpace(head),
 		Branch:       strings.TrimSpace(branch),
@@ -168,7 +199,8 @@ func (p *Projector) Project(ctx context.Context, req ProjectRequest) (*Projected
 			filteredDiff = MiddleOut(filteredDiff, maxDiff)
 			proj.Truncated = true
 		}
-		proj.Diff = filteredDiff
+		proj.Diff = RedactSecrets(filteredDiff)
+		proj.DiffStat = RedactSecrets(proj.DiffStat)
 	}
 
 	// Read selected files from Scope
@@ -213,7 +245,7 @@ func (p *Projector) Project(ctx context.Context, req ProjectRequest) (*Projected
 		if err != nil {
 			return nil, &protocol.ContextRejectedError{Path: sc, Reason: err.Error()}
 		}
-		proj.Files[sc] = content
+		proj.Files[sc] = RedactSecrets(content)
 		totalOriginalChars += int(info.Size())
 		filesLoaded++
 	}
@@ -232,33 +264,126 @@ func (p *Projector) Project(ctx context.Context, req ProjectRequest) (*Projected
 			output = MiddleOut(output, maxTestChars)
 			proj.Truncated = true
 		}
-		proj.TestOutput = output
+		proj.TestOutput = RedactSecrets(output)
 		if err != nil && ctx.Err() != nil {
 			return proj, ctx.Err()
 		}
 	}
 
-	// Calculate total included chars
-	includedChars := len(proj.Task) + len(proj.Plan) + len(proj.Question) + len(proj.Status) +
-		len(proj.DiffStat) + len(proj.Diff) + len(proj.TestOutput)
-	for _, content := range proj.Files {
-		includedChars += len(content)
-	}
-
-	proj.OriginalChars = totalOriginalChars
-	proj.IncludedChars = includedChars
-
 	maxContext := p.cfg.MaxContextChars
 	if maxContext <= 0 {
 		maxContext = 100000
 	}
+
+	calcIncludedChars := func() int {
+		total := len(proj.Task) + len(proj.Plan) + len(proj.Question) + len(proj.Status) +
+			len(proj.DiffStat) + len(proj.Diff) + len(proj.TestOutput)
+		for _, content := range proj.Files {
+			total += len(content)
+		}
+		return total
+	}
+
+	includedChars := calcIncludedChars()
 	if includedChars > maxContext {
-		// Bounded truncation if context exceeds maxContext
 		proj.Truncated = true
-		if len(proj.Diff) > maxContext/2 {
-			proj.Diff = MiddleOut(proj.Diff, maxContext/2)
+
+		// 1. Truncate / drop files
+		if includedChars > maxContext && len(proj.Files) > 0 {
+			for k, content := range proj.Files {
+				if includedChars <= maxContext {
+					break
+				}
+				neededCut := includedChars - maxContext
+				if len(content) <= neededCut {
+					delete(proj.Files, k)
+				} else {
+					proj.Files[k] = MiddleOut(content, len(content)-neededCut)
+				}
+				includedChars = calcIncludedChars()
+			}
+		}
+
+		// 2. Truncate diff if still over limit
+		if includedChars > maxContext && len(proj.Diff) > 0 {
+			neededCut := includedChars - maxContext
+			if len(proj.Diff) <= neededCut {
+				proj.Diff = ""
+			} else {
+				proj.Diff = MiddleOut(proj.Diff, len(proj.Diff)-neededCut)
+			}
+			includedChars = calcIncludedChars()
+		}
+
+		// 3. Truncate test output if still over limit
+		if includedChars > maxContext && len(proj.TestOutput) > 0 {
+			neededCut := includedChars - maxContext
+			if len(proj.TestOutput) <= neededCut {
+				proj.TestOutput = ""
+			} else {
+				proj.TestOutput = MiddleOut(proj.TestOutput, len(proj.TestOutput)-neededCut)
+			}
+			includedChars = calcIncludedChars()
+		}
+
+		// 4. Truncate DiffStat if still over limit
+		if includedChars > maxContext && len(proj.DiffStat) > 0 {
+			neededCut := includedChars - maxContext
+			if len(proj.DiffStat) <= neededCut {
+				proj.DiffStat = ""
+			} else {
+				proj.DiffStat = MiddleOut(proj.DiffStat, len(proj.DiffStat)-neededCut)
+			}
+			includedChars = calcIncludedChars()
+		}
+
+		// 5. Truncate Plan if still over limit
+		if includedChars > maxContext && len(proj.Plan) > 0 {
+			neededCut := includedChars - maxContext
+			if len(proj.Plan) <= neededCut {
+				proj.Plan = ""
+			} else {
+				proj.Plan = MiddleOut(proj.Plan, len(proj.Plan)-neededCut)
+			}
+			includedChars = calcIncludedChars()
+		}
+
+		// 6. Truncate Task if still over limit
+		if includedChars > maxContext && len(proj.Task) > 0 {
+			neededCut := includedChars - maxContext
+			if len(proj.Task) <= neededCut {
+				proj.Task = ""
+			} else {
+				proj.Task = MiddleOut(proj.Task, len(proj.Task)-neededCut)
+			}
+			includedChars = calcIncludedChars()
+		}
+
+		// 7. Truncate Question if still over limit
+		if includedChars > maxContext && len(proj.Question) > 0 {
+			neededCut := includedChars - maxContext
+			if len(proj.Question) <= neededCut {
+				proj.Question = ""
+			} else {
+				proj.Question = MiddleOut(proj.Question, len(proj.Question)-neededCut)
+			}
+			includedChars = calcIncludedChars()
+		}
+
+		// 8. Truncate Status if still over limit
+		if includedChars > maxContext && len(proj.Status) > 0 {
+			neededCut := includedChars - maxContext
+			if len(proj.Status) <= neededCut {
+				proj.Status = ""
+			} else {
+				proj.Status = proj.Status[:len(proj.Status)-neededCut]
+			}
+			includedChars = calcIncludedChars()
 		}
 	}
+
+	proj.OriginalChars = totalOriginalChars
+	proj.IncludedChars = includedChars
 
 	return proj, nil
 }
@@ -389,27 +514,33 @@ func matchPattern(pattern, path string) bool {
 }
 
 func validatePathInsideRepo(root, full string) error {
-	rootClean, err := filepath.Abs(root)
+	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return err
 	}
-	rootClean = filepath.Clean(rootClean)
+	rootClean := filepath.Clean(rootAbs)
+	realRoot, err := filepath.EvalSymlinks(rootClean)
+	if err == nil {
+		rootClean = realRoot
+	}
 
-	fullClean, err := filepath.Abs(full)
+	fullAbs, err := filepath.Abs(full)
 	if err != nil {
 		return err
 	}
-	fullClean = filepath.Clean(fullClean)
+	fullClean := filepath.Clean(fullAbs)
 
-	if fullClean != rootClean && !strings.HasPrefix(fullClean, rootClean+string(os.PathSeparator)) {
+	// Check logical containment
+	relLogical, err := filepath.Rel(rootAbs, fullAbs)
+	if err != nil || strings.HasPrefix(relLogical, "..") {
 		return fmt.Errorf("path escapes repository root: %s", full)
 	}
 
 	// Symlink escape check
 	realPath, err := filepath.EvalSymlinks(fullClean)
 	if err == nil {
-		realClean := filepath.Clean(realPath)
-		if realClean != rootClean && !strings.HasPrefix(realClean, rootClean+string(os.PathSeparator)) {
+		relReal, errRel := filepath.Rel(rootClean, realPath)
+		if errRel != nil || strings.HasPrefix(relReal, "..") {
 			return fmt.Errorf("symlink target escapes repository root: %s -> %s", full, realPath)
 		}
 	}

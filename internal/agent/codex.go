@@ -154,6 +154,10 @@ func (a *CodexAdapter) Invoke(parent context.Context, req InvokeRequest) (Invoke
 		args = append(args, "--output-schema", schemaPath)
 	}
 
+	if req.MaxTokens > 0 {
+		args = append(args, "-c", fmt.Sprintf("model_options.max_tokens=%d", req.MaxTokens))
+	}
+
 	args = append(args, a.cfg.ExtraArgs...)
 	if req.SessionID != "" {
 		args = append(args, "resume", req.SessionID, "-")
@@ -165,7 +169,11 @@ func (a *CodexAdapter) Invoke(parent context.Context, req InvokeRequest) (Invoke
 	if a.cfg.WorkingDir != "" {
 		dir = a.cfg.WorkingDir
 	}
-	run, runErr := executil.Run(ctx, dir, agentEnv(a.cfg, a.switchyard), req.Prompt, binPath, args...)
+	env := agentEnv(a.cfg, a.switchyard)
+	if req.MaxTokens > 0 {
+		env["OPENAI_MAX_TOKENS"] = fmt.Sprint(req.MaxTokens)
+	}
+	run, runErr := executil.Run(ctx, dir, env, req.Prompt, binPath, args...)
 
 	sessionID, usage, fallbackText := parseCodexJSONL(run.Stdout)
 	lastRaw, _ := os.ReadFile(lastMessagePath)

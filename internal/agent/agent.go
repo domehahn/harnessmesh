@@ -30,6 +30,8 @@ type InvokeRequest struct {
 	ReviewMode    bool
 	ReviewSchema  string
 	MCPConfigPath string
+	MaxTokens     int64
+	MaxCostUSD    float64
 }
 
 type InvokeResult struct {

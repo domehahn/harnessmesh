@@ -44,7 +44,21 @@ func (a *AntigravityAdapter) Name() string {
 }
 
 func (a *AntigravityAdapter) Capabilities() config.AgentCapabilities {
-	return a.cfg.Capabilities
+	caps := a.cfg.Capabilities
+	caps.HardTokenLimitEnforced = false
+	return caps
+}
+
+func (a *AntigravityAdapter) buildArgs(req InvokeRequest) []string {
+	args := []string{"-p", req.Prompt, "--print-timeout", "10m"}
+	if a.cfg.Writable {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	if req.SessionID != "" {
+		args = append(args, "--session-id", req.SessionID)
+	}
+	args = append(args, a.cfg.ExtraArgs...)
+	return args
 }
 
 func (a *AntigravityAdapter) findBinary() (string, error) {
@@ -110,21 +124,15 @@ func (a *AntigravityAdapter) Invoke(parent context.Context, req InvokeRequest) (
 		}
 	}
 
-	args := []string{"-p", req.Prompt, "--print-timeout", "10m"}
-	if a.cfg.Writable {
-		args = append(args, "--dangerously-skip-permissions")
-	}
-	if req.SessionID != "" {
-		args = append(args, "--session-id", req.SessionID)
-	}
-	args = append(args, a.cfg.ExtraArgs...)
+	args := a.buildArgs(req)
 
 	dir := req.Repo
 	if a.cfg.WorkingDir != "" {
 		dir = a.cfg.WorkingDir
 	}
 
-	run, runErr := executil.Run(ctx, dir, agentEnv(a.cfg, a.switchyard), "", bin, args...)
+	env := agentEnv(a.cfg, a.switchyard)
+	run, runErr := executil.Run(ctx, dir, env, "", bin, args...)
 
 	sessionID := req.SessionID
 	if sessionID == "" {

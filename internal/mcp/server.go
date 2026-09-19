@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/domehahn/harnessmesh/internal/collaboration"
+	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 )
 
@@ -434,6 +435,41 @@ func (s *Server) ListTools() []ToolDefinition {
 				},
 			},
 		},
+		{
+			Name:        "knowledge.search",
+			Description: "Search the compressed HarnessMesh knowledge archive for prior discussions, findings, evidence, decisions, and agent events.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":      map[string]any{"type": "string", "description": "All terms must match; empty query lists recent archive records."},
+					"session_id": map[string]any{"type": "string"},
+					"space_id":   map[string]any{"type": "string"},
+					"kind":       map[string]any{"type": "string", "description": "Optional kind, e.g. message, finding, evidence, decision, or event type."},
+					"limit":      map[string]any{"type": "integer", "maximum": 1000},
+					"offset":     map[string]any{"type": "integer", "minimum": 0},
+				},
+			},
+		},
+		{
+			Name:        "knowledge.context",
+			Description: "Return search results formatted as a bounded context block suitable for RAG prompt augmentation.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":      map[string]any{"type": "string"},
+					"session_id": map[string]any{"type": "string"},
+					"space_id":   map[string]any{"type": "string"},
+					"kind":       map[string]any{"type": "string"},
+					"limit":      map[string]any{"type": "integer", "maximum": 1000},
+					"max_chars":  map[string]any{"type": "integer", "maximum": 200000},
+				},
+			},
+		},
+		{
+			Name:        "knowledge.stats",
+			Description: "Return compressed archive path and size information.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		},
 	}
 }
 
@@ -761,15 +797,16 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 
 	case "collaboration.unsubscribe":
 		var unsubReq struct {
+			SpaceID        string `json:"space_id"`
 			SubscriptionID string `json:"subscription_id"`
 		}
 		if err := json.Unmarshal(argsJSON, &unsubReq); err != nil {
 			return nil, fmt.Errorf("parse collaboration.unsubscribe args: %w", err)
 		}
-		if err := s.engine.Unsubscribe(ctx, unsubReq.SubscriptionID); err != nil {
+		if err := s.engine.Unsubscribe(ctx, unsubReq.SpaceID, unsubReq.SubscriptionID); err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": "unsubscribed", "subscription_id": unsubReq.SubscriptionID}, nil
+		return map[string]any{"status": "unsubscribed", "space_id": unsubReq.SpaceID, "subscription_id": unsubReq.SubscriptionID}, nil
 
 	case "collaboration.decide":
 		var decReq struct {
@@ -805,6 +842,36 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 			spaceID = s.sessionID
 		}
 		return s.engine.SpaceStatus(ctx, spaceID)
+
+	case "knowledge.search", "knowledge.context":
+		var req struct {
+			Query     string `json:"query"`
+			SessionID string `json:"session_id"`
+			SpaceID   string `json:"space_id"`
+			Kind      string `json:"kind"`
+			Limit     int    `json:"limit"`
+			Offset    int    `json:"offset"`
+			MaxChars  int    `json:"max_chars"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse knowledge args: %w", err)
+		}
+		records, err := s.engine.KnowledgeSearch(ctx, req.Query, knowledge.SearchOptions{
+			SessionID: req.SessionID, SpaceID: req.SpaceID, Kind: req.Kind, Limit: req.Limit, Offset: req.Offset,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if toolName == "knowledge.context" {
+			if req.MaxChars <= 0 {
+				req.MaxChars = 50000
+			}
+			return map[string]any{"records": records, "context": knowledge.BuildContext(records, req.MaxChars)}, nil
+		}
+		return map[string]any{"records": records, "count": len(records)}, nil
+
+	case "knowledge.stats":
+		return s.engine.KnowledgeStats(ctx)
 
 	default:
 		return nil, fmt.Errorf("unknown collaboration tool %q", toolName)

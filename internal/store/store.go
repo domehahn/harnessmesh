@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -65,13 +66,15 @@ type Store interface {
 	GetResolutions(ctx context.Context, sessionID string) ([]protocol.ResolutionPayload, error)
 
 	SaveIdempotency(ctx context.Context, key, sessionID, resultJSON string) error
-	GetIdempotency(ctx context.Context, key string) (string, error)
+	GetIdempotency(ctx context.Context, sessionID, key string) (string, error)
 
 	SaveRoutingDecision(ctx context.Context, r *RoutingDecisionRecord) error
 	GetRoutingDecisions(ctx context.Context, sessionID string) ([]RoutingDecisionRecord, error)
 
 	SaveUsage(ctx context.Context, u *UsageRecord) error
 	GetUsage(ctx context.Context, sessionID string) ([]UsageRecord, error)
+
+	UpdateBudget(ctx context.Context, id string, budget protocol.BudgetStatus) error
 
 	EmitEvent(ctx context.Context, sessionID, eventType string, payload any) error
 	GetEvents(ctx context.Context, sessionID string) ([]EventRecord, error)
@@ -97,7 +100,7 @@ type Store interface {
 	SaveSubscription(ctx context.Context, sub *protocol.Subscription) error
 	GetSubscriptions(ctx context.Context, spaceID string) ([]protocol.Subscription, error)
 	GetParticipantSubscriptions(ctx context.Context, spaceID, participantID string) ([]protocol.Subscription, error)
-	DeleteSubscription(ctx context.Context, id string) error
+	DeleteSubscription(ctx context.Context, spaceID, id string) error
 
 	RecordEventDelivery(ctx context.Context, d *protocol.EventDelivery) error
 	GetEventDelivery(ctx context.Context, eventID, participantID string) (*protocol.EventDelivery, error)
@@ -155,9 +158,10 @@ type UsageRecord struct {
 }
 
 type SQLiteStore struct {
-	db   *sql.DB
-	path string
-	mu   sync.RWMutex
+	db        *sql.DB
+	path      string
+	knowledge *knowledge.Archive
+	mu        sync.RWMutex
 }
 
 func canWriteDir(dir string) bool {
@@ -220,6 +224,18 @@ func OpenSQLite(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate sqlite db: %w", err)
 	}
+	archivePath := os.Getenv("HARNESSMESH_KNOWLEDGE_PATH")
+	if archivePath == "" {
+		archivePath = filepath.Join(filepath.Dir(dbPath), "knowledge.hmkz")
+	}
+	if os.Getenv("HARNESSMESH_KNOWLEDGE_DISABLED") != "1" {
+		archive, err := knowledge.Open(archivePath)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("open knowledge archive: %w", err)
+		}
+		store.knowledge = archive
+	}
 
 	return store, nil
 }
@@ -228,9 +244,27 @@ func (s *SQLiteStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.db != nil {
-		return s.db.Close()
+		dbErr := s.db.Close()
+		var archiveErr error
+		if s.knowledge != nil {
+			archiveErr = s.knowledge.Close()
+		}
+		if dbErr != nil {
+			return dbErr
+		}
+		return archiveErr
 	}
 	return nil
+}
+
+// KnowledgeArchive exposes the append-only archive for MCP/RAG integrations.
+func (s *SQLiteStore) KnowledgeArchive() *knowledge.Archive { return s.knowledge }
+
+func (s *SQLiteStore) appendKnowledge(ctx context.Context, record knowledge.Record) error {
+	if s.knowledge == nil {
+		return nil
+	}
+	return s.knowledge.Append(ctx, record)
 }
 
 func (s *SQLiteStore) migrate() error {
@@ -456,7 +490,7 @@ func (s *SQLiteStore) migrate() error {
 				);
 
 				CREATE TABLE IF NOT EXISTS channels (
-					id TEXT PRIMARY KEY,
+					id TEXT NOT NULL,
 					space_id TEXT NOT NULL,
 					name TEXT NOT NULL,
 					description TEXT NOT NULL DEFAULT '',
@@ -466,6 +500,7 @@ func (s *SQLiteStore) migrate() error {
 					created_by TEXT NOT NULL DEFAULT '',
 					created_at TIMESTAMP NOT NULL,
 					archived_at TIMESTAMP,
+					PRIMARY KEY (space_id, id),
 					FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE
 				);
 
@@ -479,11 +514,11 @@ func (s *SQLiteStore) migrate() error {
 					created_at TIMESTAMP NOT NULL,
 					updated_at TIMESTAMP NOT NULL,
 					FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE,
-					FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+					FOREIGN KEY (space_id, channel_id) REFERENCES channels(space_id, id) ON DELETE CASCADE
 				);
 
 				CREATE TABLE IF NOT EXISTS subscriptions (
-					id TEXT PRIMARY KEY,
+					id TEXT NOT NULL,
 					space_id TEXT NOT NULL,
 					participant_id TEXT NOT NULL,
 					channels_json TEXT NOT NULL DEFAULT '[]',
@@ -491,6 +526,7 @@ func (s *SQLiteStore) migrate() error {
 					scope_patterns_json TEXT NOT NULL DEFAULT '[]',
 					mode TEXT NOT NULL DEFAULT 'active',
 					created_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (space_id, id),
 					FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE
 				);
 
@@ -554,14 +590,96 @@ func (s *SQLiteStore) migrate() error {
 				ALTER TABLE messages ADD COLUMN scope_json TEXT NOT NULL DEFAULT '[]';
 				ALTER TABLE messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
 
-				CREATE INDEX IF NOT EXISTS idx_messages_space_channel ON messages(space_id, channel_id);
-				CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
-				CREATE INDEX IF NOT EXISTS idx_event_deliveries_event_part ON event_deliveries(event_id, participant_id);
+				CREATE INDEX IF NOT EXISTS idx_messages_space_channel ON messages(session_id, channel_id);
+				CREATE INDEX IF NOT EXISTS idx_threads_space ON threads(space_id);
 				CREATE INDEX IF NOT EXISTS idx_subscriptions_space ON subscriptions(space_id);
 				CREATE INDEX IF NOT EXISTS idx_decisions_space ON decisions(space_id);
 			`,
 		},
+		{
+			version: 6,
+			sql: `
+				CREATE TABLE IF NOT EXISTS idempotency_records_v2 (
+					session_id TEXT NOT NULL,
+					key TEXT NOT NULL,
+					result_json TEXT NOT NULL,
+					created_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (session_id, key)
+				);
+				INSERT OR IGNORE INTO idempotency_records_v2 (session_id, key, result_json, created_at)
+				SELECT session_id, key, result_json, created_at FROM idempotency_records;
+				DROP TABLE IF EXISTS idempotency_records;
+				ALTER TABLE idempotency_records_v2 RENAME TO idempotency_records;
+				CREATE INDEX IF NOT EXISTS idx_idempotency_session_key ON idempotency_records(session_id, key);
+			`,
+		},
+		{
+			version: 7,
+			sql: `
+				CREATE TABLE IF NOT EXISTS channels_v2 (
+					id TEXT NOT NULL,
+					space_id TEXT NOT NULL,
+					name TEXT NOT NULL,
+					description TEXT NOT NULL DEFAULT '',
+					visibility TEXT NOT NULL DEFAULT 'all_participants',
+					allowed_participants_json TEXT NOT NULL DEFAULT '[]',
+					allowed_capabilities_json TEXT NOT NULL DEFAULT '[]',
+					created_by TEXT NOT NULL DEFAULT '',
+					created_at TIMESTAMP NOT NULL,
+					archived_at TIMESTAMP,
+					PRIMARY KEY (space_id, id),
+					FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE
+				);
+				INSERT OR IGNORE INTO channels_v2 (id, space_id, name, description, visibility, allowed_participants_json, allowed_capabilities_json, created_by, created_at, archived_at)
+				SELECT id, space_id, name, description, visibility, allowed_participants_json, allowed_capabilities_json, created_by, created_at, archived_at FROM channels;
+
+				CREATE TABLE IF NOT EXISTS threads_v2 (
+					id TEXT PRIMARY KEY,
+					space_id TEXT NOT NULL,
+					channel_id TEXT NOT NULL,
+					root_message_id TEXT NOT NULL,
+					title TEXT NOT NULL DEFAULT '',
+					status TEXT NOT NULL DEFAULT 'open',
+					created_at TIMESTAMP NOT NULL,
+					updated_at TIMESTAMP NOT NULL,
+					FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE,
+					FOREIGN KEY (space_id, channel_id) REFERENCES channels_v2(space_id, id) ON DELETE CASCADE
+				);
+				INSERT OR IGNORE INTO threads_v2 (id, space_id, channel_id, root_message_id, title, status, created_at, updated_at)
+				SELECT id, space_id, channel_id, root_message_id, title, status, created_at, updated_at FROM threads;
+
+				DROP TABLE IF EXISTS threads;
+				DROP TABLE IF EXISTS channels;
+				ALTER TABLE channels_v2 RENAME TO channels;
+				ALTER TABLE threads_v2 RENAME TO threads;
+				CREATE INDEX IF NOT EXISTS idx_channels_space_id ON channels(space_id);
+				CREATE INDEX IF NOT EXISTS idx_threads_space_ch ON threads(space_id, channel_id);
+
+				CREATE TABLE IF NOT EXISTS subscriptions_v2 (
+					id TEXT NOT NULL,
+					space_id TEXT NOT NULL,
+					participant_id TEXT NOT NULL,
+					channels_json TEXT NOT NULL DEFAULT '[]',
+					event_types_json TEXT NOT NULL DEFAULT '[]',
+					scope_patterns_json TEXT NOT NULL DEFAULT '[]',
+					mode TEXT NOT NULL DEFAULT 'active',
+					created_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (space_id, id),
+					FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE
+				);
+				INSERT OR IGNORE INTO subscriptions_v2 (id, space_id, participant_id, channels_json, event_types_json, scope_patterns_json, mode, created_at)
+				SELECT id, space_id, participant_id, channels_json, event_types_json, scope_patterns_json, mode, created_at FROM subscriptions;
+				DROP TABLE IF EXISTS subscriptions;
+				ALTER TABLE subscriptions_v2 RENAME TO subscriptions;
+				CREATE INDEX IF NOT EXISTS idx_subscriptions_space_part ON subscriptions(space_id, participant_id);
+			`,
+		},
 	}
+
+	_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys = OFF;")
+	defer func() {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys = ON;")
+	}()
 
 	for _, m := range migrations {
 		if m.version > currentVersion {
@@ -808,7 +926,15 @@ func (s *SQLiteStore) SaveMessage(ctx context.Context, env *protocol.PeerEnvelop
 		env.CorrelationID, env.CausationID, env.IdempotencyKey, env.ExternalSessionID,
 		env.DurationMS, env.Status, env.CreatedAt, payloadJSON,
 		env.SpaceID, env.ChannelID, env.ThreadID, string(mentionsJSON), env.ReplyTo, string(scopeJSON), string(metaJSON))
-	return err
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(env)
+	return s.appendKnowledge(ctx, knowledge.Record{
+		ID: env.ID, Timestamp: env.CreatedAt, SessionID: sessionID, SpaceID: env.SpaceID,
+		Kind: "message", From: env.From, To: env.To, ChannelID: env.ChannelID, ThreadID: env.ThreadID,
+		Text: string(env.Payload), Payload: payload,
+	})
 }
 
 func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string) ([]*protocol.PeerEnvelope, error) {
@@ -956,7 +1082,14 @@ func (s *SQLiteStore) SaveFinding(ctx context.Context, sessionID string, f *prot
 			source_adapter = excluded.source_adapter,
 			evidence_refs_json = excluded.evidence_refs_json;
 	`, sessionID, f.ID, f.SourceAgent, f.Severity, f.Category, f.File, f.Line, f.EndLine, f.Claim, f.Evidence, f.Recommendation, string(f.Status), f.Timestamp, f.DuplicateOf, string(relJSON), f.SourceParticipant, f.SourceAdapter, string(evRefsJSON))
-	return err
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(f)
+	return s.appendKnowledge(ctx, knowledge.Record{
+		ID: f.ID, Timestamp: f.Timestamp, SessionID: sessionID, Kind: "finding",
+		From: f.SourceParticipant, Text: f.Claim + " " + f.Evidence + " " + f.Recommendation, Payload: payload,
+	})
 }
 
 func (s *SQLiteStore) GetFindings(ctx context.Context, sessionID string) ([]protocol.FindingPayload, error) {
@@ -1068,7 +1201,14 @@ func (s *SQLiteStore) SaveEvidence(ctx context.Context, sessionID string, ev *pr
 			exit_code = excluded.exit_code,
 			metadata_json = excluded.metadata_json;
 	`, ev.ID, sessionID, ev.FindingID, ev.MessageID, ev.SourceAgent, string(ev.Type), ev.Command, ev.Result, ev.Excerpt, ev.ExitCode, ev.CreatedAt, string(metaJSON))
-	return err
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(ev)
+	return s.appendKnowledge(ctx, knowledge.Record{
+		ID: ev.ID, Timestamp: ev.CreatedAt, SessionID: sessionID, Kind: "evidence",
+		From: ev.SourceAgent, Text: ev.Result + " " + ev.Excerpt + " " + ev.Command, Payload: payload,
+	})
 }
 
 func (s *SQLiteStore) GetEvidence(ctx context.Context, sessionID string) ([]protocol.EvidencePayload, error) {
@@ -1155,7 +1295,14 @@ func (s *SQLiteStore) SaveChallenge(ctx context.Context, sessionID string, ch *p
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(ch)
+	return s.appendKnowledge(ctx, knowledge.Record{
+		ID: ch.ID, Timestamp: ch.CreatedAt, SessionID: sessionID, Kind: "challenge",
+		From: ch.Challenger, Text: ch.Claim + " " + ch.Evidence + " " + ch.RequestedVerification, Payload: payload,
+	})
 }
 
 func (s *SQLiteStore) GetChallenges(ctx context.Context, sessionID string) ([]protocol.ChallengePayload, error) {
@@ -1229,7 +1376,14 @@ func (s *SQLiteStore) SaveResolution(ctx context.Context, sessionID string, res 
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(res)
+	return s.appendKnowledge(ctx, knowledge.Record{
+		ID: res.ID, Timestamp: res.Timestamp, SessionID: sessionID, Kind: "resolution",
+		From: res.ResolvingAgent, Text: res.Rationale, Payload: payload,
+	})
 }
 
 func (s *SQLiteStore) GetResolutions(ctx context.Context, sessionID string) ([]protocol.ResolutionPayload, error) {
@@ -1264,18 +1418,31 @@ func (s *SQLiteStore) SaveIdempotency(ctx context.Context, key, sessionID, resul
 	defer s.mu.Unlock()
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO idempotency_records (key, session_id, result_json, created_at)
+		INSERT INTO idempotency_records (session_id, key, result_json, created_at)
 		VALUES (?, ?, ?, ?)
-		ON CONFLICT(key) DO UPDATE SET result_json = excluded.result_json;
-	`, key, sessionID, resultJSON, time.Now().UTC())
+		ON CONFLICT(session_id, key) DO UPDATE SET result_json = excluded.result_json;
+	`, sessionID, key, resultJSON, time.Now().UTC())
+	if err != nil {
+		return err
+	}
 	return err
 }
 
-func (s *SQLiteStore) GetIdempotency(ctx context.Context, key string) (string, error) {
+func (s *SQLiteStore) GetIdempotency(ctx context.Context, sessionID, key string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	row := s.db.QueryRowContext(ctx, `SELECT result_json FROM idempotency_records WHERE key = ?;`, key)
+	var query string
+	var args []any
+	if sessionID != "" {
+		query = `SELECT result_json FROM idempotency_records WHERE session_id = ? AND key = ?;`
+		args = []any{sessionID, key}
+	} else {
+		query = `SELECT result_json FROM idempotency_records WHERE key = ? ORDER BY created_at DESC LIMIT 1;`
+		args = []any{key}
+	}
+
+	row := s.db.QueryRowContext(ctx, query, args...)
 	var resultJSON string
 	if err := row.Scan(&resultJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1295,7 +1462,13 @@ func (s *SQLiteStore) EmitEvent(ctx context.Context, sessionID, eventType string
 		INSERT INTO events (session_id, event_type, timestamp, payload_json)
 		VALUES (?, ?, ?, ?);
 	`, sessionID, eventType, time.Now().UTC(), string(raw))
-	return err
+	if err != nil {
+		return err
+	}
+	return s.appendKnowledge(ctx, knowledge.Record{
+		ID: fmt.Sprintf("event_%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(), SessionID: sessionID,
+		Kind: eventType, Text: string(raw), Payload: raw,
+	})
 }
 
 func (s *SQLiteStore) GetEvents(ctx context.Context, sessionID string) ([]EventRecord, error) {
@@ -1400,6 +1573,48 @@ func (s *SQLiteStore) GetUsage(ctx context.Context, sessionID string) ([]UsageRe
 	return out, nil
 }
 
+func (s *SQLiteStore) UpdateBudget(ctx context.Context, id string, budget protocol.BudgetStatus) error {
+	if id == "" {
+		return errors.New("id is required to update budget")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	budgetJSON, err := json.Marshal(budget)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+
+	resSess, err := tx.ExecContext(ctx, `
+		UPDATE sessions SET budget_json = ?, updated_at = ? WHERE id = ?;
+	`, string(budgetJSON), now, id)
+	if err != nil {
+		return fmt.Errorf("failed to update session budget in tx: %w", err)
+	}
+
+	resSpace, err := tx.ExecContext(ctx, `
+		UPDATE collaboration_spaces SET budget_json = ?, updated_at = ? WHERE id = ?;
+	`, string(budgetJSON), now, id)
+	if err != nil {
+		return fmt.Errorf("failed to update space budget in tx: %w", err)
+	}
+
+	nSess, _ := resSess.RowsAffected()
+	nSpace, _ := resSpace.RowsAffected()
+	if nSess == 0 && nSpace == 0 {
+		return &protocol.SessionNotFoundError{SessionID: id}
+	}
+
+	return tx.Commit()
+}
+
 func (s *SQLiteStore) SaveSpace(ctx context.Context, space *protocol.CollaborationSpace) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1420,19 +1635,24 @@ func (s *SQLiteStore) SaveSpace(ctx context.Context, space *protocol.Collaborati
 	if err != nil {
 		return err
 	}
+	budgetJSON, err := json.Marshal(space.Budget)
+	if err != nil {
+		return err
+	}
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO collaboration_spaces (id, workspace_id, title, purpose, lifecycle_state, writer_participant, budget_json, metadata_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			workspace_id = excluded.workspace_id,
 			title = excluded.title,
 			purpose = excluded.purpose,
 			lifecycle_state = excluded.lifecycle_state,
 			writer_participant = excluded.writer_participant,
+			budget_json = excluded.budget_json,
 			metadata_json = excluded.metadata_json,
 			updated_at = excluded.updated_at;
-	`, space.ID, space.WorkspaceID, space.Title, space.Purpose, string(space.LifecycleState), space.WriterParticipant, string(metaJSON), space.CreatedAt, space.UpdatedAt)
+	`, space.ID, space.WorkspaceID, space.Title, space.Purpose, string(space.LifecycleState), space.WriterParticipant, string(budgetJSON), string(metaJSON), space.CreatedAt, space.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -1440,15 +1660,16 @@ func (s *SQLiteStore) SaveSpace(ctx context.Context, space *protocol.Collaborati
 	// Mirror to sessions table for backward compatibility
 	_, _ = tx.ExecContext(ctx, `
 		INSERT INTO sessions (id, repo_root, task, status, stop_reason, writer_participant, created_at, updated_at, budget_json, metadata_json)
-		VALUES (?, ?, ?, ?, '', ?, ?, ?, '{}', ?)
+		VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			repo_root = excluded.repo_root,
 			task = excluded.task,
 			status = excluded.status,
 			writer_participant = excluded.writer_participant,
+			budget_json = excluded.budget_json,
 			updated_at = excluded.updated_at,
 			metadata_json = excluded.metadata_json;
-	`, space.ID, space.WorkspaceID, space.Purpose, string(space.LifecycleState), space.WriterParticipant, space.CreatedAt, space.UpdatedAt, string(metaJSON))
+	`, space.ID, space.WorkspaceID, space.Purpose, string(space.LifecycleState), space.WriterParticipant, space.CreatedAt, space.UpdatedAt, string(budgetJSON), string(metaJSON))
 
 	// Save participants
 	for _, p := range space.Participants {
@@ -1490,7 +1711,7 @@ func (s *SQLiteStore) SaveSpace(ctx context.Context, space *protocol.Collaborati
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO channels (id, space_id, name, description, visibility, allowed_participants_json, allowed_capabilities_json, created_by, created_at, archived_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET
+			ON CONFLICT(space_id, id) DO UPDATE SET
 				name = excluded.name,
 				description = excluded.description,
 				visibility = excluded.visibility,
@@ -1511,13 +1732,13 @@ func (s *SQLiteStore) GetSpace(ctx context.Context, id string) (*protocol.Collab
 	defer s.mu.RUnlock()
 
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, workspace_id, title, purpose, lifecycle_state, writer_participant, metadata_json, created_at, updated_at
+		SELECT id, workspace_id, title, purpose, lifecycle_state, writer_participant, budget_json, metadata_json, created_at, updated_at
 		FROM collaboration_spaces WHERE id = ?;
 	`, id)
 
 	var space protocol.CollaborationSpace
-	var stateStr, metaJSON string
-	err := row.Scan(&space.ID, &space.WorkspaceID, &space.Title, &space.Purpose, &stateStr, &space.WriterParticipant, &metaJSON, &space.CreatedAt, &space.UpdatedAt)
+	var stateStr, budgetJSON, metaJSON string
+	err := row.Scan(&space.ID, &space.WorkspaceID, &space.Title, &space.Purpose, &stateStr, &space.WriterParticipant, &budgetJSON, &metaJSON, &space.CreatedAt, &space.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, &protocol.SpaceNotFoundError{SpaceID: id}
@@ -1525,6 +1746,7 @@ func (s *SQLiteStore) GetSpace(ctx context.Context, id string) (*protocol.Collab
 		return nil, err
 	}
 	space.LifecycleState = protocol.SpaceLifecycleState(stateStr)
+	_ = json.Unmarshal([]byte(budgetJSON), &space.Budget)
 	_ = json.Unmarshal([]byte(metaJSON), &space.Metadata)
 
 	// Fetch participants
@@ -1554,7 +1776,7 @@ func (s *SQLiteStore) GetSpace(ctx context.Context, id string) (*protocol.Collab
 
 	// Fetch channels
 	cRows, err := s.db.QueryContext(ctx, `
-		SELECT id, space_id, name, description, visibility, allowed_participants_json, allowed_capabilities_json, created_by, created_at, archived_at
+		SELECT id, name, description, visibility, allowed_participants_json, allowed_capabilities_json, created_by, created_at, archived_at
 		FROM channels WHERE space_id = ?;
 	`, id)
 	if err != nil {
@@ -1566,9 +1788,10 @@ func (s *SQLiteStore) GetSpace(ctx context.Context, id string) (*protocol.Collab
 	for cRows.Next() {
 		var ch protocol.Channel
 		var visStr, allowedPartsJSON, allowedCapsJSON string
-		if err := cRows.Scan(&ch.ID, &ch.SpaceID, &ch.Name, &ch.Description, &visStr, &allowedPartsJSON, &allowedCapsJSON, &ch.CreatedBy, &ch.CreatedAt, &ch.ArchivedAt); err != nil {
+		if err := cRows.Scan(&ch.ID, &ch.Name, &ch.Description, &visStr, &allowedPartsJSON, &allowedCapsJSON, &ch.CreatedBy, &ch.CreatedAt, &ch.ArchivedAt); err != nil {
 			return nil, err
 		}
+		ch.SpaceID = id
 		ch.Visibility = protocol.ChannelVisibility(visStr)
 		_ = json.Unmarshal([]byte(allowedPartsJSON), &ch.AllowedParticipants)
 		_ = json.Unmarshal([]byte(allowedCapsJSON), &ch.AllowedCapabilities)
@@ -1583,7 +1806,7 @@ func (s *SQLiteStore) ListSpaces(ctx context.Context) ([]*protocol.Collaboration
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, workspace_id, title, purpose, lifecycle_state, writer_participant, metadata_json, created_at, updated_at
+		SELECT id, workspace_id, title, purpose, lifecycle_state, writer_participant, budget_json, metadata_json, created_at, updated_at
 		FROM collaboration_spaces ORDER BY created_at DESC;
 	`)
 	if err != nil {
@@ -1594,11 +1817,12 @@ func (s *SQLiteStore) ListSpaces(ctx context.Context) ([]*protocol.Collaboration
 	var out []*protocol.CollaborationSpace
 	for rows.Next() {
 		var space protocol.CollaborationSpace
-		var stateStr, metaJSON string
-		if err := rows.Scan(&space.ID, &space.WorkspaceID, &space.Title, &space.Purpose, &stateStr, &space.WriterParticipant, &metaJSON, &space.CreatedAt, &space.UpdatedAt); err != nil {
+		var stateStr, budgetJSON, metaJSON string
+		if err := rows.Scan(&space.ID, &space.WorkspaceID, &space.Title, &space.Purpose, &stateStr, &space.WriterParticipant, &budgetJSON, &metaJSON, &space.CreatedAt, &space.UpdatedAt); err != nil {
 			return nil, err
 		}
 		space.LifecycleState = protocol.SpaceLifecycleState(stateStr)
+		_ = json.Unmarshal([]byte(budgetJSON), &space.Budget)
 		_ = json.Unmarshal([]byte(metaJSON), &space.Metadata)
 		out = append(out, &space)
 	}
@@ -1743,7 +1967,7 @@ func (s *SQLiteStore) CreateChannel(ctx context.Context, ch *protocol.Channel) e
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO channels (id, space_id, name, description, visibility, allowed_participants_json, allowed_capabilities_json, created_by, created_at, archived_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
+		ON CONFLICT(space_id, id) DO UPDATE SET
 			name = excluded.name,
 			description = excluded.description,
 			visibility = excluded.visibility,
@@ -1895,7 +2119,7 @@ func (s *SQLiteStore) SaveSubscription(ctx context.Context, sub *protocol.Subscr
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO subscriptions (id, space_id, participant_id, channels_json, event_types_json, scope_patterns_json, mode, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
+		ON CONFLICT(space_id, id) DO UPDATE SET
 			channels_json = excluded.channels_json,
 			event_types_json = excluded.event_types_json,
 			scope_patterns_json = excluded.scope_patterns_json,
@@ -1962,11 +2186,17 @@ func (s *SQLiteStore) GetParticipantSubscriptions(ctx context.Context, spaceID, 
 	return out, nil
 }
 
-func (s *SQLiteStore) DeleteSubscription(ctx context.Context, id string) error {
+func (s *SQLiteStore) DeleteSubscription(ctx context.Context, spaceID, id string) error {
+	if spaceID == "" {
+		return errors.New("space_id is required to delete subscription")
+	}
+	if id == "" {
+		return errors.New("id is required to delete subscription")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE id = ?;`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE space_id = ? AND id = ?;`, spaceID, id)
 	return err
 }
 
@@ -2049,7 +2279,14 @@ func (s *SQLiteStore) SaveDecision(ctx context.Context, d *protocol.Decision) er
 			supersedes = excluded.supersedes,
 			updated_at = excluded.updated_at;
 	`, d.ID, d.SpaceID, d.Title, d.Statement, d.Rationale, string(evRefsJSON), d.ProposedBy, string(acceptedJSON), string(d.Status), d.Supersedes, d.CreatedAt, d.UpdatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(d)
+	return s.appendKnowledge(ctx, knowledge.Record{
+		ID: d.ID, Timestamp: d.UpdatedAt, SpaceID: d.SpaceID, Kind: "decision",
+		From: d.ProposedBy, Text: d.Title + " " + d.Statement + " " + d.Rationale, Payload: payload,
+	})
 }
 
 func (s *SQLiteStore) GetDecision(ctx context.Context, spaceID, id string) (*protocol.Decision, error) {

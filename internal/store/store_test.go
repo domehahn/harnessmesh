@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -162,13 +163,27 @@ func TestSQLiteStoreLifecycle(t *testing.T) {
 		t.Fatalf("expected finding to be dismissed after rejected resolution, got status=%v", fAfterResolution.Status)
 	}
 
-	// 8. Idempotency test
+	// 8. Idempotency test (session-scoped)
 	if err := store.SaveIdempotency(ctx, "idem_123", sessionID, `{"status": "ok"}`); err != nil {
 		t.Fatalf("SaveIdempotency failed: %v", err)
 	}
-	resJSON, err := store.GetIdempotency(ctx, "idem_123")
+	resJSON, err := store.GetIdempotency(ctx, sessionID, "idem_123")
 	if err != nil || resJSON != `{"status": "ok"}` {
 		t.Fatalf("GetIdempotency failed: res=%s, err=%v", resJSON, err)
+	}
+
+	// Same key in another session should be isolated
+	otherSession := "session_other_999"
+	if err := store.SaveIdempotency(ctx, "idem_123", otherSession, `{"status": "other"}`); err != nil {
+		t.Fatalf("SaveIdempotency other failed: %v", err)
+	}
+	resOther, err := store.GetIdempotency(ctx, otherSession, "idem_123")
+	if err != nil || resOther != `{"status": "other"}` {
+		t.Fatalf("GetIdempotency other failed: res=%s, err=%v", resOther, err)
+	}
+	resOriginal, err := store.GetIdempotency(ctx, sessionID, "idem_123")
+	if err != nil || resOriginal != `{"status": "ok"}` {
+		t.Fatalf("original session idempotency corrupted by other session: %s", resOriginal)
 	}
 }
 
@@ -513,7 +528,7 @@ func TestSQLiteStore_V03Collaboration(t *testing.T) {
 		t.Fatalf("GetParticipantSubscriptions failed: err=%v, count=%d", err, len(pSubs))
 	}
 
-	if err := db.DeleteSubscription(ctx, "sub_codex_sec"); err != nil {
+	if err := db.DeleteSubscription(ctx, spaceID, "sub_codex_sec"); err != nil {
 		t.Fatalf("DeleteSubscription failed: %v", err)
 	}
 	subsAfter, _ := db.GetSubscriptions(ctx, spaceID)
@@ -597,5 +612,321 @@ func TestSQLiteStore_V03Collaboration(t *testing.T) {
 	summaries, err := db.GetSummaries(ctx, spaceID, "th_001")
 	if err != nil || len(summaries) != 1 {
 		t.Fatalf("GetSummaries failed: err=%v, count=%d", err, len(summaries))
+	}
+}
+
+func TestStore_MultiSpaceCompositePK_Isolation(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenSQLite(filepath.Join(tmpDir, "collab_iso.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Space A
+	spaceA := &protocol.CollaborationSpace{
+		ID:             "space_alpha",
+		Title:          "Alpha Space",
+		WorkspaceID:    "/tmp/alpha",
+		LifecycleState: protocol.SpaceStateActive,
+		Channels: map[string]protocol.Channel{
+			"general": {
+				ID:         "general",
+				SpaceID:    "space_alpha",
+				Name:       "alpha general",
+				Visibility: protocol.ChannelVisibilityAll,
+			},
+		},
+	}
+	if err := db.SaveSpace(ctx, spaceA); err != nil {
+		t.Fatalf("SaveSpace alpha failed: %v", err)
+	}
+
+	// Space B
+	spaceB := &protocol.CollaborationSpace{
+		ID:             "space_beta",
+		Title:          "Beta Space",
+		WorkspaceID:    "/tmp/beta",
+		LifecycleState: protocol.SpaceStateActive,
+		Channels: map[string]protocol.Channel{
+			"general": {
+				ID:         "general",
+				SpaceID:    "space_beta",
+				Name:       "beta general",
+				Visibility: protocol.ChannelVisibilityAll,
+			},
+		},
+	}
+	if err := db.SaveSpace(ctx, spaceB); err != nil {
+		t.Fatalf("SaveSpace beta failed: %v", err)
+	}
+
+	// Subscriptions with identical ID across different spaces
+	subA := &protocol.Subscription{
+		ID:            "sub_claude_default",
+		SpaceID:       "space_alpha",
+		ParticipantID: "claude",
+		Channels:      []string{"general"},
+		EventTypes:    []string{protocol.EventRepoChanged},
+	}
+	if err := db.SaveSubscription(ctx, subA); err != nil {
+		t.Fatalf("SaveSubscription A failed: %v", err)
+	}
+
+	subB := &protocol.Subscription{
+		ID:            "sub_claude_default",
+		SpaceID:       "space_beta",
+		ParticipantID: "claude",
+		Channels:      []string{"general"},
+		EventTypes:    []string{protocol.EventCommitCreated},
+	}
+	if err := db.SaveSubscription(ctx, subB); err != nil {
+		t.Fatalf("SaveSubscription B failed: %v", err)
+	}
+
+	// Verify channels in both spaces remain isolated
+	chA, err := db.GetChannel(ctx, "space_alpha", "general")
+	if err != nil || chA == nil || chA.Name != "alpha general" {
+		t.Fatalf("unexpected channel A: err=%v, ch=%+v", err, chA)
+	}
+
+	chB, err := db.GetChannel(ctx, "space_beta", "general")
+	if err != nil || chB == nil || chB.Name != "beta general" {
+		t.Fatalf("unexpected channel B: err=%v, ch=%+v", err, chB)
+	}
+
+	// Verify subscriptions in both spaces remain isolated
+	subsA, err := db.GetParticipantSubscriptions(ctx, "space_alpha", "claude")
+	if err != nil || len(subsA) != 1 || subsA[0].EventTypes[0] != protocol.EventRepoChanged {
+		t.Fatalf("unexpected subs A: err=%v, subs=%+v", err, subsA)
+	}
+
+	subsB, err := db.GetParticipantSubscriptions(ctx, "space_beta", "claude")
+	if err != nil || len(subsB) != 1 || subsB[0].EventTypes[0] != protocol.EventCommitCreated {
+		t.Fatalf("unexpected subs B: err=%v, subs=%+v", err, subsB)
+	}
+
+	// Verify DeleteSubscription scoped to space_alpha does not touch space_beta
+	if err := db.DeleteSubscription(ctx, "space_alpha", "sub_claude_default"); err != nil {
+		t.Fatalf("DeleteSubscription alpha failed: %v", err)
+	}
+	subsAAfter, _ := db.GetParticipantSubscriptions(ctx, "space_alpha", "claude")
+	if len(subsAAfter) != 0 {
+		t.Fatalf("expected 0 subs in alpha after delete, got %d", len(subsAAfter))
+	}
+	subsBAfter, _ := db.GetParticipantSubscriptions(ctx, "space_beta", "claude")
+	if len(subsBAfter) != 1 {
+		t.Fatalf("expected 1 sub in beta preserved after alpha delete, got %d", len(subsBAfter))
+	}
+}
+
+func TestMigration_V5ToV7_PreservesThreadsAndChannels(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "v5_upgrade.db")
+
+	// 1. Manually construct a v5 database with original v5 channels and threads foreign keys
+	rawDB, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=ON")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initSQL := `
+		CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL);
+		INSERT INTO schema_migrations (version, applied_at) VALUES (1, CURRENT_TIMESTAMP), (2, CURRENT_TIMESTAMP), (3, CURRENT_TIMESTAMP), (4, CURRENT_TIMESTAMP), (5, CURRENT_TIMESTAMP), (6, CURRENT_TIMESTAMP);
+
+		CREATE TABLE collaboration_spaces (
+			id TEXT PRIMARY KEY,
+			workspace_id TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL,
+			purpose TEXT NOT NULL DEFAULT '',
+			lifecycle_state TEXT NOT NULL DEFAULT 'active',
+			writer_participant TEXT NOT NULL DEFAULT '',
+			budget_json TEXT NOT NULL DEFAULT '{}',
+			metadata_json TEXT NOT NULL DEFAULT '{}',
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		);
+
+		CREATE TABLE channels (
+			id TEXT PRIMARY KEY,
+			space_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			visibility TEXT NOT NULL DEFAULT 'all_participants',
+			allowed_participants_json TEXT NOT NULL DEFAULT '[]',
+			allowed_capabilities_json TEXT NOT NULL DEFAULT '[]',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL,
+			archived_at TIMESTAMP,
+			FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE
+		);
+
+		CREATE TABLE threads (
+			id TEXT PRIMARY KEY,
+			space_id TEXT NOT NULL,
+			channel_id TEXT NOT NULL,
+			root_message_id TEXT NOT NULL,
+			title TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'open',
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE,
+			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		);
+
+		CREATE TABLE subscriptions (
+			id TEXT PRIMARY KEY,
+			space_id TEXT NOT NULL,
+			participant_id TEXT NOT NULL,
+			channels_json TEXT NOT NULL DEFAULT '[]',
+			event_types_json TEXT NOT NULL DEFAULT '[]',
+			scope_patterns_json TEXT NOT NULL DEFAULT '[]',
+			mode TEXT NOT NULL DEFAULT 'active',
+			created_at TIMESTAMP NOT NULL,
+			FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE
+		);
+
+		INSERT INTO collaboration_spaces (id, workspace_id, title, purpose, lifecycle_state, writer_participant, budget_json, metadata_json, created_at, updated_at)
+		VALUES ('sp_test', '.', 'Test Space', 'Test', 'active', 'user', '{}', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+		INSERT INTO channels (id, space_id, name, description, visibility, created_by, created_at)
+		VALUES ('general', 'sp_test', 'general', 'General channel', 'all_participants', 'system', CURRENT_TIMESTAMP);
+
+		INSERT INTO threads (id, space_id, channel_id, root_message_id, title, status, created_at, updated_at)
+		VALUES ('th_1', 'sp_test', 'general', 'msg_1', 'Important Thread', 'open', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+		INSERT INTO subscriptions (id, space_id, participant_id, channels_json, event_types_json, scope_patterns_json, mode, created_at)
+		VALUES ('sub_1', 'sp_test', 'user', '["general"]', '["repository.changed"]', '[]', 'active', CURRENT_TIMESTAMP);
+	`
+	if _, err := rawDB.Exec(initSQL); err != nil {
+		rawDB.Close()
+		t.Fatalf("failed to setup v5/v6 database: %v", err)
+	}
+	rawDB.Close()
+
+	// 2. Open with HarnessMesh OpenSQLite, which runs Migration 7
+	st, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite failed during migration: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+
+	// Verify thread still exists (not cascade deleted)
+	th, err := st.GetThread(ctx, "th_1")
+	if err != nil || th == nil || th.Title != "Important Thread" {
+		t.Fatalf("thread th_1 lost or corrupt after migration: err=%v, th=%+v", err, th)
+	}
+
+	// Verify channel still exists
+	ch, err := st.GetChannel(ctx, "sp_test", "general")
+	if err != nil || ch == nil || ch.Name != "general" {
+		t.Fatalf("channel general lost or corrupt after migration: err=%v, ch=%+v", err, ch)
+	}
+
+	// Verify subscription still exists
+	subs, err := st.GetParticipantSubscriptions(ctx, "sp_test", "user")
+	if err != nil || len(subs) != 1 || subs[0].ID != "sub_1" {
+		t.Fatalf("subscription sub_1 lost or corrupt after migration: err=%v, subs=%+v", err, subs)
+	}
+
+	// Verify new threads can be created referencing the composite channel without FK error
+	newTh := &protocol.Thread{
+		ID:            "th_2",
+		SpaceID:       "sp_test",
+		ChannelID:     "general",
+		RootMessageID: "msg_2",
+		Title:         "Second Thread Post-Migration",
+		Status:        protocol.ThreadStatusOpen,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if err := st.CreateThread(ctx, newTh); err != nil {
+		t.Fatalf("CreateThread failed post-migration: %v", err)
+	}
+}
+
+func TestStore_DeleteSubscription_RequiresSpaceID(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenSQLite(filepath.Join(tmpDir, "subs_delete.db"))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	// Deleting with empty spaceID must fail
+	if err := db.DeleteSubscription(ctx, "", "sub_123"); err == nil {
+		t.Fatal("expected error when deleting subscription with empty space_id, got nil")
+	}
+
+	// Deleting with empty id must fail
+	if err := db.DeleteSubscription(ctx, "sp_test", ""); err == nil {
+		t.Fatal("expected error when deleting subscription with empty id, got nil")
+	}
+}
+
+func TestStore_AtomicUpdateBudget(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenSQLite(filepath.Join(tmpDir, "budget_atomic.db"))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	// 1. Nonexistent ID fails
+	err = db.UpdateBudget(ctx, "nonexistent", protocol.BudgetStatus{Known: true, MaxTotalTokens: 100})
+	if err == nil {
+		t.Fatal("expected error updating budget for nonexistent session/space, got nil")
+	}
+
+	// 2. Create space (which mirrors to sessions)
+	sp := &protocol.CollaborationSpace{
+		ID:             "sp_atomic_1",
+		WorkspaceID:    ".",
+		Title:          "Atomic Space",
+		LifecycleState: protocol.SpaceStateActive,
+		Budget: protocol.BudgetStatus{
+			Known:          true,
+			MaxTotalTokens: 1000,
+			UsedTotalTokens: 0,
+		},
+	}
+	if err := db.SaveSpace(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Atomically update budget
+	newBudget := protocol.BudgetStatus{
+		Known:           true,
+		MaxTotalTokens:  1000,
+		UsedTotalTokens: 350,
+		UsedInputTokens: 150,
+		UsedOutputTokens: 200,
+		UsedCostUSD:     0.02,
+	}
+	if err := db.UpdateBudget(ctx, "sp_atomic_1", newBudget); err != nil {
+		t.Fatalf("UpdateBudget failed: %v", err)
+	}
+
+	// 4. Verify both space and session reflect updated budget
+	spAfter, err := db.GetSpace(ctx, "sp_atomic_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spAfter.Budget.UsedTotalTokens != 350 || spAfter.Budget.UsedOutputTokens != 200 {
+		t.Fatalf("space budget not updated: %+v", spAfter.Budget)
+	}
+
+	sessAfter, err := db.GetSession(ctx, "sp_atomic_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessAfter.Budget.UsedTotalTokens != 350 || sessAfter.Budget.UsedOutputTokens != 200 {
+		t.Fatalf("session budget not updated: %+v", sessAfter.Budget)
 	}
 }

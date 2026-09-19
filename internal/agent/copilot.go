@@ -45,7 +45,26 @@ func (a *CopilotCLIAdapter) Name() string {
 }
 
 func (a *CopilotCLIAdapter) Capabilities() config.AgentCapabilities {
-	return a.cfg.Capabilities
+	caps := a.cfg.Capabilities
+	caps.HardTokenLimitEnforced = false
+	return caps
+}
+
+func (a *CopilotCLIAdapter) buildArgs(req InvokeRequest, useGh bool) []string {
+	var args []string
+	if useGh {
+		args = append(args, "copilot", "--", "-p", req.Prompt)
+		if a.cfg.Writable {
+			args = append(args, "--allow-all-tools", "--yes")
+		}
+	} else {
+		args = append(args, "-p", req.Prompt)
+		if a.cfg.Writable {
+			args = append(args, "--allow-all-tools", "--yes")
+		}
+	}
+	args = append(args, a.cfg.ExtraArgs...)
+	return args
 }
 
 func (a *CopilotCLIAdapter) findBinary() (binPath string, useGh bool, err error) {
@@ -125,26 +144,15 @@ func (a *CopilotCLIAdapter) Invoke(parent context.Context, req InvokeRequest) (I
 		}
 	}
 
-	var args []string
-	if useGh {
-		args = append(args, "copilot", "--", "-p", req.Prompt)
-		if a.cfg.Writable {
-			args = append(args, "--allow-all-tools", "--yes")
-		}
-	} else {
-		args = append(args, "-p", req.Prompt)
-		if a.cfg.Writable {
-			args = append(args, "--allow-all-tools", "--yes")
-		}
-	}
-	args = append(args, a.cfg.ExtraArgs...)
+	args := a.buildArgs(req, useGh)
 
 	dir := req.Repo
 	if a.cfg.WorkingDir != "" {
 		dir = a.cfg.WorkingDir
 	}
 
-	run, runErr := executil.Run(ctx, dir, agentEnv(a.cfg, a.switchyard), "", bin, args...)
+	env := agentEnv(a.cfg, a.switchyard)
+	run, runErr := executil.Run(ctx, dir, env, "", bin, args...)
 
 	sessionID := req.SessionID
 	if sessionID == "" {
