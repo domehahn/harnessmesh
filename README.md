@@ -29,7 +29,7 @@ HarnessMesh is the **broker, control plane, and collaboration fabric** that enab
 ```text
 HarnessMesh (Agent Collaboration Plane)
     ├── Collaboration Control Plane & Session Broker
-    ├── Model Context Protocol (MCP) Server (20 Tools)
+    ├── Model Context Protocol (MCP) Server (23 Tools)
     ├── Peer Message Bus (`harnessmesh.peer/v1`)
     ├── Dynamic Adapter Registry & Lifecycle Manager
     ├── Capability-Based Peer Selection & Routing
@@ -80,7 +80,7 @@ Transforms HarnessMesh into a persistent, multi-channel, event-driven collaborat
 - **Verifiable Decision Records**: Formal architectural decisions linked to reproducible evidence.
 - **Human Supervision Controls**: Real-time space pause, resume, and emergency stop.
 
-### 2. Standards-Compliant MCP Server (20 Tools)
+### 2. Standards-Compliant MCP Server (23 Tools)
 Exposes a Model Context Protocol (MCP) server over standard I/O (`stdio`):
 
 #### Collaboration Space Tools (9 Tools)
@@ -181,6 +181,49 @@ bin/harnessmesh mcp install antigravity
 # For GitHub Copilot CLI (.copilot/mcp.json)
 bin/harnessmesh mcp install copilot
 ```
+
+### Reuse HarnessMesh in Any Session
+
+Install the MCP server with user scope once so it is available in new projects and future VS Code conversations:
+
+```bash
+bin/harnessmesh mcp install claude --scope user
+bin/harnessmesh mcp install codex --scope user
+bin/harnessmesh mcp install antigravity --scope user
+bin/harnessmesh mcp install copilot --scope user
+```
+
+Install only the harnesses you actually use. Restart the harness or open a new VS Code conversation after installation. In every connected conversation, the harness can use the same persistent archive through:
+
+```text
+knowledge.search   Search previous discussions, findings, evidence, decisions, and events.
+knowledge.context  Return bounded search results formatted as RAG context.
+knowledge.stats    Show archive path and compressed size.
+```
+
+Example instructions to give an agent at the beginning of a new conversation:
+
+```text
+Before proposing a solution, search HarnessMesh knowledge for related prior decisions,
+findings, failed approaches, and evidence. Use knowledge.context with the current task
+and relevant repository paths, then cite the retrieved record IDs in your reasoning.
+Publish important conclusions, problems, evidence, and decisions back to HarnessMesh.
+```
+
+The default persistent locations are:
+
+```text
+~/.harnessmesh/harnessmesh.db
+~/.harnessmesh/knowledge.hmkz
+```
+
+If the user home directory is not writable, HarnessMesh falls back to `.harnessmesh/` in the current working directory. Override the archive location with `HARNESSMESH_KNOWLEDGE_PATH`:
+
+```bash
+export HARNESSMESH_KNOWLEDGE_PATH="$HOME/.harnessmesh/knowledge.hmkz"
+```
+
+The archive is shared by all local HarnessMesh MCP sessions for that user. A plain Claude or ChatGPT conversation that is not connected to the HarnessMesh MCP server is not captured automatically. ChatGPT in a separate web conversation also cannot read the local archive unless it is connected through a compatible local or remote MCP integration. In that case, use a connected harness or `knowledge.context` as the bridge instead of copying transcripts manually.
 
 ---
 
