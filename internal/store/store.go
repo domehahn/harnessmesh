@@ -106,6 +106,28 @@ type Store interface {
 	GetEventDelivery(ctx context.Context, eventID, participantID string) (*protocol.EventDelivery, error)
 	UpdateEventDeliveryStatus(ctx context.Context, id string, status protocol.DeliveryStatus, resultMsgID, skipReason string) error
 
+	EnqueueRetry(ctx context.Context, item *RetryItem) error
+	ClaimRetries(ctx context.Context, now time.Time, limit int) ([]RetryItem, error)
+	CompleteRetry(ctx context.Context, id string, retry bool, nextAttempt time.Time, lastError string) error
+	DeferRetry(ctx context.Context, id string, nextAttempt time.Time, lastError string) error
+	ListRetries(ctx context.Context, limit int) ([]RetryItem, error)
+
+	SaveAgentHealth(ctx context.Context, health *protocol.AgentHealth) error
+	GetAgentHealth(ctx context.Context, agent string) (*protocol.AgentHealth, error)
+	ListAgentHealth(ctx context.Context) ([]protocol.AgentHealth, error)
+	SaveApproval(ctx context.Context, approval *protocol.ApprovalRequest) error
+	GetApproval(ctx context.Context, id string) (*protocol.ApprovalRequest, error)
+	ListApprovals(ctx context.Context, status protocol.ApprovalStatus) ([]protocol.ApprovalRequest, error)
+	ExpireApprovals(ctx context.Context, before time.Time) (int64, error)
+	ListDeadLetters(ctx context.Context, limit int) ([]DeadLetter, error)
+	RequeueDeadLetter(ctx context.Context, id string, nextAttempt time.Time, priority int) error
+	GetGlobalBudget(ctx context.Context, scope string) (*BudgetLedger, error)
+	UpdateGlobalBudget(ctx context.Context, ledger *BudgetLedger) error
+	AcquireLease(ctx context.Context, name, owner string, ttl time.Duration) (bool, error)
+	ReleaseLease(ctx context.Context, name, owner string) error
+	SaveJobDependency(ctx context.Context, dependency *JobDependency) error
+	ListJobDependencies(ctx context.Context, jobID string) ([]JobDependency, error)
+
 	SaveDecision(ctx context.Context, d *protocol.Decision) error
 	GetDecision(ctx context.Context, spaceID, id string) (*protocol.Decision, error)
 	ListDecisions(ctx context.Context, spaceID string) ([]protocol.Decision, error)
@@ -125,6 +147,21 @@ type EventRecord struct {
 	EventType string         `json:"event_type"`
 	Timestamp time.Time      `json:"timestamp"`
 	Payload   map[string]any `json:"payload,omitempty"`
+}
+
+// RetryItem is a durable delivery outbox entry. Payload is the original
+// message body so a worker can retry without relying on process memory.
+type RetryItem struct {
+	ID            string          `json:"id"`
+	EventID       string          `json:"event_id"`
+	SpaceID       string          `json:"space_id"`
+	ParticipantID string          `json:"participant_id"`
+	Payload       json.RawMessage `json:"payload"`
+	Attempt       int             `json:"attempt"`
+	Priority      int             `json:"priority,omitempty"`
+	NextAttempt   time.Time       `json:"next_attempt"`
+	LastError     string          `json:"last_error,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 type RoutingDecisionRecord struct {
@@ -155,6 +192,34 @@ type UsageRecord struct {
 	SelectionReason     string    `json:"selection_reason,omitempty"`
 	CostSource          string    `json:"cost_source,omitempty"` // "provider", "configured", "switchyard", "unknown"
 	Timestamp           time.Time `json:"timestamp"`
+}
+
+type DeadLetter struct {
+	ID            string          `json:"id"`
+	EventID       string          `json:"event_id"`
+	SpaceID       string          `json:"space_id"`
+	ParticipantID string          `json:"participant_id"`
+	Payload       json.RawMessage `json:"payload"`
+	Attempt       int             `json:"attempt"`
+	Error         string          `json:"error"`
+	CreatedAt     time.Time       `json:"created_at"`
+	DeadAt        time.Time       `json:"dead_at"`
+}
+
+type BudgetLedger struct {
+	Scope       string    `json:"scope"`
+	UsedTokens  int64     `json:"used_tokens"`
+	UsedCostUSD float64   `json:"used_cost_usd"`
+	MaxTokens   int64     `json:"max_tokens,omitempty"`
+	MaxCostUSD  float64   `json:"max_cost_usd,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type JobDependency struct {
+	JobID     string    `json:"job_id"`
+	DependsOn string    `json:"depends_on"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type SQLiteStore struct {
@@ -672,6 +737,76 @@ func (s *SQLiteStore) migrate() error {
 				DROP TABLE IF EXISTS subscriptions;
 				ALTER TABLE subscriptions_v2 RENAME TO subscriptions;
 				CREATE INDEX IF NOT EXISTS idx_subscriptions_space_part ON subscriptions(space_id, participant_id);
+			`,
+		},
+		{
+			version: 8,
+			sql: `
+			CREATE TABLE IF NOT EXISTS delivery_retry_outbox (
+					id TEXT PRIMARY KEY,
+					event_id TEXT NOT NULL,
+					space_id TEXT NOT NULL,
+					participant_id TEXT NOT NULL,
+					payload_json TEXT NOT NULL DEFAULT '{}',
+					attempt INTEGER NOT NULL DEFAULT 0,
+					next_attempt TIMESTAMP NOT NULL,
+					last_error TEXT NOT NULL DEFAULT '',
+					created_at TIMESTAMP NOT NULL,
+					FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_retry_outbox_due ON delivery_retry_outbox(next_attempt, attempt);
+				CREATE TABLE IF NOT EXISTS delivery_dead_letters (
+					id TEXT PRIMARY KEY,
+					event_id TEXT NOT NULL,
+					space_id TEXT NOT NULL,
+					participant_id TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					attempt INTEGER NOT NULL,
+					error TEXT NOT NULL,
+					created_at TIMESTAMP NOT NULL,
+					dead_at TIMESTAMP NOT NULL
+				);
+			`,
+		},
+		{
+			version: 9,
+			sql: `
+				ALTER TABLE delivery_retry_outbox ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+				CREATE INDEX IF NOT EXISTS idx_retry_outbox_priority ON delivery_retry_outbox(priority DESC, next_attempt, attempt);
+				CREATE TABLE IF NOT EXISTS agent_health (
+					agent TEXT PRIMARY KEY,
+					adapter TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'unknown',
+					consecutive_failures INTEGER NOT NULL DEFAULT 0, total_invocations INTEGER NOT NULL DEFAULT 0,
+					successful INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+					last_error TEXT NOT NULL DEFAULT '', last_success TIMESTAMP, last_failure TIMESTAMP,
+					quota_reset_at TIMESTAMP, circuit_open_until TIMESTAMP, updated_at TIMESTAMP NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS approval_requests (
+					id TEXT PRIMARY KEY, session_id TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL,
+					reason TEXT NOT NULL, estimated_cost_usd REAL NOT NULL DEFAULT 0,
+					estimated_tokens INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
+					requested_by TEXT NOT NULL DEFAULT '', decided_by TEXT NOT NULL DEFAULT '',
+					created_at TIMESTAMP NOT NULL, decided_at TIMESTAMP
+				);
+				CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status, created_at);
+			`,
+		},
+		{
+			version: 10,
+			sql: `
+				CREATE TABLE IF NOT EXISTS global_budgets (
+					scope TEXT PRIMARY KEY, used_tokens INTEGER NOT NULL DEFAULT 0,
+					used_cost_usd REAL NOT NULL DEFAULT 0, max_tokens INTEGER NOT NULL DEFAULT 0,
+					max_cost_usd REAL NOT NULL DEFAULT 0, updated_at TIMESTAMP NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS control_leases (
+					name TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at TIMESTAMP NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS job_dependencies (
+					job_id TEXT NOT NULL, depends_on TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+					created_at TIMESTAMP NOT NULL, PRIMARY KEY(job_id, depends_on)
+				);
+				CREATE INDEX IF NOT EXISTS idx_job_dependencies_job ON job_dependencies(job_id, status);
 			`,
 		},
 	}
@@ -2247,10 +2382,425 @@ func (s *SQLiteStore) UpdateEventDeliveryStatus(ctx context.Context, id string, 
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE event_deliveries
-		SET status = ?, result_message_id = ?, skip_reason = ?, completed_at = ?
+		SET status = ?, result_message_id = ?, skip_reason = ?,
+		    completed_at = CASE WHEN ? IN ('pending', 'processing') THEN NULL ELSE ? END
 		WHERE id = ?;
-	`, string(status), resultMsgID, skipReason, now, id)
+	`, string(status), resultMsgID, skipReason, string(status), now, id)
 	return err
+}
+
+func (s *SQLiteStore) EnqueueRetry(ctx context.Context, item *RetryItem) error {
+	if item == nil || item.ID == "" {
+		return errors.New("retry item id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if item.NextAttempt.IsZero() {
+		item.NextAttempt = time.Now().UTC().Add(5 * time.Second)
+	}
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = time.Now().UTC()
+	}
+	if len(item.Payload) == 0 {
+		item.Payload = json.RawMessage(`{}`)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO delivery_retry_outbox (id, event_id, space_id, participant_id, payload_json, attempt, priority, next_attempt, last_error, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			payload_json = excluded.payload_json,
+			attempt = excluded.attempt,
+			priority = excluded.priority,
+			next_attempt = excluded.next_attempt,
+			last_error = excluded.last_error;
+	`, item.ID, item.EventID, item.SpaceID, item.ParticipantID, string(item.Payload), item.Attempt, item.Priority, item.NextAttempt, item.LastError, item.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) ClaimRetries(ctx context.Context, now time.Time, limit int) ([]RetryItem, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, event_id, space_id, participant_id, payload_json, attempt, priority, next_attempt, last_error, created_at
+		FROM delivery_retry_outbox WHERE next_attempt <= ? ORDER BY priority DESC, next_attempt LIMIT ?;
+	`, now.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RetryItem
+	for rows.Next() {
+		var item RetryItem
+		var payload string
+		if err := rows.Scan(&item.ID, &item.EventID, &item.SpaceID, &item.ParticipantID, &payload, &item.Attempt, &item.Priority, &item.NextAttempt, &item.LastError, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.Payload = json.RawMessage(payload)
+		item.Attempt++
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if _, err := tx.ExecContext(ctx, `UPDATE delivery_retry_outbox SET attempt = ?, next_attempt = ? WHERE id = ?`, item.Attempt, time.Now().UTC().Add(5*time.Minute), item.ID); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *SQLiteStore) CompleteRetry(ctx context.Context, id string, retry bool, nextAttempt time.Time, lastError string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !retry {
+		if lastError == "" {
+			_, err := s.db.ExecContext(ctx, `DELETE FROM delivery_retry_outbox WHERE id = ?`, id)
+			return err
+		}
+		_, err := s.db.ExecContext(ctx, `
+			INSERT OR REPLACE INTO delivery_dead_letters (id, event_id, space_id, participant_id, payload_json, attempt, error, created_at, dead_at)
+			SELECT id, event_id, space_id, participant_id, payload_json, attempt, ?, created_at, ?
+			FROM delivery_retry_outbox WHERE id = ?;
+			`, lastError, time.Now().UTC(), id)
+		if err != nil {
+			return err
+		}
+		_, err = s.db.ExecContext(ctx, `DELETE FROM delivery_retry_outbox WHERE id = ?`, id)
+		return err
+	}
+	if nextAttempt.IsZero() {
+		nextAttempt = time.Now().UTC().Add(5 * time.Minute)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE delivery_retry_outbox SET next_attempt = ?, last_error = ? WHERE id = ?`, nextAttempt, lastError, id)
+	return err
+}
+
+// DeferRetry postpones a retry without consuming an attempt. This is used for
+// provider credit/session limits: waiting for a reset is not a failed retry.
+func (s *SQLiteStore) DeferRetry(ctx context.Context, id string, nextAttempt time.Time, lastError string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if nextAttempt.IsZero() {
+		nextAttempt = time.Now().UTC().Add(15 * time.Minute)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE delivery_retry_outbox
+		SET attempt = CASE WHEN attempt > 0 THEN attempt - 1 ELSE 0 END,
+		    next_attempt = ?, last_error = ?
+		WHERE id = ?`, nextAttempt, lastError, id)
+	return err
+}
+
+func (s *SQLiteStore) ListRetries(ctx context.Context, limit int) ([]RetryItem, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT id,event_id,space_id,participant_id,payload_json,attempt,priority,next_attempt,last_error,created_at FROM delivery_retry_outbox ORDER BY priority DESC,next_attempt LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RetryItem
+	for rows.Next() {
+		var item RetryItem
+		var payload string
+		if err := rows.Scan(&item.ID, &item.EventID, &item.SpaceID, &item.ParticipantID, &payload, &item.Attempt, &item.Priority, &item.NextAttempt, &item.LastError, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.Payload = json.RawMessage(payload)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func nullableTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+func (s *SQLiteStore) SaveAgentHealth(ctx context.Context, h *protocol.AgentHealth) error {
+	if h == nil || h.Agent == "" {
+		return errors.New("agent health agent is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h.UpdatedAt.IsZero() {
+		h.UpdatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO agent_health(agent,adapter,status,consecutive_failures,total_invocations,successful,failed,last_error,last_success,last_failure,quota_reset_at,circuit_open_until,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(agent) DO UPDATE SET adapter=excluded.adapter,status=excluded.status,consecutive_failures=excluded.consecutive_failures,total_invocations=excluded.total_invocations,successful=excluded.successful,failed=excluded.failed,last_error=excluded.last_error,last_success=excluded.last_success,last_failure=excluded.last_failure,quota_reset_at=excluded.quota_reset_at,circuit_open_until=excluded.circuit_open_until,updated_at=excluded.updated_at`, h.Agent, h.Adapter, string(h.Status), h.ConsecutiveFails, h.TotalInvocations, h.Successful, h.Failed, h.LastError, nullableTime(h.LastSuccess), nullableTime(h.LastFailure), nullableTime(h.QuotaResetAt), nullableTime(h.CircuitOpenUntil), h.UpdatedAt)
+	return err
+}
+
+func scanAgentHealth(row interface{ Scan(...any) error }) (*protocol.AgentHealth, error) {
+	var h protocol.AgentHealth
+	var status string
+	var lastSuccess, lastFailure, quotaReset, circuitUntil sql.NullTime
+	if err := row.Scan(&h.Agent, &h.Adapter, &status, &h.ConsecutiveFails, &h.TotalInvocations, &h.Successful, &h.Failed, &h.LastError, &lastSuccess, &lastFailure, &quotaReset, &circuitUntil, &h.UpdatedAt); err != nil {
+		return nil, err
+	}
+	h.Status = protocol.AgentHealthStatus(status)
+	if lastSuccess.Valid {
+		h.LastSuccess = lastSuccess.Time
+	}
+	if lastFailure.Valid {
+		h.LastFailure = lastFailure.Time
+	}
+	if quotaReset.Valid {
+		h.QuotaResetAt = quotaReset.Time
+	}
+	if circuitUntil.Valid {
+		h.CircuitOpenUntil = circuitUntil.Time
+	}
+	return &h, nil
+}
+
+func (s *SQLiteStore) GetAgentHealth(ctx context.Context, agent string) (*protocol.AgentHealth, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	h, err := scanAgentHealth(s.db.QueryRowContext(ctx, `SELECT agent,adapter,status,consecutive_failures,total_invocations,successful,failed,last_error,last_success,last_failure,quota_reset_at,circuit_open_until,updated_at FROM agent_health WHERE agent=?`, agent))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return h, err
+}
+
+func (s *SQLiteStore) ListAgentHealth(ctx context.Context) ([]protocol.AgentHealth, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT agent,adapter,status,consecutive_failures,total_invocations,successful,failed,last_error,last_success,last_failure,quota_reset_at,circuit_open_until,updated_at FROM agent_health ORDER BY agent`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []protocol.AgentHealth
+	for rows.Next() {
+		h, e := scanAgentHealth(rows)
+		if e != nil {
+			return nil, e
+		}
+		out = append(out, *h)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) SaveApproval(ctx context.Context, a *protocol.ApprovalRequest) error {
+	if a == nil || a.ID == "" {
+		return errors.New("approval id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO approval_requests(id,session_id,agent,reason,estimated_cost_usd,estimated_tokens,status,requested_by,decided_by,created_at,decided_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,decided_by=excluded.decided_by,decided_at=excluded.decided_at`, a.ID, a.SessionID, a.Agent, a.Reason, a.EstimatedCostUSD, a.EstimatedTokens, string(a.Status), a.RequestedBy, a.DecidedBy, a.CreatedAt, nullableTimePtr(a.DecidedAt))
+	return err
+}
+func nullableTimePtr(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return *t
+}
+func scanApproval(row interface{ Scan(...any) error }) (*protocol.ApprovalRequest, error) {
+	var a protocol.ApprovalRequest
+	var status string
+	var decided sql.NullTime
+	if err := row.Scan(&a.ID, &a.SessionID, &a.Agent, &a.Reason, &a.EstimatedCostUSD, &a.EstimatedTokens, &status, &a.RequestedBy, &a.DecidedBy, &a.CreatedAt, &decided); err != nil {
+		return nil, err
+	}
+	a.Status = protocol.ApprovalStatus(status)
+	if decided.Valid {
+		t := decided.Time
+		a.DecidedAt = &t
+	}
+	return &a, nil
+}
+func (s *SQLiteStore) GetApproval(ctx context.Context, id string) (*protocol.ApprovalRequest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	a, e := scanApproval(s.db.QueryRowContext(ctx, `SELECT id,session_id,agent,reason,estimated_cost_usd,estimated_tokens,status,requested_by,decided_by,created_at,decided_at FROM approval_requests WHERE id=?`, id))
+	if errors.Is(e, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return a, e
+}
+func (s *SQLiteStore) ListApprovals(ctx context.Context, status protocol.ApprovalStatus) ([]protocol.ApprovalRequest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	q := `SELECT id,session_id,agent,reason,estimated_cost_usd,estimated_tokens,status,requested_by,decided_by,created_at,decided_at FROM approval_requests`
+	args := []any{}
+	if status != "" {
+		q += ` WHERE status=?`
+		args = append(args, string(status))
+	}
+	q += ` ORDER BY created_at DESC`
+	rows, e := s.db.QueryContext(ctx, q, args...)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	var out []protocol.ApprovalRequest
+	for rows.Next() {
+		a, e := scanApproval(rows)
+		if e != nil {
+			return nil, e
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) ExpireApprovals(ctx context.Context, before time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = ? WHERE status = ? AND created_at < ?`, string(protocol.ApprovalExpired), string(protocol.ApprovalPending), before)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (s *SQLiteStore) ListDeadLetters(ctx context.Context, limit int) ([]DeadLetter, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT id,event_id,space_id,participant_id,payload_json,attempt,error,created_at,dead_at FROM delivery_dead_letters ORDER BY dead_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DeadLetter
+	for rows.Next() {
+		var d DeadLetter
+		var payload string
+		if err := rows.Scan(&d.ID, &d.EventID, &d.SpaceID, &d.ParticipantID, &payload, &d.Attempt, &d.Error, &d.CreatedAt, &d.DeadAt); err != nil {
+			return nil, err
+		}
+		d.Payload = json.RawMessage(payload)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) RequeueDeadLetter(ctx context.Context, id string, nextAttempt time.Time, priority int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var d DeadLetter
+	var payload string
+	err = tx.QueryRowContext(ctx, `SELECT id,event_id,space_id,participant_id,payload_json,attempt,error,created_at,dead_at FROM delivery_dead_letters WHERE id=?`, id).Scan(&d.ID, &d.EventID, &d.SpaceID, &d.ParticipantID, &payload, &d.Attempt, &d.Error, &d.CreatedAt, &d.DeadAt)
+	if err != nil {
+		return err
+	}
+	if nextAttempt.IsZero() {
+		nextAttempt = time.Now().UTC()
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO delivery_retry_outbox(id,event_id,space_id,participant_id,payload_json,attempt,priority,next_attempt,last_error,created_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET attempt=excluded.attempt,priority=excluded.priority,next_attempt=excluded.next_attempt,last_error=excluded.last_error`, d.ID, d.EventID, d.SpaceID, d.ParticipantID, payload, 0, priority, nextAttempt, d.Error, d.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM delivery_dead_letters WHERE id=?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) GetGlobalBudget(ctx context.Context, scope string) (*BudgetLedger, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var b BudgetLedger
+	err := s.db.QueryRowContext(ctx, `SELECT scope,used_tokens,used_cost_usd,max_tokens,max_cost_usd,updated_at FROM global_budgets WHERE scope=?`, scope).Scan(&b.Scope, &b.UsedTokens, &b.UsedCostUSD, &b.MaxTokens, &b.MaxCostUSD, &b.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return &b, err
+}
+func (s *SQLiteStore) UpdateGlobalBudget(ctx context.Context, b *BudgetLedger) error {
+	if b == nil || b.Scope == "" {
+		return errors.New("budget scope is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b.UpdatedAt.IsZero() {
+		b.UpdatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO global_budgets(scope,used_tokens,used_cost_usd,max_tokens,max_cost_usd,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET used_tokens=excluded.used_tokens,used_cost_usd=excluded.used_cost_usd,max_tokens=excluded.max_tokens,max_cost_usd=excluded.max_cost_usd,updated_at=excluded.updated_at`, b.Scope, b.UsedTokens, b.UsedCostUSD, b.MaxTokens, b.MaxCostUSD, b.UpdatedAt)
+	return err
+}
+
+func (s *SQLiteStore) AcquireLease(ctx context.Context, name, owner string, ttl time.Duration) (bool, error) {
+	if name == "" || owner == "" {
+		return false, errors.New("lease name and owner are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	expires := now.Add(ttl)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO control_leases(name,owner,expires_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET owner=excluded.owner,expires_at=excluded.expires_at WHERE control_leases.expires_at <= ? OR control_leases.owner = ?`, name, owner, expires, now, owner)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+func (s *SQLiteStore) ReleaseLease(ctx context.Context, name, owner string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM control_leases WHERE name=? AND owner=?`, name, owner)
+	return err
+}
+
+func (s *SQLiteStore) SaveJobDependency(ctx context.Context, d *JobDependency) error {
+	if d == nil || d.JobID == "" || d.DependsOn == "" {
+		return errors.New("job dependency ids are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d.CreatedAt.IsZero() {
+		d.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO job_dependencies(job_id,depends_on,status,created_at) VALUES(?,?,?,?) ON CONFLICT(job_id,depends_on) DO UPDATE SET status=excluded.status`, d.JobID, d.DependsOn, d.Status, d.CreatedAt)
+	return err
+}
+func (s *SQLiteStore) ListJobDependencies(ctx context.Context, jobID string) ([]JobDependency, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT job_id,depends_on,status,created_at FROM job_dependencies WHERE job_id=? ORDER BY depends_on`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JobDependency
+	for rows.Next() {
+		var d JobDependency
+		if err := rows.Scan(&d.JobID, &d.DependsOn, &d.Status, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLiteStore) SaveDecision(ctx context.Context, d *protocol.Decision) error {

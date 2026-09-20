@@ -70,11 +70,12 @@ HarnessMesh explicitly forbids resolving disputes through model majority voting:
 
 ## Error Taxonomy
 
-The protocol defines 18 standardized typed errors with code and retryability metadata:
+The protocol defines standardized typed errors with code and retryability metadata. Quota/session limits are retryable waits, not permanent failures:
 
 | Error Type | Code | Retryable | Description |
 | :--- | :--- | :--- | :--- |
 | `PeerUnavailableError` | `PEER_UNAVAILABLE` | Yes | Target peer harness not found or unresponsive |
+| `QuotaExceededError` | `QUOTA_EXCEEDED` | Yes, after reset | Provider credit, usage, session, or quota limit; reset timestamps and retry-after durations are honored |
 | `PeerTimeoutError` | `PEER_TIMEOUT` | Yes | Execution exceeded configured timeout limit |
 | `PeerDepthExceededError` | `PEER_DEPTH_EXCEEDED` | No | Message exceeded maximum reentrancy depth |
 | `PeerCallLimitExceededError` | `PEER_CALL_LIMIT_EXCEEDED` | No | Session exceeded total peer invocation budget |

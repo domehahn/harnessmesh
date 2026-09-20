@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet build check clean
+.PHONY: fmt test vet race fuzz load security build check clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -10,6 +10,19 @@ test:
 
 vet:
 	go vet ./...
+
+race:
+	go test -race ./...
+
+fuzz:
+	go test ./internal/knowledge -run FuzzArchiveSearchDoesNotPanic
+
+load:
+	go test ./internal/knowledge -bench . -benchtime=1s -run '^$$'
+
+security:
+	go vet ./...
+	govulncheck ./...
 
 build:
 	mkdir -p bin

@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Test and build
+        run: |
+          go test ./...
+          mkdir -p dist
+          CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o dist/harnessmesh ./cmd/harnessmesh
+      - name: Generate checksum and SBOM
+        run: |
+          sha256sum dist/harnessmesh > dist/SHA256SUMS
+          docker run --rm -v "$PWD":/src anchore/syft:latest dir:/src -o cyclonedx-json=/src/dist/sbom.cdx.json
+      - name: Sign artifacts
+        uses: sigstore/cosign-installer@v3
+      - name: Keyless sign checksum
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: cosign sign-blob --yes --output-signature dist/SHA256SUMS.sig dist/SHA256SUMS
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -453,6 +455,7 @@ type ConverseRequest struct {
 	Context              ConverseContextOptions `json:"context,omitempty"`
 	ExpectedResponseType string                 `json:"expected_response_type,omitempty"` // "any", "answer", "review", "question"
 	IdempotencyKey       string                 `json:"idempotency_key,omitempty"`
+	ApprovalID           string                 `json:"approval_id,omitempty"`
 }
 
 type ConverseResponse struct {
@@ -702,6 +705,7 @@ type PublishRequest struct {
 	CausationID    string          `json:"causation_id,omitempty"`
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 	Metadata       map[string]any  `json:"metadata,omitempty"`
+	Priority       int             `json:"priority,omitempty"`
 }
 
 type PublishResponse struct {
@@ -809,6 +813,82 @@ type HarnessInvocationFailedError struct {
 	Agent  string
 	Err    error
 	Stderr string
+}
+
+// QuotaExceededError indicates that an agent cannot accept more work until a
+// known (or fallback) point in time.  RetryAt is deliberately optional because
+// providers do not all include a reset timestamp in their error response.
+type QuotaExceededError struct {
+	Agent   string
+	RetryAt time.Time
+	Reason  string
+}
+
+type AgentHealthStatus string
+
+const (
+	AgentHealthUnknown     AgentHealthStatus = "unknown"
+	AgentHealthHealthy     AgentHealthStatus = "healthy"
+	AgentHealthDegraded    AgentHealthStatus = "degraded"
+	AgentHealthUnavailable AgentHealthStatus = "unavailable"
+	AgentHealthQuotaWait   AgentHealthStatus = "quota_wait"
+	AgentHealthCircuitOpen AgentHealthStatus = "circuit_open"
+)
+
+type AgentHealth struct {
+	Agent            string            `json:"agent"`
+	Adapter          string            `json:"adapter,omitempty"`
+	Status           AgentHealthStatus `json:"status"`
+	ConsecutiveFails int               `json:"consecutive_failures"`
+	TotalInvocations int64             `json:"total_invocations"`
+	Successful       int64             `json:"successful"`
+	Failed           int64             `json:"failed"`
+	LastError        string            `json:"last_error,omitempty"`
+	LastSuccess      time.Time         `json:"last_success,omitempty"`
+	LastFailure      time.Time         `json:"last_failure,omitempty"`
+	QuotaResetAt     time.Time         `json:"quota_reset_at,omitempty"`
+	CircuitOpenUntil time.Time         `json:"circuit_open_until,omitempty"`
+	UpdatedAt        time.Time         `json:"updated_at"`
+}
+
+type ApprovalStatus string
+
+const (
+	ApprovalPending  ApprovalStatus = "pending"
+	ApprovalApproved ApprovalStatus = "approved"
+	ApprovalRejected ApprovalStatus = "rejected"
+	ApprovalExpired  ApprovalStatus = "expired"
+)
+
+type ApprovalRequest struct {
+	ID               string         `json:"id"`
+	SessionID        string         `json:"session_id,omitempty"`
+	Agent            string         `json:"agent"`
+	Reason           string         `json:"reason"`
+	EstimatedCostUSD float64        `json:"estimated_cost_usd,omitempty"`
+	EstimatedTokens  int64          `json:"estimated_tokens,omitempty"`
+	Status           ApprovalStatus `json:"status"`
+	RequestedBy      string         `json:"requested_by,omitempty"`
+	DecidedBy        string         `json:"decided_by,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
+	DecidedAt        *time.Time     `json:"decided_at,omitempty"`
+}
+
+type ApprovalRequiredError struct {
+	ApprovalID string
+	Agent      string
+	Reason     string
+}
+
+func (e *ApprovalRequiredError) Error() string {
+	return fmt.Sprintf("human approval required for agent %q: %s (approval_id=%s)", e.Agent, e.Reason, e.ApprovalID)
+}
+
+func (e *QuotaExceededError) Error() string {
+	if e.RetryAt.IsZero() {
+		return fmt.Sprintf("agent %q quota exceeded: %s", e.Agent, e.Reason)
+	}
+	return fmt.Sprintf("agent %q quota exceeded until %s: %s", e.Agent, e.RetryAt.UTC().Format(time.RFC3339), e.Reason)
 }
 
 func (e *HarnessInvocationFailedError) Error() string {
@@ -1031,6 +1111,7 @@ type RetryCategory string
 const (
 	RetryCategoryTransientTransport RetryCategory = "transient_transport"
 	RetryCategoryRateLimit          RetryCategory = "rate_limit"
+	RetryCategoryQuota              RetryCategory = "quota"
 	RetryCategoryTimeout            RetryCategory = "timeout"
 	RetryCategoryPermanentAuth      RetryCategory = "permanent_auth"
 	RetryCategoryInvalidRequest     RetryCategory = "invalid_request"
@@ -1050,7 +1131,11 @@ func ClassifyError(err error) RetryCategory {
 		depthErr   *PeerDepthExceededError
 		budgetErr  *BudgetExceededError
 		malformed  *MalformedPeerResponseError
+		quota      *QuotaExceededError
 	)
+	if errors.As(err, &quota) {
+		return RetryCategoryQuota
+	}
 	if errors.As(err, &timeoutErr) {
 		return RetryCategoryTimeout
 	}
@@ -1065,6 +1150,9 @@ func ClassifyError(err error) RetryCategory {
 	}
 
 	msg := strings.ToLower(err.Error())
+	if looksLikeQuotaLimit(msg) {
+		return RetryCategoryQuota
+	}
 	if strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests") {
 		return RetryCategoryRateLimit
 	}
@@ -1082,7 +1170,65 @@ func ClassifyError(err error) RetryCategory {
 
 func IsTransient(err error) bool {
 	cat := ClassifyError(err)
-	return cat == RetryCategoryTransientTransport || cat == RetryCategoryRateLimit || cat == RetryCategoryTimeout
+	return cat == RetryCategoryTransientTransport || cat == RetryCategoryRateLimit || cat == RetryCategoryQuota || cat == RetryCategoryTimeout
+}
+
+var (
+	quotaMarkerPattern = regexp.MustCompile(`(?i)(usage[ _-]?limit|credit[ _-]?limit|credits? exhausted|quota(?:[ _-]?exceeded|[ _-]?limit)?|monthly limit|session limit|capacity limit|resource exhausted|resource_exhausted|rate_limit_error|insufficient_quota|too_many_requests)`)
+	rfc3339Pattern     = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})\b`)
+	dateTimePattern    = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\s*(?:UTC|GMT|[+-]\d{2}:?\d{2})?\b`)
+	retryAfterPattern  = regexp.MustCompile(`(?i)(?:retry[- ]after|try again in|retry in|resumes? in)\s*[: ]\s*(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)`)
+)
+
+func looksLikeQuotaLimit(message string) bool {
+	return quotaMarkerPattern.MatchString(message) &&
+		(strings.Contains(message, "reset") || strings.Contains(message, "resume") || strings.Contains(message, "retry") || strings.Contains(message, "limit") || strings.Contains(message, "exhausted"))
+}
+
+// IsQuotaLimited reports whether an agent error means that work should wait
+// for a provider-side credit, usage, session, or quota reset.
+func IsQuotaLimited(err error) bool {
+	return ClassifyError(err) == RetryCategoryQuota
+}
+
+// QuotaRetryAt extracts a provider reset time or retry-after duration.  It
+// returns false when the provider only reports the limit without a timestamp.
+func QuotaRetryAt(err error) (time.Time, bool) {
+	if err == nil || !IsQuotaLimited(err) {
+		return time.Time{}, false
+	}
+	var quota *QuotaExceededError
+	if errors.As(err, &quota) && !quota.RetryAt.IsZero() {
+		return quota.RetryAt, true
+	}
+	message := err.Error()
+	for _, candidate := range []string{rfc3339Pattern.FindString(message), dateTimePattern.FindString(message)} {
+		if candidate == "" {
+			continue
+		}
+		layouts := []string{time.RFC3339, "2006-01-02 15:04 MST", "2006-01-02 15:04:05 MST", "2006-01-02 15:04 -0700", "2006-01-02 15:04:05 -0700", "2006-01-02 15:04", "2006-01-02 15:04:05"}
+		for _, layout := range layouts {
+			if parsed, parseErr := time.Parse(layout, candidate); parseErr == nil && parsed.After(time.Now()) {
+				return parsed, true
+			}
+		}
+	}
+	if match := retryAfterPattern.FindStringSubmatch(message); len(match) == 3 {
+		value, parseErr := strconv.ParseFloat(match[1], 64)
+		if parseErr == nil {
+			multiplier := time.Second
+			switch strings.ToLower(match[2][:1]) {
+			case "m":
+				multiplier = time.Minute
+			case "h":
+				multiplier = time.Hour
+			case "d":
+				multiplier = 24 * time.Hour
+			}
+			return time.Now().Add(time.Duration(value * float64(multiplier))), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func IsAuthPermanent(err error) bool {

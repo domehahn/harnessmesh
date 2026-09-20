@@ -18,6 +18,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/collaboration"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
+	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/mcp"
 	"github.com/domehahn/harnessmesh/internal/modelrouting"
 	"github.com/domehahn/harnessmesh/internal/protocol"
@@ -62,6 +63,8 @@ func main() {
 		err = findingsCmd(os.Args[2:])
 	case "evidence":
 		err = evidenceCmd(os.Args[2:])
+	case "knowledge":
+		err = knowledgeCmd(os.Args[2:])
 	case "config":
 		err = configCmd(os.Args[2:])
 	case "integrate":
@@ -112,7 +115,8 @@ Usage:
   harnessmesh agents <list|show <name>>
   harnessmesh session <list|show|messages|resume|stop> [options]
   harnessmesh findings <session-id> [--json]
-  harnessmesh evidence <session-id> [--json]
+	harnessmesh evidence <session-id> [--json]
+	harnessmesh knowledge <search|import|remember|stats|compact|verify|index|export|restore|rotate-key|watch> [options]
   harnessmesh config <validate|migrate|print> [options]
   harnessmesh switchyard <doctor|routes|config validate> [options]
   harnessmesh smoke-test antigravity-codex [--config <path>]
@@ -122,6 +126,192 @@ Usage:
 
 Run 'harnessmesh <command> --help' for details on a specific command.
 `, version)
+}
+
+func knowledgeCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("knowledge action is required: search, import, remember, stats, or compact")
+	}
+	st, err := store.OpenSQLite("")
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	archive := st.KnowledgeArchive()
+	if archive == nil {
+		return errors.New("knowledge archive is disabled")
+	}
+
+	switch args[0] {
+	case "search":
+		fs := flag.NewFlagSet("knowledge search", flag.ContinueOnError)
+		query := fs.String("query", "", "search terms")
+		project := fs.String("project-id", "", "project/workspace isolation key")
+		kind := fs.String("kind", "", "record kind")
+		limit := fs.Int("limit", 20, "maximum records")
+		offset := fs.Int("offset", 0, "result offset")
+		jsonOutput := fs.Bool("json", false, "write JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		records, err := archive.Search(context.Background(), *query, knowledge.SearchOptions{ProjectID: *project, Kind: *kind, Limit: *limit, Offset: *offset})
+		if err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(records)
+		}
+		fmt.Print(knowledge.BuildContext(records, 200000))
+		return nil
+
+	case "import", "remember":
+		fs := flag.NewFlagSet("knowledge "+args[0], flag.ContinueOnError)
+		text := fs.String("text", "", "text to store")
+		file := fs.String("file", "", "file containing a transcript or note")
+		kind := fs.String("kind", "transcript", "record kind")
+		source := fs.String("source", "cli", "source label")
+		project := fs.String("project-id", "", "project/workspace isolation key")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *file != "" {
+			raw, err := os.ReadFile(*file)
+			if err != nil {
+				return err
+			}
+			*text = string(raw)
+		}
+		if strings.TrimSpace(*text) == "" {
+			return errors.New("knowledge text is required via --text or --file")
+		}
+		var record knowledge.Record
+		if args[0] == "import" {
+			record, err = archive.ImportText(context.Background(), *text, *kind, *source, *project, nil)
+		} else {
+			record, err = archive.Remember(context.Background(), *text, *kind, *source, nil)
+		}
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(record)
+
+	case "stats":
+		stats, err := archive.Stats(context.Background())
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(stats)
+
+	case "verify":
+		records, err := archive.Verify(context.Background())
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"valid": true, "records": records})
+
+	case "index":
+		if err := archive.RebuildIndex(context.Background()); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"indexed": true, "path": archive.Path() + ".idx"})
+
+	case "export":
+		fs := flag.NewFlagSet("knowledge export", flag.ContinueOnError)
+		destination := fs.String("file", "", "snapshot destination")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *destination == "" {
+			return errors.New("--file is required")
+		}
+		return archive.ExportTo(context.Background(), *destination)
+
+	case "restore":
+		fs := flag.NewFlagSet("knowledge restore", flag.ContinueOnError)
+		source := fs.String("file", "", "validated archive snapshot")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *source == "" {
+			return errors.New("--file is required")
+		}
+		return archive.RestoreFrom(context.Background(), *source)
+
+	case "rotate-key":
+		fs := flag.NewFlagSet("knowledge rotate-key", flag.ContinueOnError)
+		key := fs.String("key", "", "new archive encryption key")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *key == "" {
+			return errors.New("--key is required")
+		}
+		return archive.RotateEncryptionKey(context.Background(), *key)
+
+	case "watch":
+		fs := flag.NewFlagSet("knowledge watch", flag.ContinueOnError)
+		file := fs.String("file", "", "transcript file to watch")
+		interval := fs.Duration("interval", 2*time.Second, "poll interval")
+		project := fs.String("project-id", "", "project/workspace isolation key")
+		source := fs.String("source", "watcher", "source label")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *file == "" {
+			return errors.New("--file is required")
+		}
+		return watchKnowledgeFile(*file, *interval, *project, *source, archive)
+
+	case "compact":
+		fs := flag.NewFlagSet("knowledge compact", flag.ContinueOnError)
+		before := fs.String("before", "", "RFC3339 cutoff; records before it are removed")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		cutoff, err := time.Parse(time.RFC3339, *before)
+		if err != nil {
+			return fmt.Errorf("--before must be RFC3339: %w", err)
+		}
+		kept, err := archive.CompactBefore(context.Background(), cutoff)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kept_records": kept, "before": cutoff})
+	default:
+		return fmt.Errorf("unknown knowledge action %q", args[0])
+	}
+}
+
+func watchKnowledgeFile(path string, interval time.Duration, projectID, source string, archive *knowledge.Archive) error {
+	if interval < 250*time.Millisecond {
+		interval = 250 * time.Millisecond
+	}
+	var lastMod time.Time
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	for {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(lastMod) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(string(raw)) != "" {
+				if _, err := archive.ImportText(ctx, string(raw), "transcript", source, projectID, []string{"watcher", filepath.Base(path)}); err != nil {
+					return err
+				}
+			}
+			lastMod = info.ModTime()
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(interval):
+		}
+	}
 }
 
 func collaborate(args []string) error {
@@ -271,6 +461,10 @@ func mcpServe(args []string) error {
 	configPath := fs.String("config", "harnessmesh.json", "config file")
 	sessionID := fs.String("session", "", "existing session id to attach")
 	caller := fs.String("caller", "claude", "caller agent name")
+	listen := fs.String("listen", "", "optional remote HTTP listen address, e.g. 127.0.0.1:8787")
+	token := fs.String("token", os.Getenv("HARNESSMESH_MCP_TOKEN"), "remote MCP bearer token")
+	tlsCert := fs.String("tls-cert", os.Getenv("HARNESSMESH_MCP_TLS_CERT"), "TLS certificate for remote MCP")
+	tlsKey := fs.String("tls-key", os.Getenv("HARNESSMESH_MCP_TLS_KEY"), "TLS private key for remote MCP")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -312,6 +506,9 @@ func mcpServe(args []string) error {
 	server := mcp.NewServer(eng, *sessionID, *caller)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if *listen != "" {
+		return server.ServeHTTPWithTLS(ctx, *listen, *token, *tlsCert, *tlsKey)
+	}
 	return server.ServeStdio(ctx, os.Stdin, os.Stdout)
 }
 

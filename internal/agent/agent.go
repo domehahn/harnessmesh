@@ -32,6 +32,7 @@ type InvokeRequest struct {
 	MCPConfigPath string
 	MaxTokens     int64
 	MaxCostUSD    float64
+	ApprovalID    string
 }
 
 type InvokeResult struct {

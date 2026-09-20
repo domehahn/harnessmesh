@@ -1,6 +1,19 @@
 # Model Context Protocol (MCP) Server
 
-HarnessMesh v0.2.0 exposes a standards-compliant Model Context Protocol (MCP) server over standard input and output (`stdio`).
+HarnessMesh exposes a standards-compliant Model Context Protocol (MCP) server over standard input/output (`stdio`) and, when explicitly enabled, authenticated HTTP.
+
+## Remote HTTP mode
+
+```bash
+export HARNESSMESH_MCP_TOKEN="$(openssl rand -hex 32)"
+harnessmesh mcp serve --listen 127.0.0.1:8787 --token "$HARNESSMESH_MCP_TOKEN"
+```
+
+Remote JSON-RPC calls use `POST /` and `Authorization: Bearer <token>`. `GET /healthz` can be used for liveness checks and `GET /metrics` exposes request/error counters. Use TLS termination and network access controls outside HarnessMesh when exposing this beyond localhost.
+
+The authenticated `/admin` dashboard shows operational state. Set `HARNESSMESH_MCP_ADMIN_CALLERS` to a comma-separated caller allowlist to restrict administrative access further; the regular project/caller ACLs remain active for MCP tools.
+
+OAuth2 resource-server deployments may set `HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL`; HarnessMesh then validates bearer tokens through the configured introspection endpoint. `HARNESSMESH_MCP_OAUTH_CLIENT_SECRET` optionally authenticates that introspection request.
 
 ## Exposed Tools (11 Tools)
 
@@ -17,6 +30,12 @@ HarnessMesh v0.2.0 exposes a standards-compliant Model Context Protocol (MCP) se
 | `peer.challenge` | Challenge a finding and mark as disputed | `finding_id`, `claim`, `evidence`, `requested_verification` |
 | `peer.resolve` | Resolve an open or disputed finding | `finding_id`, `status` (`confirmed`, `rejected`, etc.), `rationale`, `evidence_references` |
 | `peer.status` | Inspect session status, counts, and budget | *(none)* |
+| `operations.status` | Inspect agent health, quota waits, circuit breakers, retry backlog, and metrics | *(none)* |
+| `operations.approvals` | List human approval requests | `status` |
+| `operations.approve` | Approve or reject an operation | `approval_id`, `approved` |
+| `knowledge.search_advanced` | Search knowledge by time and source metadata | `query`, `since`, `until`, `agent`, `source`, `limit` |
+| `operations.dead_letters` | List permanently failed deliveries | `limit` |
+| `operations.requeue_dead_letter` | Requeue a dead-letter delivery | `id`, `priority` |
 
 ## Quick Setup
 

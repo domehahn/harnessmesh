@@ -30,3 +30,10 @@ Any git diff hunk or status entry referencing these files is stripped prior to p
 - No network ports are opened by default.
 - If network listeners are configured, they bind strictly to `127.0.0.1`.
 
+## Agent Sandbox Policies
+
+Adapters may use `executil.SandboxPolicy` to restrict executable names and working directories. Production deployments should provide explicit command and path allowlists, deny secret directories, and run the harness process under a dedicated OS user or container.
+
+## Remote MCP
+
+Remote MCP supports bearer tokens, OAuth2 token introspection, rate limits, and native TLS certificates. Expose it only behind network policy, rotate credentials, and monitor `/metrics` and the authenticated admin endpoints.

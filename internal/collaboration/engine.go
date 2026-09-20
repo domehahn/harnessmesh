@@ -56,8 +56,11 @@ type Engine struct {
 	lastHash     map[string]string
 	repeatCounts map[string]int
 
-	rrIndexMu sync.Mutex
-	rrIndices map[string]int
+	rrIndexMu   sync.Mutex
+	rrIndices   map[string]int
+	retryCancel context.CancelFunc
+	retryWG     sync.WaitGroup
+	operations  *operationState
 }
 
 func NewEngine(ec EngineConfig) *Engine {
@@ -100,6 +103,13 @@ func NewEngine(ec EngineConfig) *Engine {
 		rrIndices:      make(map[string]int),
 		inflight:       make(map[string]chan struct{}),
 	}
+	eng.operations = newOperationState(ec.Config, ec.Store)
+	if _, ok := ec.Store.(retryStore); ok {
+		var retryCtx context.Context
+		retryCtx, eng.retryCancel = context.WithCancel(context.Background())
+		eng.retryWG.Add(1)
+		go eng.retryLoop(retryCtx)
+	}
 
 	// Connect event bus to activation controller
 	eventBus.AddListener("*", func(ctx context.Context, evt *protocol.CollaborationEvent) {
@@ -117,6 +127,13 @@ type knowledgeStore interface {
 	KnowledgeArchive() *knowledge.Archive
 }
 
+type retryStore interface {
+	EnqueueRetry(context.Context, *store.RetryItem) error
+	ClaimRetries(context.Context, time.Time, int) ([]store.RetryItem, error)
+	CompleteRetry(context.Context, string, bool, time.Time, string) error
+	DeferRetry(context.Context, string, time.Time, string) error
+}
+
 func (e *Engine) KnowledgeSearch(ctx context.Context, query string, opts knowledge.SearchOptions) ([]knowledge.Record, error) {
 	ks, ok := e.store.(knowledgeStore)
 	if !ok || ks.KnowledgeArchive() == nil {
@@ -131,6 +148,28 @@ func (e *Engine) KnowledgeStats(ctx context.Context) (knowledge.Stats, error) {
 		return knowledge.Stats{}, errors.New("knowledge archive is not available")
 	}
 	return ks.KnowledgeArchive().Stats(ctx)
+}
+
+func (e *Engine) KnowledgeRemember(ctx context.Context, text, kind, source, projectID string, tags []string) (knowledge.Record, error) {
+	ks, ok := e.store.(knowledgeStore)
+	if !ok || ks.KnowledgeArchive() == nil {
+		return knowledge.Record{}, errors.New("knowledge archive is not available")
+	}
+	if kind == "" {
+		kind = "note"
+	}
+	if projectID != "" {
+		return ks.KnowledgeArchive().ImportText(ctx, text, kind, source, projectID, tags)
+	}
+	return ks.KnowledgeArchive().Remember(ctx, text, kind, source, tags)
+}
+
+func (e *Engine) KnowledgeCompact(ctx context.Context, before time.Time) (int64, error) {
+	ks, ok := e.store.(knowledgeStore)
+	if !ok || ks.KnowledgeArchive() == nil {
+		return 0, errors.New("knowledge archive is not available")
+	}
+	return ks.KnowledgeArchive().CompactBefore(ctx, before)
 }
 
 func (e *Engine) SpaceService() *SpaceService {
@@ -169,9 +208,75 @@ func (e *Engine) Deescalate(sessionID, capability string) {
 
 // Close gracefully releases Engine resources including EventBus coalesce timers.
 func (e *Engine) Close() {
+	if e.retryCancel != nil {
+		e.retryCancel()
+		e.retryWG.Wait()
+	}
 	if e.eventBus != nil {
 		e.eventBus.Close()
 	}
+}
+
+func (e *Engine) retryLoop(ctx context.Context) {
+	defer e.retryWG.Done()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.processRetryBatch(ctx)
+		}
+	}
+}
+
+func (e *Engine) processRetryBatch(ctx context.Context) {
+	rs, ok := e.store.(retryStore)
+	if !ok {
+		return
+	}
+	items, err := rs.ClaimRetries(ctx, time.Now().UTC(), 20)
+	if err != nil {
+		return
+	}
+	for _, item := range items {
+		harness := e.findHarness(item.ParticipantID, "")
+		if harness == nil {
+			_ = rs.CompleteRetry(ctx, item.ID, item.Attempt < 5, time.Now().UTC().Add(5*time.Minute), "participant harness unavailable")
+			continue
+		}
+		_, invokeErr := e.invokeHarness(ctx, harness, agent.InvokeRequest{
+			Name: item.ParticipantID, Repo: e.repo,
+			Prompt:     fmt.Sprintf("Retry delivery %s from HarnessMesh. Original payload:\n%s", item.EventID, string(item.Payload)),
+			ReviewMode: true,
+		})
+		if invokeErr != nil {
+			if protocol.IsQuotaLimited(invokeErr) {
+				next := time.Now().UTC().Add(e.quotaFallbackWait())
+				if resetAt, ok := protocol.QuotaRetryAt(invokeErr); ok && resetAt.After(next) {
+					next = resetAt
+				}
+				_ = rs.DeferRetry(ctx, item.ID, next, invokeErr.Error())
+				continue
+			}
+			next := time.Now().UTC().Add(time.Duration(item.Attempt*item.Attempt) * time.Minute)
+			if !protocol.IsTransient(invokeErr) || item.Attempt >= 5 {
+				_ = rs.CompleteRetry(ctx, item.ID, false, time.Time{}, invokeErr.Error())
+			} else {
+				_ = rs.CompleteRetry(ctx, item.ID, true, next, invokeErr.Error())
+			}
+			continue
+		}
+		_ = rs.CompleteRetry(ctx, item.ID, false, time.Time{}, "")
+	}
+}
+
+func (e *Engine) quotaFallbackWait() time.Duration {
+	if e.cfg == nil {
+		return 15 * time.Minute
+	}
+	return e.cfg.Collaboration.QuotaFallbackWaitDuration()
 }
 
 func (e *Engine) CreateSession(ctx context.Context, sessionID, task string) (*store.Session, error) {
@@ -1050,7 +1155,7 @@ func (e *Engine) Ask(ctx context.Context, sessionID, caller string, req protocol
 	invReq.MaxTokens = maxTok
 	invReq.MaxCostUSD = budgetRes.maxCostUSD
 
-	invRes, err := peerHarness.Invoke(ctx, invReq)
+	invRes, err := e.invokeHarness(ctx, peerHarness, invReq)
 	if err != nil {
 		_ = e.store.EmitEvent(ctx, sessionID, "peer.failed", map[string]any{
 			"peer":  targetPeer,
@@ -1179,7 +1284,7 @@ func (e *Engine) executeSingleReview(ctx context.Context, sessionID, caller, tar
 	invReq.MaxTokens = maxTok
 	invReq.MaxCostUSD = budgetRes.maxCostUSD
 
-	invRes, err := peerHarness.Invoke(ctx, invReq)
+	invRes, err := e.invokeHarness(ctx, peerHarness, invReq)
 	if err != nil {
 		_ = e.store.EmitEvent(ctx, sessionID, "peer.failed", map[string]any{
 			"peer":  targetPeer,
@@ -1934,6 +2039,7 @@ func (e *Engine) Converse(ctx context.Context, sessionID, caller string, req pro
 		SessionID:    peerSessionID,
 		ReviewMode:   isReviewExpected,
 		ReviewSchema: protocol.ReviewSchema,
+		ApprovalID:   req.ApprovalID,
 	}
 
 	reqMsgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
@@ -2000,7 +2106,7 @@ func (e *Engine) Converse(ctx context.Context, sessionID, caller string, req pro
 	invReq.MaxCostUSD = budgetRes.maxCostUSD
 
 	startTime := time.Now()
-	invRes, err := peerHarness.Invoke(ctx, invReq)
+	invRes, err := e.invokeHarness(ctx, peerHarness, invReq)
 	durationMS := time.Since(startTime).Milliseconds()
 
 	if err != nil {
@@ -2269,13 +2375,25 @@ func (e *Engine) dispatchParticipantEvent(ctx context.Context, space *protocol.C
 	invReq.MaxTokens = maxTok
 	invReq.MaxCostUSD = budgetRes.maxCostUSD
 
-	invRes, err := harness.Invoke(invCtx, invReq)
+	invRes, err := e.invokeHarness(invCtx, harness, invReq)
 	if err != nil {
+		if rs, ok := e.store.(retryStore); ok {
+			payload, _ := json.Marshal(evt)
+			_ = rs.EnqueueRetry(ctx, &store.RetryItem{
+				ID: delID, EventID: evt.ID, SpaceID: space.ID, ParticipantID: p.ID,
+				Payload: payload, Attempt: 1, NextAttempt: e.retryNextAttempt(err), LastError: err.Error(),
+				Priority: 0,
+			})
+		}
 		statusMsg := err.Error()
 		if rErr := e.rollbackBudget(ctx, budgetRes); rErr != nil {
 			statusMsg = fmt.Sprintf("invocation error: %v; rollback error: %v", err, rErr)
 		}
-		_ = e.store.UpdateEventDeliveryStatus(ctx, delID, protocol.DeliveryFailed, "", statusMsg)
+		status := protocol.DeliveryFailed
+		if protocol.IsQuotaLimited(err) {
+			status = protocol.DeliveryPending
+		}
+		_ = e.store.UpdateEventDeliveryStatus(ctx, delID, status, "", statusMsg)
 		return
 	}
 
@@ -2334,6 +2452,17 @@ func (e *Engine) dispatchParticipantEvent(ctx context.Context, space *protocol.C
 
 	e.activationCtrl.MarkActivated(space.ID, p.ID)
 	_ = e.store.UpdateEventDeliveryStatus(ctx, delID, protocol.DeliveryDelivered, resultMsgID, "")
+}
+
+func (e *Engine) retryNextAttempt(err error) time.Time {
+	next := time.Now().UTC().Add(e.quotaFallbackWait())
+	if resetAt, ok := protocol.QuotaRetryAt(err); ok && resetAt.After(next) {
+		return resetAt
+	}
+	if !protocol.IsQuotaLimited(err) {
+		return time.Now().UTC().Add(10 * time.Second)
+	}
+	return next
 }
 
 func (e *Engine) handleCollaborationEvent(ctx context.Context, evt *protocol.CollaborationEvent) {
@@ -2660,13 +2789,23 @@ func (e *Engine) Publish(ctx context.Context, req *protocol.PublishRequest) (*pr
 			invReq.MaxTokens = maxTok
 			invReq.MaxCostUSD = budgetRes.maxCostUSD
 
-			invRes, err := harness.Invoke(ctx, invReq)
+			invRes, err := e.invokeHarness(ctx, harness, invReq)
 			if err != nil {
+				if rs, ok := e.store.(retryStore); ok {
+					_ = rs.EnqueueRetry(ctx, &store.RetryItem{
+						ID: delID, EventID: msgID, SpaceID: space.ID, ParticipantID: p.ID,
+						Payload: payloadBytes, Attempt: 1, NextAttempt: e.retryNextAttempt(err), LastError: err.Error(), Priority: req.Priority,
+					})
+				}
 				statusMsg := err.Error()
 				if rErr := e.rollbackBudget(ctx, budgetRes); rErr != nil {
 					statusMsg = fmt.Sprintf("invocation error: %v; rollback error: %v", err, rErr)
 				}
-				updateDelivery(delID, protocol.DeliveryFailed, "", statusMsg)
+				status := protocol.DeliveryFailed
+				if protocol.IsQuotaLimited(err) {
+					status = protocol.DeliveryPending
+				}
+				updateDelivery(delID, status, "", statusMsg)
 				return
 			}
 

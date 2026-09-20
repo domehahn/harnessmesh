@@ -29,7 +29,7 @@ HarnessMesh is the **broker, control plane, and collaboration fabric** that enab
 ```text
 HarnessMesh (Agent Collaboration Plane)
     ├── Collaboration Control Plane & Session Broker
-    ├── Model Context Protocol (MCP) Server (23 Tools)
+    ├── Model Context Protocol (MCP) Server (34 Tools)
     ├── Peer Message Bus (`harnessmesh.peer/v1`)
     ├── Dynamic Adapter Registry & Lifecycle Manager
     ├── Capability-Based Peer Selection & Routing
@@ -52,7 +52,61 @@ Every persisted message, collaboration event, finding, evidence record, and deci
 
 The archive is an append-only stream of framed, block-compressed NDJSON using Zstandard. Records are flushed in bounded blocks, so memory usage does not grow with the history and the file can contain hundreds of millions of records without loading the complete transcript. The archive is the durable source for historical knowledge; SQLite remains the transactional operational store.
 
-Other harnesses can use the MCP tools `knowledge.search`, `knowledge.context`, and `knowledge.stats`. `knowledge.context` returns bounded text suitable for RAG prompt augmentation, with optional filtering by session, collaboration space, and record kind.
+Other harnesses can use the MCP tools `knowledge.search`, `knowledge.context`, `knowledge.summary`, `knowledge.quality`, `knowledge.remember`, `knowledge.import`, `knowledge.compact`, and `knowledge.stats`. Search combines term ranking with deterministic local vector similarity and the persistent block index; it supports project/session/space/kind filters. The archive format remains provider-neutral so external model embeddings can be layered in later without changing stored records.
+
+The archive redacts common credentials before persistence. For at-rest encryption, set `HARNESSMESH_KNOWLEDGE_KEY`; HarnessMesh derives an AES-256-GCM key from it. Records also retain source, project, repository, branch, commit, agent, model, tags, confidence, and sensitivity metadata when supplied through the API or environment variables (`HARNESSMESH_PROJECT_ID`, `HARNESSMESH_REPOSITORY`, `HARNESSMESH_BRANCH`, `HARNESSMESH_COMMIT`, `HARNESSMESH_AGENT`, `HARNESSMESH_MODEL`).
+
+`knowledge verify` scans all compressed frames without loading the archive into memory. `knowledge export` creates an atomic byte-level backup, and `knowledge watch` imports changed transcript files on a polling interval. These operations are intended for local automation and scheduled backup jobs.
+
+The current search implementation is bounded, relevance-ranked hybrid search with a persistent block index and local vector fallback. It is safe for very large append-only histories; provider-backed embeddings remain an optional deployment optimization.
+
+Provider embeddings can be enabled through the `knowledge.EmbeddingProvider` interface. `NewOpenAIEmbeddingProvider()` uses `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `HARNESSMESH_EMBEDDING_MODEL` (default `text-embedding-3-small`). Storage deployments can inject a `store.BackendFactory`; SQLite remains the default and reports its capabilities through `BackendDescriptor`.
+
+`knowledge.VectorIndex` persists provider-generated vectors with project filtering and cosine ranking. `telemetry.OTLPHTTPExporter` sends span envelopes to an OpenTelemetry Collector; set the exporter endpoint in the embedding/observability integration layer.
+
+Agent adapters can use `executil.SandboxPolicy`/`RunWithPolicy` to enforce command and working-directory allowlists. `telemetry.Registry` exposes dependency-free Prometheus text and `Engine.ReplaySession` replays persisted events without duplicating event rows.
+
+For release validation use `make race`, `make fuzz`, `make load`, and `make security`. CI additionally runs race tests, archive benchmarks, Docker builds, CodeQL, and `govulncheck`. A future PostgreSQL/object-storage deployment can be injected through `store.BackendFactory`; the default local SQLite backend remains fully supported.
+
+Tagged releases use `.github/workflows/release.yml` to build, checksum, generate an SBOM, keylessly sign the checksum with Cosign, and publish release artifacts.
+
+For deployments that need tenant isolation, restrict the MCP process with comma-separated allowlists:
+
+```bash
+export HARNESSMESH_MCP_PROJECTS="project-a,project-b"
+export HARNESSMESH_MCP_CALLERS="claude,codex,antigravity"
+export HARNESSMESH_MCP_RATE_LIMIT="120"
+```
+
+Failed participant invocations are retained in the SQLite `delivery_retry_outbox` with payload, attempt count, error and retry timestamp. The engine retries transient failures automatically and moves exhausted/non-retryable entries to `delivery_dead_letters`.
+
+Operational controls are also durable: retry items support priorities, agent health and circuit-breaker state are stored in SQLite, and expensive operations can require human approval. Configure the controls in `collaboration`:
+
+```json
+{
+  "collaboration": {
+    "global_max_tokens": 200000,
+    "global_max_cost_usd": 10,
+    "approval_cost_usd": 1,
+    "circuit_breaker_failures": 3,
+    "circuit_breaker_cooldown": "2m"
+  }
+}
+```
+
+The MCP tools `operations.status`, `operations.approvals`, `operations.approve`, and `knowledge.search_advanced` expose health, quota waits, retry backlog, approval gates, metrics, and source/time-filtered knowledge search.
+
+Provider credit and session limits are handled separately: messages such as `usage limit`, `credits exhausted`, `quota exceeded`, `reset at <timestamp>`, or `try again in <duration>` are classified as quota waits. HarnessMesh keeps the delivery pending, schedules it for the provider reset time, and resumes it automatically. A quota wait does not consume a retry attempt. If the provider gives no reset time, the default wait is 15 minutes; configure it per profile with `collaboration.quota_fallback_wait`, for example:
+
+```json
+{
+  "collaboration": {
+    "quota_fallback_wait": "15m"
+  }
+}
+```
+
+This mechanism works with Codex, Claude, Antigravity, Copilot, Switchyard, and custom adapters because it analyzes the normalized invocation error text. It does not bypass provider limits or require a second token; it only pauses durable work and probes again when the limit should have reset.
 
 ---
 
@@ -80,7 +134,7 @@ Transforms HarnessMesh into a persistent, multi-channel, event-driven collaborat
 - **Verifiable Decision Records**: Formal architectural decisions linked to reproducible evidence.
 - **Human Supervision Controls**: Real-time space pause, resume, and emergency stop.
 
-### 2. Standards-Compliant MCP Server (23 Tools)
+### 2. Standards-Compliant MCP Server (34 Tools)
 Exposes a Model Context Protocol (MCP) server over standard I/O (`stdio`):
 
 #### Collaboration Space Tools (9 Tools)
@@ -198,7 +252,12 @@ Install only the harnesses you actually use. Restart the harness or open a new V
 ```text
 knowledge.search   Search previous discussions, findings, evidence, decisions, and events.
 knowledge.context  Return bounded search results formatted as RAG context.
-knowledge.stats    Show archive path and compressed size.
+knowledge.summary  Return a bounded deterministic summary grouped by record kind.
+knowledge.remember Store an explicit lesson, problem, solution, or decision.
+knowledge.import   Import a copied Claude, ChatGPT, Codex, or Markdown transcript.
+knowledge.compact  Remove records older than an RFC3339 retention cutoff.
+knowledge.stats    Show archive path, compressed size, encryption, and record statistics.
+knowledge.quality  Report verification, confidence, expiry, duplicate, and conflict signals.
 ```
 
 Example instructions to give an agent at the beginning of a new conversation:
@@ -222,6 +281,32 @@ If the user home directory is not writable, HarnessMesh falls back to `.harnessm
 ```bash
 export HARNESSMESH_KNOWLEDGE_PATH="$HOME/.harnessmesh/knowledge.hmkz"
 ```
+
+The same functions are available without MCP for scripts and CI:
+
+```bash
+harnessmesh knowledge import --file conversation.md --source claude-code --project-id my-project
+harnessmesh knowledge search --query "sqlite migration rollback" --project-id my-project --json
+harnessmesh knowledge compact --before 2025-01-01T00:00:00Z
+harnessmesh knowledge verify
+harnessmesh knowledge index
+harnessmesh knowledge export --file /backup/knowledge.hmkz
+harnessmesh knowledge restore --file /backup/knowledge.hmkz
+harnessmesh knowledge rotate-key --key "$NEW_KNOWLEDGE_KEY"
+# Optional: import changed transcript files continuously
+harnessmesh knowledge watch --file conversation.md --project-id my-project
+```
+
+For a remote VS Code extension or another machine, start the authenticated HTTP MCP endpoint:
+
+```bash
+export HARNESSMESH_MCP_TOKEN="replace-with-a-long-random-token"
+harnessmesh mcp serve --listen 127.0.0.1:8787 --token "$HARNESSMESH_MCP_TOKEN" --caller remote-agent
+```
+
+Use `Authorization: Bearer <token>` for JSON-RPC `POST /` requests. `GET /healthz` is unauthenticated for liveness checks, `GET /metrics` exposes basic Prometheus counters, and authenticated `GET /admin/knowledge` exposes archive administration statistics. Native TLS is available with `--tls-cert` and `--tls-key`; otherwise bind to localhost or use a TLS reverse proxy.
+
+Instead of a static token, OAuth2 token introspection can be configured with `HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL` and optionally `HARNESSMESH_MCP_OAUTH_CLIENT_SECRET`.
 
 The archive is shared by all local HarnessMesh MCP sessions for that user. A plain Claude or ChatGPT conversation that is not connected to the HarnessMesh MCP server is not captured automatically. ChatGPT in a separate web conversation also cannot read the local archive unless it is connected through a compatible local or remote MCP integration. In that case, use a connected harness or `knowledge.context` as the bridge instead of copying transcripts manually.
 

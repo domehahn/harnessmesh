@@ -48,6 +48,43 @@ func TestEnvelopeValidation(t *testing.T) {
 	}
 }
 
+func TestQuotaLimitClassificationAndResetParsing(t *testing.T) {
+	reset := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second)
+	err := errors.New("Codex usage limit reached; resume at " + reset.Format(time.RFC3339))
+	if !IsQuotaLimited(err) {
+		t.Fatalf("expected quota classification, got %s", ClassifyError(err))
+	}
+	got, ok := QuotaRetryAt(err)
+	if !ok || got.Sub(reset) > time.Second || reset.Sub(got) > time.Second {
+		t.Fatalf("expected reset %s, got %s (ok=%v)", reset, got, ok)
+	}
+
+	if got, ok := QuotaRetryAt(errors.New("429: try again in 2 minutes; usage limit")); !ok || got.Before(time.Now().Add(90*time.Second)) {
+		t.Fatalf("expected relative retry time, got %s (ok=%v)", got, ok)
+	}
+}
+
+func TestQuotaErrorIsTransient(t *testing.T) {
+	err := &QuotaExceededError{Agent: "codex", RetryAt: time.Now().Add(time.Hour), Reason: "session limit"}
+	if !IsTransient(err) || ClassifyError(err) != RetryCategoryQuota {
+		t.Fatalf("expected quota error to be transient, got %s", ClassifyError(err))
+	}
+}
+
+func TestProviderQuotaMarkers(t *testing.T) {
+	for _, message := range []string{
+		"codex: usage limit reached; resume at 2099-01-01T00:00:00Z",
+		"anthropic rate_limit_error: insufficient_quota",
+		"copilot monthly quota exhausted",
+		"antigravity RESOURCE_EXHAUSTED",
+		"switchyard capacity limit reached",
+	} {
+		if !IsQuotaLimited(errors.New(message)) {
+			t.Fatalf("expected provider quota marker in %q", message)
+		}
+	}
+}
+
 func TestClassifyError(t *testing.T) {
 	tests := []struct {
 		name     string

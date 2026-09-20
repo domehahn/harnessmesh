@@ -51,6 +51,36 @@ type CollaborationConfig struct {
 	MaxOutputTokens      int64   `json:"max_output_tokens,omitempty"`
 	MaxTotalTokens       int64   `json:"max_total_tokens,omitempty"`
 	MaxCostUSD           float64 `json:"max_cost_usd,omitempty"`
+	// QuotaFallbackWait is used when an agent reports a limit without a reset
+	// timestamp. The retry worker waits this long before probing the agent again.
+	QuotaFallbackWait      string  `json:"quota_fallback_wait,omitempty"`
+	GlobalMaxTokens        int64   `json:"global_max_tokens,omitempty"`
+	GlobalMaxCostUSD       float64 `json:"global_max_cost_usd,omitempty"`
+	ApprovalCostUSD        float64 `json:"approval_cost_usd,omitempty"`
+	CircuitBreakerFailures int     `json:"circuit_breaker_failures,omitempty"`
+	CircuitBreakerCooldown string  `json:"circuit_breaker_cooldown,omitempty"`
+}
+
+func (c CollaborationConfig) QuotaFallbackWaitDuration() time.Duration {
+	if c.QuotaFallbackWait == "" {
+		return 15 * time.Minute
+	}
+	d, err := time.ParseDuration(c.QuotaFallbackWait)
+	if err != nil || d <= 0 {
+		return 15 * time.Minute
+	}
+	return d
+}
+
+func (c CollaborationConfig) CircuitBreakerCooldownDuration() time.Duration {
+	if c.CircuitBreakerCooldown == "" {
+		return 2 * time.Minute
+	}
+	d, err := time.ParseDuration(c.CircuitBreakerCooldown)
+	if err != nil || d <= 0 {
+		return 2 * time.Minute
+	}
+	return d
 }
 
 func (c CollaborationConfig) SessionTimeoutDuration() time.Duration {
@@ -284,7 +314,7 @@ func Parse(raw []byte) (*Config, error) {
 			return nil, fmt.Errorf("agent %q: kind or adapter is required", name)
 		}
 		switch a.Kind {
-		case "claude", "claude-code", "codex", "antigravity", "agy", "copilot", "copilot-cli", "github-copilot", "fake", "mock":
+		case "claude", "claude-code", "codex", "openai", "openai-api", "antigravity", "agy", "copilot", "copilot-cli", "github-copilot", "fake", "mock":
 		default:
 			return nil, fmt.Errorf("agent %q: unsupported kind/adapter %q", name, a.Kind)
 		}

@@ -3,33 +3,280 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/domehahn/harnessmesh/internal/collaboration"
 	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/telemetry"
 )
 
 type Server struct {
-	engine    *collaboration.Engine
-	sessionID string
-	caller    string
-	mu        sync.Mutex
+	engine          *collaboration.Engine
+	sessionID       string
+	caller          string
+	mu              sync.Mutex
+	requests        atomic.Uint64
+	errors          atomic.Uint64
+	allowedProjects map[string]struct{}
+	allowedCallers  map[string]struct{}
+	rateMu          sync.Mutex
+	rateWindow      time.Time
+	rateCount       int
+	rateLimit       int
+	metrics         *telemetry.Registry
+}
+
+// ServeHTTP exposes the same JSON-RPC MCP server for remote harnesses.
+// A non-empty token is mandatory; callers must send Authorization: Bearer <token>.
+func (s *Server) ServeHTTP(ctx context.Context, listen, token string) error {
+	return s.serveHTTP(ctx, listen, token, "", "")
+}
+
+// ServeHTTPWithTLS enables native TLS when certificate and key paths are supplied.
+func (s *Server) ServeHTTPWithTLS(ctx context.Context, listen, token, certFile, keyFile string) error {
+	return s.serveHTTP(ctx, listen, token, certFile, keyFile)
+}
+
+func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile string) error {
+	introspectionURL := os.Getenv("HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL")
+	if strings.TrimSpace(token) == "" && introspectionURL == "" {
+		return fmt.Errorf("remote MCP requires a bearer token or OAuth introspection URL")
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		_, _ = fmt.Fprintf(w, "harnessmesh_mcp_requests_total %d\nharnessmesh_mcp_errors_total %d\n%s", s.requests.Load(), s.errors.Load(), s.metrics.Prometheus())
+	})
+	mux.HandleFunc("/admin/knowledge", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !s.adminAuthorized(r, token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if s.engine == nil {
+			http.Error(w, "engine unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		stats, err := s.engine.KnowledgeStats(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(stats)
+	})
+	mux.HandleFunc("/admin/operations", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !s.adminAuthorized(r, token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		health, err := s.engine.AgentHealth(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		retries, err := s.engine.Store().ListRetries(r.Context(), 200)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		dead, err := s.engine.Store().ListDeadLetters(r.Context(), 200)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"agents": health, "retry_queue": retries, "dead_letters": dead, "metrics": s.engine.OperationalMetrics()})
+	})
+	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !s.adminAuthorized(r, token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'")
+		_, _ = io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>HarnessMesh Operations</title><style>body{font:14px system-ui;margin:2rem;background:#111;color:#eee}pre{background:#222;padding:1rem;white-space:pre-wrap}a{color:#8cf}</style><h1>HarnessMesh Operations</h1><p><a href="/admin/knowledge">Knowledge</a> · <a href="/metrics">Metrics</a></p><pre id="out">Loading…</pre><script>fetch('/admin/operations',{headers:{'Authorization':localStorage.getItem('harnessmesh_token')||''}}).then(r=>r.text()).then(t=>{document.getElementById('out').textContent=t}).catch(e=>document.getElementById('out').textContent=e)</script>`)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if !s.allowRequest(time.Now()) {
+			s.errors.Add(1)
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		authorized := token != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1
+		if !authorized && introspectionURL != "" {
+			authorized = introspectOAuthToken(r.Context(), introspectionURL, provided, os.Getenv("HARNESSMESH_MCP_OAUTH_CLIENT_SECRET"))
+		}
+		if !authorized {
+			s.errors.Add(1)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.requests.Add(1)
+		s.metrics.Counter("harnessmesh_mcp_requests_total").Add(1)
+		body := http.MaxBytesReader(w, r.Body, 10<<20)
+		defer body.Close()
+		raw, err := io.ReadAll(body)
+		if err != nil {
+			s.errors.Add(1)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		resp, err := s.HandleMessage(r.Context(), raw)
+		if err != nil {
+			s.errors.Add(1)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	server := &http.Server{Addr: listen, Handler: securityHeaders(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Minute, WriteTimeout: 2 * time.Minute}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	var err error
+	if certFile != "" || keyFile != "" {
+		if certFile == "" || keyFile == "" {
+			return fmt.Errorf("both TLS certificate and key are required")
+		}
+		err = server.ListenAndServeTLS(certFile, keyFile)
+	} else {
+		err = server.ListenAndServe()
+	}
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) adminAuthorized(r *http.Request, token string) bool {
+	provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+		return false
+	}
+	allowed := parseACL(os.Getenv("HARNESSMESH_MCP_ADMIN_CALLERS"))
+	if len(allowed) == 0 {
+		return true
+	}
+	_, ok := allowed[s.caller]
+	return ok
+}
+
+func introspectOAuthToken(ctx context.Context, endpoint, token, clientSecret string) bool {
+	if token == "" {
+		return false
+	}
+	form := url.Values{"token": []string{token}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if clientSecret != "" {
+		req.Header.Set("Authorization", "Bearer "+clientSecret)
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+	var result struct {
+		Active bool `json:"active"`
+	}
+	return json.NewDecoder(resp.Body).Decode(&result) == nil && result.Active
 }
 
 func NewServer(engine *collaboration.Engine, sessionID, caller string) *Server {
 	if caller == "" {
 		caller = "participant"
 	}
-	return &Server{
+	server := &Server{
 		engine:    engine,
 		sessionID: sessionID,
 		caller:    caller,
 	}
+	server.metrics = telemetry.NewRegistry()
+	server.allowedProjects = parseACL(os.Getenv("HARNESSMESH_MCP_PROJECTS"))
+	server.allowedCallers = parseACL(os.Getenv("HARNESSMESH_MCP_CALLERS"))
+	server.rateLimit = 120
+	if configured, err := strconv.Atoi(os.Getenv("HARNESSMESH_MCP_RATE_LIMIT")); err == nil && configured > 0 {
+		server.rateLimit = configured
+	}
+	return server
+}
+
+func (s *Server) allowRequest(now time.Time) bool {
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	if s.rateWindow.IsZero() || now.Sub(s.rateWindow) >= time.Minute {
+		s.rateWindow, s.rateCount = now, 0
+	}
+	if s.rateCount >= s.rateLimit {
+		return false
+	}
+	s.rateCount++
+	return true
+}
+
+func parseACL(raw string) map[string]struct{} {
+	allowed := make(map[string]struct{})
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			allowed[value] = struct{}{}
+		}
+	}
+	return allowed
+}
+
+func (s *Server) authorizeProject(projectID string) error {
+	if len(s.allowedProjects) == 0 || projectID == "" {
+		return nil
+	}
+	if _, ok := s.allowedProjects[projectID]; !ok {
+		return fmt.Errorf("project %q is not allowed for this MCP server", projectID)
+	}
+	return nil
 }
 
 type JSONRPCRequest struct {
@@ -69,7 +316,7 @@ type ToolCallResult struct {
 }
 
 func (s *Server) ListTools() []ToolDefinition {
-	return []ToolDefinition{
+	tools := []ToolDefinition{
 		{
 			Name:        "peer.list",
 			Description: "List all known peer agents, their adapter types, roles, and status in the session.",
@@ -303,6 +550,10 @@ func (s *Server) ListTools() []ToolDefinition {
 						"type":        "string",
 						"description": "Optional idempotency key to prevent duplicate calls",
 					},
+					"approval_id": map[string]any{
+						"type":        "string",
+						"description": "Approval ID returned when the operation requires human approval",
+					},
 				},
 				"required": []string{"message"},
 			},
@@ -441,12 +692,15 @@ func (s *Server) ListTools() []ToolDefinition {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"query":      map[string]any{"type": "string", "description": "All terms must match; empty query lists recent archive records."},
-					"session_id": map[string]any{"type": "string"},
-					"space_id":   map[string]any{"type": "string"},
-					"kind":       map[string]any{"type": "string", "description": "Optional kind, e.g. message, finding, evidence, decision, or event type."},
-					"limit":      map[string]any{"type": "integer", "maximum": 1000},
-					"offset":     map[string]any{"type": "integer", "minimum": 0},
+					"query":          map[string]any{"type": "string", "description": "All terms must match; empty query lists recent archive records."},
+					"session_id":     map[string]any{"type": "string"},
+					"space_id":       map[string]any{"type": "string"},
+					"project_id":     map[string]any{"type": "string"},
+					"kind":           map[string]any{"type": "string", "description": "Optional kind, e.g. message, finding, evidence, decision, or event type."},
+					"verified_only":  map[string]any{"type": "boolean"},
+					"min_confidence": map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+					"limit":          map[string]any{"type": "integer", "maximum": 1000},
+					"offset":         map[string]any{"type": "integer", "minimum": 0},
 				},
 			},
 		},
@@ -456,12 +710,15 @@ func (s *Server) ListTools() []ToolDefinition {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"query":      map[string]any{"type": "string"},
-					"session_id": map[string]any{"type": "string"},
-					"space_id":   map[string]any{"type": "string"},
-					"kind":       map[string]any{"type": "string"},
-					"limit":      map[string]any{"type": "integer", "maximum": 1000},
-					"max_chars":  map[string]any{"type": "integer", "maximum": 200000},
+					"query":          map[string]any{"type": "string"},
+					"session_id":     map[string]any{"type": "string"},
+					"space_id":       map[string]any{"type": "string"},
+					"project_id":     map[string]any{"type": "string"},
+					"kind":           map[string]any{"type": "string"},
+					"verified_only":  map[string]any{"type": "boolean"},
+					"min_confidence": map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+					"limit":          map[string]any{"type": "integer", "maximum": 1000},
+					"max_chars":      map[string]any{"type": "integer", "maximum": 200000},
 				},
 			},
 		},
@@ -470,10 +727,96 @@ func (s *Server) ListTools() []ToolDefinition {
 			Description: "Return compressed archive path and size information.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
+		{
+			Name:        "knowledge.remember",
+			Description: "Store an explicit durable lesson, decision, problem, or solution in the knowledge archive.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"text":           map[string]any{"type": "string"},
+					"kind":           map[string]any{"type": "string"},
+					"source":         map[string]any{"type": "string"},
+					"project_id":     map[string]any{"type": "string"},
+					"verified_only":  map[string]any{"type": "boolean"},
+					"min_confidence": map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+					"tags":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				},
+				"required": []string{"text"},
+			},
+		},
+		{
+			Name:        "knowledge.import",
+			Description: "Import an externally captured Claude, ChatGPT, or Markdown transcript into the archive.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"text":       map[string]any{"type": "string"},
+					"source":     map[string]any{"type": "string"},
+					"project_id": map[string]any{"type": "string"},
+					"tags":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				},
+				"required": []string{"text"},
+			},
+		},
+		{
+			Name:        "knowledge.compact",
+			Description: "Apply retention by atomically removing archive records older than the supplied RFC3339 timestamp.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"before": map[string]any{"type": "string", "description": "RFC3339 cutoff timestamp"}},
+				"required":   []string{"before"},
+			},
+		},
+		{
+			Name:        "knowledge.summary",
+			Description: "Create a bounded, evidence-oriented summary of matching historical knowledge for a new task.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":      map[string]any{"type": "string"},
+					"project_id": map[string]any{"type": "string"},
+					"limit":      map[string]any{"type": "integer", "maximum": 1000},
+					"max_chars":  map[string]any{"type": "integer", "maximum": 200000},
+				},
+			},
+		},
+		{
+			Name:        "knowledge.quality",
+			Description: "Assess verification, confidence, expiry, duplicate, and conflict signals in matching knowledge.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":      map[string]any{"type": "string"},
+					"project_id": map[string]any{"type": "string"},
+					"limit":      map[string]any{"type": "integer", "maximum": 1000},
+				},
+			},
+		},
 	}
+	tools = append(tools,
+		ToolDefinition{Name: "operations.status", Description: "Show agent health, quota waits, circuit breakers, retry backlog, and operational metrics.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}}},
+		ToolDefinition{Name: "operations.approvals", Description: "List pending or completed human approval requests.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"status": map[string]any{"type": "string"}}}},
+		ToolDefinition{Name: "operations.approve", Description: "Approve or reject a pending expensive or sensitive operation.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"approval_id": map[string]any{"type": "string"}, "approved": map[string]any{"type": "boolean"}}, "required": []string{"approval_id", "approved"}}},
+		ToolDefinition{
+			Name: "knowledge.search_advanced", Description: "Search knowledge with time, verification, confidence, and source filters.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"query": map[string]any{"type": "string"}, "since": map[string]any{"type": "string"},
+				"until": map[string]any{"type": "string"}, "agent": map[string]any{"type": "string"},
+				"source": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer"},
+			}},
+		},
+		ToolDefinition{Name: "operations.dead_letters", Description: "List permanently failed delivery jobs for operator recovery.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"limit": map[string]any{"type": "integer"}}}},
+		ToolDefinition{Name: "operations.requeue_dead_letter", Description: "Requeue a dead-letter delivery with an optional priority.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "priority": map[string]any{"type": "integer"}}, "required": []string{"id"}}},
+	)
+	return tools
 }
 
 func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCResponse, error) {
+	if len(s.allowedCallers) > 0 {
+		if _, ok := s.allowedCallers[s.caller]; !ok {
+			return nil, fmt.Errorf("caller %q is not allowed for this MCP server", s.caller)
+		}
+	}
 	var req JSONRPCRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return &JSONRPCResponse{
@@ -843,35 +1186,170 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		}
 		return s.engine.SpaceStatus(ctx, spaceID)
 
-	case "knowledge.search", "knowledge.context":
+	case "operations.status":
+		health, err := s.engine.AgentHealth(ctx)
+		if err != nil {
+			return nil, err
+		}
+		retries, err := s.engine.Store().ListRetries(ctx, 200)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"agents": health, "retry_queue": retries, "metrics": s.engine.OperationalMetrics()}, nil
+
+	case "operations.approvals":
 		var req struct {
-			Query     string `json:"query"`
-			SessionID string `json:"session_id"`
-			SpaceID   string `json:"space_id"`
-			Kind      string `json:"kind"`
-			Limit     int    `json:"limit"`
-			Offset    int    `json:"offset"`
-			MaxChars  int    `json:"max_chars"`
+			Status protocol.ApprovalStatus `json:"status"`
+		}
+		_ = json.Unmarshal(argsJSON, &req)
+		return s.engine.Approvals(ctx, req.Status)
+
+	case "operations.approve":
+		var req struct {
+			ApprovalID string `json:"approval_id"`
+			Approved   bool   `json:"approved"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, err
+		}
+		return s.engine.DecideApproval(ctx, req.ApprovalID, s.caller, req.Approved)
+
+	case "operations.dead_letters":
+		var req struct {
+			Limit int `json:"limit"`
+		}
+		_ = json.Unmarshal(argsJSON, &req)
+		return s.engine.Store().ListDeadLetters(ctx, req.Limit)
+
+	case "operations.requeue_dead_letter":
+		var req struct {
+			ID       string `json:"id"`
+			Priority int    `json:"priority"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, err
+		}
+		if req.ID == "" {
+			return nil, fmt.Errorf("dead-letter id is required")
+		}
+		if err := s.engine.Store().RequeueDeadLetter(ctx, req.ID, time.Now().UTC(), req.Priority); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "requeued", "id": req.ID, "priority": req.Priority}, nil
+
+	case "knowledge.search_advanced":
+		var req struct {
+			Query, Since, Until, Agent, Source string
+			Limit                              int
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, err
+		}
+		var since, until time.Time
+		var err error
+		if req.Since != "" {
+			since, err = time.Parse(time.RFC3339, req.Since)
+			if err != nil {
+				return nil, fmt.Errorf("invalid since: %w", err)
+			}
+		}
+		if req.Until != "" {
+			until, err = time.Parse(time.RFC3339, req.Until)
+			if err != nil {
+				return nil, fmt.Errorf("invalid until: %w", err)
+			}
+		}
+		records, err := s.engine.KnowledgeSearch(ctx, req.Query, knowledge.SearchOptions{Since: since, Until: until, Agent: req.Agent, Source: req.Source, Limit: req.Limit})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"records": records, "count": len(records)}, nil
+
+	case "knowledge.search", "knowledge.context", "knowledge.summary", "knowledge.quality":
+		var req struct {
+			Query         string  `json:"query"`
+			SessionID     string  `json:"session_id"`
+			SpaceID       string  `json:"space_id"`
+			ProjectID     string  `json:"project_id"`
+			Kind          string  `json:"kind"`
+			VerifiedOnly  bool    `json:"verified_only"`
+			MinConfidence float64 `json:"min_confidence"`
+			Limit         int     `json:"limit"`
+			Offset        int     `json:"offset"`
+			MaxChars      int     `json:"max_chars"`
 		}
 		if err := json.Unmarshal(argsJSON, &req); err != nil {
 			return nil, fmt.Errorf("parse knowledge args: %w", err)
 		}
+		if err := s.authorizeProject(req.ProjectID); err != nil {
+			return nil, err
+		}
 		records, err := s.engine.KnowledgeSearch(ctx, req.Query, knowledge.SearchOptions{
-			SessionID: req.SessionID, SpaceID: req.SpaceID, Kind: req.Kind, Limit: req.Limit, Offset: req.Offset,
+			SessionID: req.SessionID, SpaceID: req.SpaceID, ProjectID: req.ProjectID, Kind: req.Kind, Limit: req.Limit, Offset: req.Offset, VerifiedOnly: req.VerifiedOnly, MinConfidence: req.MinConfidence,
 		})
 		if err != nil {
 			return nil, err
 		}
-		if toolName == "knowledge.context" {
+		if toolName == "knowledge.context" || toolName == "knowledge.summary" {
 			if req.MaxChars <= 0 {
 				req.MaxChars = 50000
 			}
-			return map[string]any{"records": records, "context": knowledge.BuildContext(records, req.MaxChars)}, nil
+			contextText := knowledge.BuildContext(records, req.MaxChars)
+			if toolName == "knowledge.context" {
+				return map[string]any{"records": records, "context": contextText}, nil
+			}
+			counts := map[string]int{}
+			for _, record := range records {
+				counts[record.Kind]++
+			}
+			return map[string]any{"records": records, "summary": contextText, "kind_counts": counts}, nil
+		}
+		if toolName == "knowledge.quality" {
+			return map[string]any{"records": records, "quality": knowledge.AssessQuality(records)}, nil
 		}
 		return map[string]any{"records": records, "count": len(records)}, nil
 
 	case "knowledge.stats":
 		return s.engine.KnowledgeStats(ctx)
+
+	case "knowledge.remember", "knowledge.import":
+		var req struct {
+			Text      string   `json:"text"`
+			Kind      string   `json:"kind"`
+			Source    string   `json:"source"`
+			ProjectID string   `json:"project_id"`
+			Tags      []string `json:"tags"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse knowledge write args: %w", err)
+		}
+		if strings.TrimSpace(req.Text) == "" {
+			return nil, fmt.Errorf("knowledge text is required")
+		}
+		if err := s.authorizeProject(req.ProjectID); err != nil {
+			return nil, err
+		}
+		if toolName == "knowledge.import" && req.Kind == "" {
+			req.Kind = "transcript"
+		}
+		if req.Source == "" {
+			req.Source = s.caller
+		}
+		return s.engine.KnowledgeRemember(ctx, req.Text, req.Kind, req.Source, req.ProjectID, req.Tags)
+
+	case "knowledge.compact":
+		var req struct {
+			Before string `json:"before"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse knowledge compact args: %w", err)
+		}
+		before, err := time.Parse(time.RFC3339, req.Before)
+		if err != nil {
+			return nil, fmt.Errorf("before must be RFC3339: %w", err)
+		}
+		kept, err := s.engine.KnowledgeCompact(ctx, before)
+		return map[string]any{"kept_records": kept, "before": before}, err
 
 	default:
 		return nil, fmt.Errorf("unknown collaboration tool %q", toolName)
