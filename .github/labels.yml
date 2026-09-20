@@ -1,0 +1,31 @@
+# Canonical repository labels. Keep GitHub labels aligned with this file.
+- name: bug
+  color: d73a4a
+  description: Something is not working
+- name: enhancement
+  color: a2eeef
+  description: New capability or improvement
+- name: documentation
+  color: 0075ca
+  description: Documentation-only change
+- name: security
+  color: b60205
+  description: Security or privacy impact
+- name: performance
+  color: f9d0c4
+  description: Performance, latency, or resource usage
+- name: adapter
+  color: 5319e7
+  description: Harness or provider adapter
+- name: protocol
+  color: 1d76db
+  description: Public protocol, MCP, or compatibility change
+- name: good first issue
+  color: 7057ff
+  description: Suitable for a new contributor
+- name: help wanted
+  color: 008672
+  description: Maintainers welcome community help
+- name: breaking change
+  color: b60205
+  description: Requires migration or compatibility work

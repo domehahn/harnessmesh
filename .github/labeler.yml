@@ -1,0 +1,15 @@
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ['**/*.md', 'docs/**']
+protocol:
+  - changed-files:
+      - any-glob-to-any-file: ['internal/protocol/**', 'internal/mcp/**']
+adapter:
+  - changed-files:
+      - any-glob-to-any-file: ['internal/agent/**', 'docs/adapters/**']
+security:
+  - changed-files:
+      - any-glob-to-any-file: ['SECURITY.md', 'internal/executil/**', 'internal/mcp/**']
+performance:
+  - changed-files:
+      - any-glob-to-any-file: ['internal/knowledge/**', 'internal/store/**', 'internal/telemetry/**']
