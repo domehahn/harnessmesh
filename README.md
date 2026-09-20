@@ -389,6 +389,15 @@ Usage:
   - [Google Antigravity Adapter](docs/adapters/antigravity.md)
   - [GitHub Copilot CLI Adapter](docs/adapters/copilot-cli.md)
 
+### Community
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Support](SUPPORT.md)
+- [Governance](GOVERNANCE.md)
+- [Security Policy](SECURITY.md)
+- [Release Process](RELEASE.md)
+
 ---
 
 ## License

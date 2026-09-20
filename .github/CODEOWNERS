@@ -1,0 +1,8 @@
+# Default ownership. Update this file when the maintainer team changes.
+* @domehahn
+
+# Security-sensitive surfaces require maintainer review.
+/internal/mcp/ @domehahn
+/internal/executil/ @domehahn
+/internal/store/ @domehahn
+/SECURITY.md @domehahn

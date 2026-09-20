@@ -22,3 +22,17 @@ body:
       label: Expected behavior
     validations:
       required: true
+  - type: input
+    id: version
+    attributes:
+      label: HarnessMesh version
+      placeholder: "0.3.0 or commit SHA"
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Sensitive data check
+      options:
+        - label: I removed tokens, credentials, private source code, transcripts, and personal data.
+          required: true
