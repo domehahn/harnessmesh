@@ -2,6 +2,8 @@
 
 The OpenAI Codex adapter integrates the Codex CLI (`codex`) into the HarnessMesh collaboration fabric.
 
+**Looking for the reverse direction** - using the *Codex VS Code extension* as your IDE frontend with HarnessMesh supplying the model backend instead of OpenAI? That's [docs/codex-provider.md](../codex-provider.md), a completely separate mechanism (`internal/provider`) from this adapter. This page (`internal/agent`'s `CodexAdapter`) is about HarnessMesh *invoking* the Codex CLI as a collaboration peer/executor; the provider gateway is about the Codex extension *invoking HarnessMesh*.
+
 ## Identifier & Registration
 
 - **Adapter Type**: `codex` (alias: `openai-codex`)

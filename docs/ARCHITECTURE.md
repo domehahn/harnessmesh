@@ -1,6 +1,6 @@
 # HarnessMesh Architecture
 
-HarnessMesh is a persistent, multi-agent **collaboration control plane** for AI coding harnesses. It is a session broker, MCP server, message/event fabric, evidence store, and policy/safety boundary - explicitly **not** an LLM proxy, model router, or API wrapper for any provider.
+HarnessMesh is a persistent, multi-agent **collaboration control plane** for AI coding harnesses (session broker, MCP server, message/event fabric, evidence store, policy/safety boundary), plus a separate, optional **Codex-compatible model-provider gateway** (`internal/provider`) for routing the Codex VS Code extension's inference to a backend of your choosing. These are two bounded planes that share no server-side state - see [Two planes](#two-planes) below.
 
 ## Core components
 
@@ -15,6 +15,21 @@ HarnessMesh is a persistent, multi-agent **collaboration control plane** for AI 
 | Harness adapters | `internal/agent` | Per-harness process/API adapters (Claude Code, Codex, Copilot CLI, Antigravity, OpenAI API, external/passive) |
 | Context projection | `internal/contextpack` | Bounded, secret-filtered repository context extraction |
 | Config | `internal/config` | Typed configuration, validation, and the single-writer / credit-isolation invariants |
+| Provider gateway | `internal/provider` | Codex-compatible Responses-API model-provider HTTP server, pluggable inference backends, zero-credit policy |
+
+## Two planes
+
+HarnessMesh exposes two deliberately separate planes:
+
+- **Collaboration plane** (everything above this section): MCP, the VS Code bridge, ChatGPT as a peer, findings/evidence/reviews/tasks/decisions. Provider-neutral - it never performs model inference itself.
+- **Model provider plane** (`internal/provider`, [docs/codex-provider.md](codex-provider.md)): a bounded HTTP interface speaking the OpenAI Responses API wire protocol that the official Codex VS Code extension expects of a custom `model_provider`. It performs no collaboration operations and holds no collaboration state.
+
+Both can run in the same `harnessmesh` process/config, or independently. Neither depends on the other.
+
+```text
+Codex VS Code Extension --(Responses API wire)--> HarnessMesh Provider Gateway --> local/Bedrock/(optionally OpenAI) backend
+ChatGPT                 --(MCP)-----------------> HarnessMesh Collaboration Plane --> reviews/findings/tasks/evidence/decisions
+```
 
 ## Participants
 
@@ -48,6 +63,7 @@ Repository changes are gated by **MeshCommit**: a deterministic, policy-locked e
 
 - [docs/mcp.md](mcp.md) - MCP transports, tool surface, authentication
 - [docs/chatgpt-integration.md](chatgpt-integration.md) - ChatGPT-specific setup and guarantees
+- [docs/codex-provider.md](codex-provider.md) - Codex-compatible model-provider gateway, zero-credit mode
 - [docs/security.md](security.md) - trust model, threat model, invariants
 - [docs/meshcommit.md](meshcommit.md) - evidence-gated change transactions
 - [docs/collaboration-spaces.md](collaboration-spaces.md), [docs/channels-and-threads.md](channels-and-threads.md), [docs/inbox-and-activation.md](inbox-and-activation.md) - collaboration-plane domain model

@@ -4,6 +4,8 @@ HarnessMesh v0.2.0 includes first-class support for **NVIDIA NeMo Switchyard** a
 
 Switchyard manages dynamic model routing, stage routers, fallback chains, and inference multiplexing. HarnessMesh coordinates harnesses; Switchyard coordinates models.
 
+**Not to be confused with:** [docs/codex-provider.md](codex-provider.md)'s provider gateway (`internal/provider`). Switchyard integration here reconfigures a *managed harness's own outbound* API traffic (e.g. pointing a Claude/Codex adapter's `OPENAI_BASE_URL` at Switchyard) - HarnessMesh remains a client. The Codex provider gateway is the opposite data-flow direction: HarnessMesh becomes a *server* the Codex VS Code extension talks to as its `model_provider`. They are independent, non-overlapping mechanisms; a deployment can use either, both, or neither.
+
 ---
 
 ## Architectural Boundary

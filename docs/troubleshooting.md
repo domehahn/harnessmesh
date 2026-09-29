@@ -89,3 +89,13 @@ harnessmesh findings <session-id>
 harnessmesh evidence <session-id>
 ```
 
+
+## Codex provider gateway
+
+See [docs/codex-provider.md](codex-provider.md#troubleshooting) for the full troubleshooting table (auth failures, `403 metered_backend_denied`, `/readyz` 503s, self-recursion detection, and timeouts). Quick checks:
+
+```bash
+harnessmesh provider doctor --config harnessmesh.json
+curl -s http://127.0.0.1:8789/readyz
+curl -s http://127.0.0.1:8789/metrics | grep metered_backend
+```

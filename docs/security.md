@@ -45,6 +45,12 @@ CORS on `/mcp` and on the VS Code bridge's `/api/v1/*` is a strict, explicit ori
 
 An `execution_mode: external` participant (the ChatGPT-browser role) can never resolve to a metered backend (the OpenAI API or the Codex CLI): this is enforced at config-load time (`internal/creditguard`, config validation rejects such a configuration outright). `harnessmesh_metered_backend_calls_total{backend=...}` on `/metrics` exposes the same process-global counters an automated end-to-end test asserts stay at zero across a full ChatGPT-bridge workflow (see [docs/chatgpt-integration.md](chatgpt-integration.md#credit-isolation)). In a deployment that also runs a *legitimate*, separately-configured managed OpenAI/Codex executor in the same process, this metric will be nonzero for that executor's own traffic - it is not a per-participant signal, so use it as a coarse operational sanity check, not as proof that isolation holds for a specific request. The real guarantee is the config-load-time rejection plus the structural fact that external participants are never built into the invocable harness map.
 
+## Credit isolation (Codex provider gateway)
+
+Separately from the ChatGPT-bridge guarantee above, `internal/provider`'s zero-credit mode (the default) makes the `openai-api` and `codex` backend types unreachable from the Codex-compatible provider gateway: rejected at config-load time if referenced as `default_backend` or in `fallback.order`, and re-checked at request time regardless (`Registry.Resolve`/`FallbackChain`). There is no silent fallback from a failed local/Bedrock backend to a metered one. See [docs/codex-provider.md](codex-provider.md#zero-credit-mode).
+
+The provider gateway is authenticated and rate/size/timeout-limited independently of the MCP/bridge tokens - a provider-gateway token grants no collaboration or admin capability, because none is reachable from that server at all.
+
 ## Single-writer invariant
 
 At most one participant may be configured `writable: true` (rejected at config-validation time if violated). MeshCommit's `change.create` and the commit path additionally re-check, at runtime, that the acting participant is writable and managed (not `execution_mode: external`) - the invariant does not rely solely on which tools happen to be wired up in a given transport.
@@ -62,3 +68,5 @@ At most one participant may be configured `writable: true` (rejected at config-v
 | Replay / duplicate mutation from network retries | Idempotency-key support on mutating MCP tools and bridge REST endpoints. |
 | Denial of service | Rate limiting, request body size caps, bounded WebSocket send queues (slow consumers are disconnected, not buffered without bound). |
 | Confused deputy (a passive participant tricking a managed executor into acting) | Managed executors act on explicit, auditable task/change records, not on arbitrary inbound messages; MeshCommit's independent-review invariant additionally forbids self-review. |
+| Codex extension silently billed against OpenAI/Codex quota via a misconfigured or compromised provider gateway | Zero-credit mode (default) makes `openai-api`/`codex` backend types unreachable, rejected at config-load and re-checked at request time; no silent fallback to a forbidden backend. |
+| Provider-gateway backend `base_url` pointing back at the gateway itself (accidental infinite loop) | `NewRegistry` detects a backend host:port matching the gateway's own listen address (including `localhost`/`127.0.0.1` spellings) and refuses to start. |
