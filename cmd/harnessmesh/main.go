@@ -17,9 +17,11 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/agent"
+	"github.com/domehahn/harnessmesh/internal/bridge"
 	"github.com/domehahn/harnessmesh/internal/collaboration"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/mcp"
 	"github.com/domehahn/harnessmesh/internal/modelrouting"
@@ -57,6 +59,8 @@ func main() {
 		err = changeCmd(os.Args[2:])
 	case "mcp":
 		err = mcpCmd(os.Args[2:])
+	case "bridge":
+		err = bridgeCmd(os.Args[2:])
 	case "peer":
 		err = peerCmd(os.Args[2:])
 	case "agents":
@@ -113,6 +117,7 @@ Usage:
   harnessmesh integrate <antigravity|chatgpt> [--config <path>] [--repo <path>] [--dry-run]
   harnessmesh mcp serve [--repo <path>] [--config <path>] [--session <id>] [--caller <name>] [--endpoint <path>]
   harnessmesh mcp install <claude|codex|antigravity|copilot> [--scope <project|user>]
+  harnessmesh bridge serve [--repo <path>] [--config <path>] [--caller <name>] [--listen <addr>]
   harnessmesh peer converse --message "..." [--peer <name>] [--outcome <type>] [options]
   harnessmesh peer ask --peer <name> --question "..." [options]
   harnessmesh peer review --peer <name> [options]
@@ -523,6 +528,122 @@ func mcpServe(args []string) error {
 		return server.ServeHTTPWithTLS(ctx, *listen, *token, *tlsCert, *tlsKey)
 	}
 	return server.ServeStdio(ctx, os.Stdin, os.Stdout)
+}
+
+func bridgeCmd(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, `Usage:
+  harnessmesh bridge serve [--repo <path>] [--config <path>] [--caller <name>] [--listen <addr>]
+`)
+		return errors.New("subcommand required: serve")
+	}
+	switch args[0] {
+	case "serve":
+		return bridgeServe(args[1:])
+	default:
+		return fmt.Errorf("unknown bridge subcommand %q", args[0])
+	}
+}
+
+// bridgeServe starts the local REST+WebSocket collaboration-state API the
+// VS Code extension speaks. It shares the same engine, store, and
+// harness-construction path as `mcp serve` - external (ChatGPT) agents are
+// never built into the invocable harness map here either.
+func bridgeServe(args []string) error {
+	fs := flag.NewFlagSet("bridge serve", flag.ContinueOnError)
+	repo := fs.String("repo", ".", "repository path")
+	configPath := fs.String("config", "harnessmesh.json", "config file")
+	caller := fs.String("caller", "", "participant identity the bridge acts as (defaults to config.bridge or the configured writable executor)")
+	listen := fs.String("listen", "", "bridge listen address (default 127.0.0.1:8788 or config.bridge.listen)")
+	token := fs.String("token", os.Getenv("HARNESSMESH_BRIDGE_TOKEN"), "bridge bearer token")
+	websocketEnabled := fs.Bool("websocket", true, "enable the /api/v1/events/ws endpoint")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	absRepo, err := filepath.Abs(*repo)
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfigOrDefault(*configPath)
+	if err != nil {
+		return err
+	}
+
+	callerName := *caller
+	if callerName == "" {
+		// The bridge always acts as a managed, writable participant - never
+		// as the ChatGPT/external role, which must never be able to reach
+		// repository-write operations through this or any other transport.
+		for name, a := range cfg.Agents {
+			if a.Writable {
+				callerName = name
+				break
+			}
+		}
+	}
+
+	listenAddr := *listen
+	if listenAddr == "" {
+		listenAddr = cfg.Bridge.Listen
+	}
+
+	bridgeToken := *token
+	if bridgeToken == "" {
+		bridgeToken = cfg.Bridge.Token
+	}
+	if bridgeToken == "" {
+		return errors.New("bridge requires a bearer token: pass --token, set HARNESSMESH_BRIDGE_TOKEN, or configure bridge.token")
+	}
+
+	st, err := store.OpenSQLite("")
+	if err != nil {
+		return fmt.Errorf("open sqlite store: %w", err)
+	}
+	defer st.Close()
+
+	harnesses := make(map[string]agent.Harness)
+	for name, aCfg := range cfg.Agents {
+		if aCfg.IsExternal() {
+			continue
+		}
+		h, err := agent.NewHarness(name, aCfg, cfg.Switchyard)
+		if err == nil {
+			harnesses[name] = h
+		}
+	}
+
+	proj := contextpack.New(absRepo, cfg.Context)
+	eng := collaboration.NewEngine(collaboration.EngineConfig{
+		Config:    cfg,
+		Store:     st,
+		Repo:      absRepo,
+		Projector: proj,
+		Harnesses: harnesses,
+	})
+	defer eng.Close()
+
+	srv := bridge.NewServer(eng, bridge.Config{
+		Listen:           listenAddr,
+		Token:            bridgeToken,
+		AllowedOrigins:   cfg.Bridge.AllowedOrigins,
+		WebSocketEnabled: *websocketEnabled && cfg.Bridge.WebSocketEnabled,
+		Caller:           callerName,
+	})
+	defer srv.Close()
+
+	fmt.Fprintf(os.Stderr, "HarnessMesh bridge listening on %s (caller=%q, websocket=%v)\n", listenAddrOrDefault(listenAddr), callerName, *websocketEnabled)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	return srv.Serve(ctx)
+}
+
+func listenAddrOrDefault(addr string) string {
+	if addr == "" {
+		return "127.0.0.1:8788"
+	}
+	return addr
 }
 
 func mcpInstall(args []string) error {
@@ -1667,10 +1788,98 @@ func doctor(args []string) error {
 		st.Close()
 	}
 
+	if doctorChatGPT(cfg) {
+		failed = true
+	}
+
 	if failed {
 		return errors.New("doctor found one or more problems")
 	}
 	return nil
+}
+
+// doctorChatGPT diagnoses the ChatGPT collaboration-bridge path: remote MCP
+// availability, auth configuration, the chatgpt participant's role and
+// capabilities, credit isolation, single-writer status, and bridge/TLS
+// readiness. Returns true if it found a problem.
+func doctorChatGPT(cfg *config.Config) bool {
+	fmt.Println("\nChatGPT bridge:")
+	failed := false
+
+	chatgptName := cfg.ChatGPT.Participant
+	if chatgptName == "" {
+		for name, a := range cfg.Agents {
+			if a.IsExternal() {
+				chatgptName = name
+				break
+			}
+		}
+	}
+	if chatgptName == "" {
+		fmt.Println("INFO no external (ChatGPT-role) participant configured - run 'harnessmesh integrate chatgpt'")
+		return false
+	}
+	aCfg, ok := cfg.Agents[chatgptName]
+	if !ok {
+		fmt.Printf("FAIL chatgpt.participant %q is not defined under agents\n", chatgptName)
+		return true
+	}
+
+	if aCfg.IsExternal() {
+		fmt.Printf("PASS participant %q execution_mode=external\n", chatgptName)
+	} else {
+		fmt.Printf("FAIL participant %q must have execution_mode=external\n", chatgptName)
+		failed = true
+	}
+	if !aCfg.Writable {
+		fmt.Printf("PASS participant %q is not repository-writable\n", chatgptName)
+	} else {
+		fmt.Printf("FAIL participant %q must not be writable (single-writer invariant)\n", chatgptName)
+		failed = true
+	}
+
+	writableCount := 0
+	writer := ""
+	for name, a := range cfg.Agents {
+		if a.Writable {
+			writableCount++
+			writer = name
+		}
+	}
+	switch writableCount {
+	case 0:
+		fmt.Println("INFO no writable/managed executor configured yet")
+	case 1:
+		fmt.Printf("PASS single writer: %q\n", writer)
+	default:
+		fmt.Printf("FAIL %d agents are writable; single-writer invariant requires exactly 1\n", writableCount)
+		failed = true
+	}
+
+	mode := creditguard.ResolveMode(cfg.ChatGPT.CreditIsolation)
+	if err := creditguard.CheckParticipant(mode, chatgptName, true, aCfg.Kind); err != nil {
+		fmt.Printf("FAIL credit isolation: %v\n", err)
+		failed = true
+	} else {
+		fmt.Printf("PASS credit isolation mode=%q, adapter=%q is not a metered backend\n", mode, aCfg.Kind)
+	}
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		fmt.Println("INFO OPENAI_API_KEY is set in this environment; the ChatGPT bridge path never reads it (credit isolation is structural + enforced, not env-based)")
+	}
+
+	if cfg.Bridge.Enabled || cfg.Bridge.Listen != "" {
+		fmt.Printf("PASS local VS Code bridge configured (listen=%s)\n", listenAddrOrDefault(cfg.Bridge.Listen))
+		if cfg.Bridge.Token == "" && os.Getenv("HARNESSMESH_BRIDGE_TOKEN") == "" {
+			fmt.Println("FAIL bridge has no token configured (bridge.token or HARNESSMESH_BRIDGE_TOKEN) - it will refuse to serve")
+			failed = true
+		}
+	} else {
+		fmt.Println("INFO local VS Code bridge not configured (harnessmesh bridge serve will use defaults)")
+	}
+
+	fmt.Println("INFO remote MCP: 'harnessmesh mcp serve --listen <host:port>' exposes /mcp (Streamable HTTP); put a TLS-terminating reverse proxy or the OpenAI-supported secure tunnel mechanism in front of it for production use - see docs/chatgpt-integration.md")
+
+	return failed
 }
 
 func smokeTestCmd(args []string) error {
