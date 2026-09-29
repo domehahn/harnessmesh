@@ -3646,4 +3646,3 @@ func (s *SQLiteStore) GetLatestGateResult(ctx context.Context, changeID string) 
 	_ = json.Unmarshal([]byte(reasonsStr), &gr.Reasons)
 	return &gr, nil
 }
-
