@@ -871,6 +871,44 @@ func TestStreamableHTTP_SubscriptionAuthorization(t *testing.T) {
 	}
 }
 
+func TestStreamableHTTP_ProtocolVersionNegotiation(t *testing.T) {
+	server, _, _, token, _ := setupTestCollabEnv(t)
+	handler := server.StreamableHTTPHandler(token)
+
+	// Unsupported version must be rejected with a clear JSON-RPC-shaped error,
+	// not silently echoed back.
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Mcp-Protocol-Version", "1999-01-01")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unsupported protocol version, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// No header at all defaults to the server's current default version.
+	req2 := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req2.Header.Set("Authorization", "Bearer "+token)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 with no version header, got %d", rec2.Code)
+	}
+	if got := rec2.Header().Get("Mcp-Protocol-Version"); got != defaultProtocolVersion {
+		t.Fatalf("expected default protocol version %q, got %q", defaultProtocolVersion, got)
+	}
+
+	// A supported-but-older version is honored, not upgraded.
+	req3 := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req3.Header.Set("Authorization", "Bearer "+token)
+	req3.Header.Set("Mcp-Protocol-Version", "2024-11-05")
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if got := rec3.Header().Get("Mcp-Protocol-Version"); got != "2024-11-05" {
+		t.Fatalf("expected honored version 2024-11-05, got %q", got)
+	}
+}
+
 // callToolRaw performs a single tools/call over the Streamable HTTP handler
 // and returns the decoded content text of the first content block, plus
 // whether the JSON-RPC/tool call resulted in an error.

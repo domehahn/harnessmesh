@@ -17,10 +17,27 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/collaboration"
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/telemetry"
 )
+
+// Supported MCP protocol (spec revision) versions. defaultProtocolVersion is
+// used when a client sends no Mcp-Protocol-Version header, and is what the
+// server offers back to a client that requested an unsupported version.
+const defaultProtocolVersion = "2025-06-18"
+
+var supportedProtocolVersions = []string{"2025-06-18", "2025-03-26", "2024-11-05"}
+
+func isSupportedProtocolVersion(v string) bool {
+	for _, sv := range supportedProtocolVersions {
+		if sv == v {
+			return true
+		}
+	}
+	return false
+}
 
 type mcpSession struct {
 	id        string
@@ -112,6 +129,8 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		_, _ = fmt.Fprintf(w, "harnessmesh_mcp_requests_total %d\nharnessmesh_mcp_errors_total %d\n%s", s.requests.Load(), s.errors.Load(), s.metrics.Prometheus())
+		_, _ = fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"openai-api\"} %d\n", creditguard.Calls(creditguard.BackendOpenAIAPI))
+		_, _ = fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"codex\"} %d\n", creditguard.Calls(creditguard.BackendCodex))
 	})
 	mux.HandleFunc("/admin/knowledge", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || !s.adminAuthorized(r, token) {
@@ -342,7 +361,18 @@ func (s *Server) StreamableHTTPHandler(token string) http.Handler {
 
 		protocolVersion := r.Header.Get("Mcp-Protocol-Version")
 		if protocolVersion == "" {
-			protocolVersion = "2024-11-05"
+			protocolVersion = defaultProtocolVersion
+		} else if !isSupportedProtocolVersion(protocolVersion) {
+			s.errors.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":    -32600,
+					"message": fmt.Sprintf("unsupported Mcp-Protocol-Version %q; supported versions: %s", protocolVersion, strings.Join(supportedProtocolVersions, ", ")),
+				},
+			})
+			return
 		}
 		w.Header().Set("Mcp-Session-Id", sessionID)
 		w.Header().Set("Mcp-Protocol-Version", protocolVersion)
@@ -1162,11 +1192,24 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 
 	switch req.Method {
 	case "initialize":
+		negotiated := defaultProtocolVersion
+		var initParams struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		if len(req.Params) > 0 && json.Unmarshal(req.Params, &initParams) == nil && initParams.ProtocolVersion != "" {
+			if isSupportedProtocolVersion(initParams.ProtocolVersion) {
+				negotiated = initParams.ProtocolVersion
+			}
+			// If the client requested an unsupported version, the server
+			// responds with the latest version it supports (defaultProtocolVersion)
+			// per the MCP version-negotiation lifecycle; the client decides
+			// whether to proceed or disconnect.
+		}
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: map[string]any{
-				"protocolVersion": "2024-11-05",
+				"protocolVersion": negotiated,
 				"capabilities": map[string]any{
 					"tools": map[string]any{},
 				},
