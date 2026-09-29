@@ -94,6 +94,32 @@ func (s *SpaceService) CreateSpace(ctx context.Context, id, workspaceID, title, 
 		workspaceID = "."
 	}
 
+	now := time.Now().UTC()
+	if participants == nil {
+		participants = make(map[string]protocol.SpaceParticipant)
+		for name, a := range s.cfg.Agents {
+			mode := protocol.ParticipantModeActive
+			if a.Mode == "read-only" {
+				mode = protocol.ParticipantModePassive
+			}
+			execMode := a.ExecutionMode
+			if execMode == "" {
+				execMode = protocol.ExecutionModeManaged
+			}
+			participants[name] = protocol.SpaceParticipant{
+				ID:            name,
+				Adapter:       a.Kind,
+				ExecutionMode: execMode,
+				Roles:         a.Roles,
+				Capabilities:  []string{},
+				Mode:          mode,
+				Writable:      a.Writable,
+				JoinedAt:      now,
+				UpdatedAt:     now,
+			}
+		}
+	}
+
 	// Validate single-writer invariant
 	writableCount := 0
 	for _, p := range participants {
@@ -110,7 +136,6 @@ func (s *SpaceService) CreateSpace(ctx context.Context, id, workspaceID, title, 
 		}
 	}
 
-	now := time.Now().UTC()
 	space := &protocol.CollaborationSpace{
 		ID:                id,
 		WorkspaceID:       workspaceID,

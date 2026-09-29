@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -12,6 +13,49 @@ import (
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 )
+
+var ErrExternalParticipantCannotBeInvoked = errors.New("external participant cannot be invoked directly by HarnessMesh; conversations must be initiated by the external participant")
+
+type ExternalHarness struct {
+	id           string
+	adapter      string
+	capabilities config.AgentCapabilities
+}
+
+func NewExternalHarness(id string, cfg config.AgentConfig) *ExternalHarness {
+	return &ExternalHarness{
+		id:           id,
+		adapter:      cfg.Kind,
+		capabilities: cfg.Capabilities,
+	}
+}
+
+func (h *ExternalHarness) ID() string                             { return h.id }
+func (h *ExternalHarness) Name() string                           { return h.id }
+func (h *ExternalHarness) AdapterType() string                    { return h.adapter }
+func (h *ExternalHarness) Capabilities() config.AgentCapabilities { return h.capabilities }
+func (h *ExternalHarness) Health(ctx context.Context) error       { return nil }
+func (h *ExternalHarness) StartSession(ctx context.Context, repo string) (string, error) {
+	return "", ErrExternalParticipantCannotBeInvoked
+}
+func (h *ExternalHarness) ResumeSession(ctx context.Context, sessionID, repo string) error {
+	return ErrExternalParticipantCannotBeInvoked
+}
+func (h *ExternalHarness) CloseSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+func (h *ExternalHarness) Invoke(ctx context.Context, req InvokeRequest) (InvokeResult, error) {
+	return InvokeResult{}, ErrExternalParticipantCannotBeInvoked
+}
+func (h *ExternalHarness) Start(ctx context.Context, repo string) (string, error) {
+	return "", ErrExternalParticipantCannotBeInvoked
+}
+func (h *ExternalHarness) Resume(ctx context.Context, sessionID, repo string) error {
+	return ErrExternalParticipantCannotBeInvoked
+}
+func (h *ExternalHarness) Run(ctx context.Context, req Request) (protocol.AgentResult, error) {
+	return protocol.AgentResult{AgentName: h.id, Text: ErrExternalParticipantCannotBeInvoked.Error()}, ErrExternalParticipantCannotBeInvoked
+}
 
 type Request struct {
 	Name         string
@@ -89,6 +133,9 @@ func RegisteredAdapters() []string {
 }
 
 func NewHarness(name string, cfg config.AgentConfig, sy config.SwitchyardConfig) (Harness, error) {
+	if cfg.IsExternal() {
+		return NewExternalHarness(name, cfg), nil
+	}
 	kind := cfg.Kind
 	if kind == "" {
 		kind = cfg.Adapter

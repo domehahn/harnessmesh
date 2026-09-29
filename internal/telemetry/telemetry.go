@@ -12,6 +12,21 @@ import (
 	"time"
 )
 
+// MeshCommit Metrics
+const (
+	MetricChangesCreated        = "harnessmesh_changes_created_total"
+	MetricChangesCommittable    = "harnessmesh_changes_committable_total"
+	MetricChangesCommitted      = "harnessmesh_changes_committed_total"
+	MetricChangesAborted        = "harnessmesh_changes_aborted_total"
+	MetricProofObligationsTotal = "harnessmesh_proof_obligations_total"
+	MetricEvidenceSubmitted     = "harnessmesh_evidence_submitted_total"
+	MetricEvidenceInvalidated   = "harnessmesh_evidence_invalidated_total"
+	MetricGateEvaluationsTotal  = "harnessmesh_gate_evaluations_total"
+	MetricGateBlockedTotal      = "harnessmesh_gate_blocked_total"
+	MetricGateVerifiedTotal     = "harnessmesh_gate_verified_total"
+	MetricTOCTOUViolationsTotal = "harnessmesh_toctou_violations_total"
+)
+
 type Counter struct{ value atomic.Uint64 }
 
 func (c *Counter) Add(delta uint64) { c.value.Add(delta) }

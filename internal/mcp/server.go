@@ -22,20 +22,66 @@ import (
 	"github.com/domehahn/harnessmesh/internal/telemetry"
 )
 
+type mcpSession struct {
+	id        string
+	createdAt time.Time
+}
+
 type Server struct {
-	engine          *collaboration.Engine
-	sessionID       string
-	caller          string
-	mu              sync.Mutex
-	requests        atomic.Uint64
-	errors          atomic.Uint64
-	allowedProjects map[string]struct{}
-	allowedCallers  map[string]struct{}
-	rateMu          sync.Mutex
-	rateWindow      time.Time
-	rateCount       int
-	rateLimit       int
-	metrics         *telemetry.Registry
+	engine             *collaboration.Engine
+	sessionID          string
+	caller             string
+	mu                 sync.Mutex
+	requests           atomic.Uint64
+	errors             atomic.Uint64
+	allowedProjects    map[string]struct{}
+	allowedCallers     map[string]struct{}
+	rateMu             sync.Mutex
+	rateWindow         time.Time
+	rateCount          int
+	rateLimit          int
+	metrics            *telemetry.Registry
+	sessionsMu         sync.Mutex
+	sessions           map[string]*mcpSession
+	terminatedSessions map[string]time.Time
+}
+
+func (s *Server) recordSession(id string) {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	if _, ok := s.sessions[id]; !ok {
+		s.sessions[id] = &mcpSession{id: id, createdAt: time.Now().UTC()}
+	}
+}
+
+func (s *Server) deleteSession(id string) {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	delete(s.sessions, id)
+	if s.terminatedSessions == nil {
+		s.terminatedSessions = make(map[string]time.Time)
+	}
+	s.terminatedSessions[id] = time.Now().UTC()
+}
+
+func (s *Server) isSessionTerminated(id string) bool {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	if s.terminatedSessions == nil {
+		return false
+	}
+	_, terminated := s.terminatedSessions[id]
+	return terminated
+}
+
+func (s *Server) isSessionKnown(id string) bool {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	if id == s.sessionID {
+		return true
+	}
+	_, ok := s.sessions[id]
+	return ok
 }
 
 // ServeHTTP exposes the same JSON-RPC MCP server for remote harnesses.
@@ -156,6 +202,11 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
+	streamable := s.StreamableHTTPHandler(token)
+	mux.Handle("/mcp", streamable)
+	if customPath := os.Getenv("HARNESSMESH_MCP_PATH"); customPath != "" && customPath != "/mcp" {
+		mux.Handle(customPath, streamable)
+	}
 	server := &http.Server{Addr: listen, Handler: securityHeaders(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Minute, WriteTimeout: 2 * time.Minute}
 	go func() {
 		<-ctx.Done()
@@ -184,6 +235,223 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
+	})
+}
+
+func isAllowedCORSOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	if allowed := os.Getenv("HARNESSMESH_CORS_ALLOWED_ORIGINS"); allowed != "" {
+		if allowed == "*" {
+			// Disallow wildcard with Access-Control-Allow-Credentials: true
+			return false
+		}
+		for _, o := range strings.Split(allowed, ",") {
+			if strings.TrimSpace(o) == origin {
+				return true
+			}
+		}
+		return false
+	}
+	hostname := strings.ToLower(u.Hostname())
+	if (hostname == "localhost" || hostname == "127.0.0.1") && (u.Scheme == "http" || u.Scheme == "https") {
+		return true
+	}
+	if u.Scheme == "https" && (hostname == "chatgpt.com" || strings.HasSuffix(hostname, ".chatgpt.com") || hostname == "openai.com" || strings.HasSuffix(hostname, ".openai.com")) {
+		return true
+	}
+	return false
+}
+
+// StreamableHTTPHandler provides the standard Model Context Protocol Streamable HTTP transport.
+// It supports POST, GET (SSE or info), DELETE (session termination), and OPTIONS (CORS preflight).
+func (s *Server) StreamableHTTPHandler(token string) http.Handler {
+	introspectionURL := os.Getenv("HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// CORS headers
+		origin := r.Header.Get("Origin")
+		if origin != "" && isAllowedCORSOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version")
+			w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Mcp-Protocol-Version, Mcp-Method, Mcp-Name")
+		}
+
+		if r.Method == http.MethodOptions {
+			if origin != "" && !isAllowedCORSOrigin(origin) {
+				http.Error(w, "cors origin forbidden", http.StatusForbidden)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// Security headers
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+
+		// Rate limiting
+		if !s.allowRequest(time.Now()) {
+			s.errors.Add(1)
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+
+		// Authentication
+		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		authorized := token != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1
+		if !authorized && introspectionURL != "" {
+			authorized = introspectOAuthToken(r.Context(), introspectionURL, provided, os.Getenv("HARNESSMESH_MCP_OAUTH_CLIENT_SECRET"))
+		}
+		if !authorized {
+			s.errors.Add(1)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="harnessmesh"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// MCP Protocol Negotiation & Session ID
+		sessionID := r.Header.Get("Mcp-Session-Id")
+		if sessionID != "" {
+			if s.isSessionTerminated(sessionID) {
+				s.errors.Add(1)
+				http.Error(w, fmt.Sprintf("session %q has been terminated", sessionID), http.StatusNotFound)
+				return
+			}
+			if !s.isSessionKnown(sessionID) {
+				s.errors.Add(1)
+				http.Error(w, fmt.Sprintf("unknown session %q", sessionID), http.StatusNotFound)
+				return
+			}
+		} else {
+			if s.sessionID != "" {
+				sessionID = s.sessionID
+			} else {
+				sessionID = fmt.Sprintf("mcp_sess_%d", time.Now().UnixNano())
+			}
+			s.recordSession(sessionID)
+		}
+
+		protocolVersion := r.Header.Get("Mcp-Protocol-Version")
+		if protocolVersion == "" {
+			protocolVersion = "2024-11-05"
+		}
+		w.Header().Set("Mcp-Session-Id", sessionID)
+		w.Header().Set("Mcp-Protocol-Version", protocolVersion)
+
+		switch r.Method {
+		case http.MethodDelete:
+			s.deleteSession(sessionID)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"session_terminated"}`))
+			return
+
+		case http.MethodGet:
+			accept := r.Header.Get("Accept")
+			if strings.Contains(accept, "text/event-stream") {
+				w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+					return
+				}
+				_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", sessionID)
+				flusher.Flush()
+				<-r.Context().Done()
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":           "ok",
+				"transport":        "streamable-http",
+				"protocol_version": protocolVersion,
+				"session_id":       sessionID,
+				"caller":           s.caller,
+			})
+			return
+
+		case http.MethodPost:
+			s.requests.Add(1)
+			s.metrics.Counter("harnessmesh_mcp_requests_total").Add(1)
+
+			body := http.MaxBytesReader(w, r.Body, 10<<20)
+			defer body.Close()
+			raw, err := io.ReadAll(body)
+			if err != nil {
+				s.errors.Add(1)
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
+
+			// Parse JSON-RPC header mirroring
+			var msg struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      any             `json:"id,omitempty"`
+				Method  string          `json:"method"`
+				Params  json.RawMessage `json:"params,omitempty"`
+			}
+			if err := json.Unmarshal(raw, &msg); err == nil && msg.Method != "" {
+				w.Header().Set("Mcp-Method", msg.Method)
+				if msg.Method == "tools/call" {
+					var toolParams struct {
+						Name string `json:"name"`
+					}
+					if err := json.Unmarshal(msg.Params, &toolParams); err == nil && toolParams.Name != "" {
+						w.Header().Set("Mcp-Name", toolParams.Name)
+					}
+				}
+			}
+
+			resp, err := s.HandleMessage(r.Context(), raw)
+			if err != nil {
+				s.errors.Add(1)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Notification (no ID) returns 202 Accepted
+			if msg.ID == nil && resp == nil {
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+
+			accept := r.Header.Get("Accept")
+			if strings.Contains(accept, "text/event-stream") {
+				w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				respBytes, err := json.Marshal(resp)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				flusher, ok := w.(http.Flusher)
+				if ok {
+					_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(respBytes))
+					flusher.Flush()
+					return
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 	})
 }
 
@@ -239,6 +507,8 @@ func NewServer(engine *collaboration.Engine, sessionID, caller string) *Server {
 	server.metrics = telemetry.NewRegistry()
 	server.allowedProjects = parseACL(os.Getenv("HARNESSMESH_MCP_PROJECTS"))
 	server.allowedCallers = parseACL(os.Getenv("HARNESSMESH_MCP_CALLERS"))
+	server.sessions = make(map[string]*mcpSession)
+	server.terminatedSessions = make(map[string]time.Time)
 	server.rateLimit = 120
 	if configured, err := strconv.Atoi(os.Getenv("HARNESSMESH_MCP_RATE_LIMIT")); err == nil && configured > 0 {
 		server.rateLimit = configured
@@ -807,6 +1077,71 @@ func (s *Server) ListTools() []ToolDefinition {
 		},
 		ToolDefinition{Name: "operations.dead_letters", Description: "List permanently failed delivery jobs for operator recovery.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"limit": map[string]any{"type": "integer"}}}},
 		ToolDefinition{Name: "operations.requeue_dead_letter", Description: "Requeue a dead-letter delivery with an optional priority.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "priority": map[string]any{"type": "integer"}}, "required": []string{"id"}}},
+		ToolDefinition{
+			Name: "change.create", Description: "Propose a new evidence-gated change transaction with title, intent, space/session. Returns change summary, TreeHash, and locked proof obligations.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"title":         map[string]any{"type": "string", "description": "Title of the change"},
+				"intent":        map[string]any{"type": "string", "description": "High-level goal or reason for the change"},
+				"space_id":      map[string]any{"type": "string", "description": "Collaboration space ID"},
+				"session_id":    map[string]any{"type": "string", "description": "Session ID"},
+				"repository_id": map[string]any{"type": "string", "description": "Repository identifier"},
+				"author":        map[string]any{"type": "string", "description": "Author participant ID"},
+				"base_commit":   map[string]any{"type": "string", "description": "Base Git commit hash"},
+			}, "required": []string{"title"}},
+		},
+		ToolDefinition{
+			Name: "change.prepare", Description: "Transition a change from draft to prepared, re-evaluating working tree changes.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"change_id": map[string]any{"type": "string", "description": "Change transaction ID"},
+			}, "required": []string{"change_id"}},
+		},
+		ToolDefinition{
+			Name: "change.status", Description: "Inspect full change state: status, current TreeHash, verified TreeHash, proof obligations, evidence, and gate status.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"change_id": map[string]any{"type": "string", "description": "Change transaction ID"},
+			}, "required": []string{"change_id"}},
+		},
+		ToolDefinition{
+			Name: "change.diff", Description: "Get affected paths and content hashes for the change.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"change_id": map[string]any{"type": "string", "description": "Change transaction ID"},
+			}, "required": []string{"change_id"}},
+		},
+		ToolDefinition{
+			Name: "change.verify", Description: "Trigger automated execution of a proof obligation.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"change_id":     map[string]any{"type": "string", "description": "Change transaction ID"},
+				"obligation_id": map[string]any{"type": "string", "description": "Proof obligation ID to execute"},
+			}, "required": []string{"change_id", "obligation_id"}},
+		},
+		ToolDefinition{
+			Name: "change.evidence", Description: "Submit structured verification evidence (e.g. peer review, test log, static analysis artifact).",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"change_id":          map[string]any{"type": "string", "description": "Change transaction ID"},
+				"obligation_id":      map[string]any{"type": "string", "description": "Associated proof obligation ID"},
+				"tree_hash":          map[string]any{"type": "string", "description": "Exact working tree hash verified"},
+				"source_participant": map[string]any{"type": "string", "description": "Participant providing the evidence"},
+				"evidence_type":      map[string]any{"type": "string", "description": "Type of evidence (e.g. 'peer_review', 'unit_tests', 'security_audit')"},
+				"result":             map[string]any{"type": "string", "enum": []string{"passed", "failed"}, "description": "Verification result"},
+				"command":            map[string]any{"type": "string", "description": "Command executed if applicable"},
+				"exit_code":          map[string]any{"type": "integer", "description": "Exit code if applicable"},
+				"artifact_hash":      map[string]any{"type": "string", "description": "Hash of output artifact if applicable"},
+				"metadata":           map[string]any{"type": "object", "description": "Additional verification metadata"},
+			}, "required": []string{"change_id", "tree_hash", "evidence_type", "result"}},
+		},
+		ToolDefinition{
+			Name: "change.abort", Description: "Abort an in-flight change transaction.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"change_id": map[string]any{"type": "string", "description": "Change transaction ID"},
+				"reason":    map[string]any{"type": "string", "description": "Reason for aborting the change"},
+			}, "required": []string{"change_id"}},
+		},
+		ToolDefinition{
+			Name: "change.commit_status", Description: "Quick check if change is committable and what obligations are pending or failed.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"change_id": map[string]any{"type": "string", "description": "Change transaction ID"},
+			}, "required": []string{"change_id"}},
+		},
 	)
 	return tools
 }
@@ -837,7 +1172,7 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 				},
 				"serverInfo": map[string]any{
 					"name":    "harnessmesh",
-					"version": "0.3.0",
+					"version": "0.5.0",
 				},
 			},
 		}, nil
@@ -947,9 +1282,17 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 			Scope          []string                   `json:"scope"`
 			Context        protocol.AskContextOptions `json:"context"`
 			IdempotencyKey string                     `json:"idempotency_key"`
+			From           string                     `json:"from"`
+			Caller         string                     `json:"caller"`
 		}
 		if err := json.Unmarshal(argsJSON, &askReq); err != nil {
 			return nil, fmt.Errorf("parse peer.ask args: %w", err)
+		}
+		if askReq.From != "" && askReq.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", askReq.From, s.caller)
+		}
+		if askReq.Caller != "" && askReq.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", askReq.Caller, s.caller)
 		}
 		return s.engine.Ask(ctx, s.sessionID, s.caller, protocol.AskRequest{
 			Peer:       askReq.Peer,
@@ -971,9 +1314,17 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 			IncludeTests     bool                    `json:"include_tests"`
 			MinimumSeverity  string                  `json:"minimum_severity"`
 			IdempotencyKey   string                  `json:"idempotency_key"`
+			From             string                  `json:"from"`
+			Caller           string                  `json:"caller"`
 		}
 		if err := json.Unmarshal(argsJSON, &revReq); err != nil {
 			return nil, fmt.Errorf("parse peer.request_review args: %w", err)
+		}
+		if revReq.From != "" && revReq.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", revReq.From, s.caller)
+		}
+		if revReq.Caller != "" && revReq.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", revReq.Caller, s.caller)
 		}
 		return s.engine.RequestReview(ctx, s.sessionID, s.caller, protocol.ReviewRequestPayload{
 			Peer:             revReq.Peer,
@@ -988,39 +1339,109 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		}, 1, revReq.IdempotencyKey)
 
 	case "peer.submit_finding":
-		var fp protocol.FindingPayload
+		var fp struct {
+			protocol.FindingPayload
+			From   string `json:"from"`
+			Caller string `json:"caller"`
+		}
 		if err := json.Unmarshal(argsJSON, &fp); err != nil {
 			return nil, fmt.Errorf("parse peer.submit_finding args: %w", err)
 		}
-		return s.engine.SubmitFinding(ctx, s.sessionID, s.caller, fp)
+		if fp.From != "" && fp.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.From, s.caller)
+		}
+		if fp.Caller != "" && fp.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.Caller, s.caller)
+		}
+		if fp.SourceParticipant != "" && fp.SourceParticipant != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.SourceParticipant, s.caller)
+		}
+		if fp.SourceAgent != "" && fp.SourceAgent != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.SourceAgent, s.caller)
+		}
+		fp.FindingPayload.SourceParticipant = s.caller
+		fp.FindingPayload.SourceAgent = s.caller
+		return s.engine.SubmitFinding(ctx, s.sessionID, s.caller, fp.FindingPayload)
 
 	case "peer.submit_evidence":
-		var ev protocol.EvidencePayload
+		var ev struct {
+			protocol.EvidencePayload
+			From   string `json:"from"`
+			Caller string `json:"caller"`
+		}
 		if err := json.Unmarshal(argsJSON, &ev); err != nil {
 			return nil, fmt.Errorf("parse peer.submit_evidence args: %w", err)
 		}
-		return s.engine.SubmitEvidence(ctx, s.sessionID, s.caller, ev)
+		if ev.From != "" && ev.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", ev.From, s.caller)
+		}
+		if ev.Caller != "" && ev.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", ev.Caller, s.caller)
+		}
+		if ev.SourceAgent != "" && ev.SourceAgent != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", ev.SourceAgent, s.caller)
+		}
+		ev.EvidencePayload.SourceAgent = s.caller
+		return s.engine.SubmitEvidence(ctx, s.sessionID, s.caller, ev.EvidencePayload)
 
 	case "peer.challenge":
-		var ch protocol.ChallengePayload
+		var ch struct {
+			protocol.ChallengePayload
+			From   string `json:"from"`
+			Caller string `json:"caller"`
+		}
 		if err := json.Unmarshal(argsJSON, &ch); err != nil {
 			return nil, fmt.Errorf("parse peer.challenge args: %w", err)
 		}
-		return s.engine.Challenge(ctx, s.sessionID, s.caller, ch)
+		if ch.From != "" && ch.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof challenger identity %q (authenticated as %q)", ch.From, s.caller)
+		}
+		if ch.Caller != "" && ch.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof challenger identity %q (authenticated as %q)", ch.Caller, s.caller)
+		}
+		if ch.Challenger != "" && ch.Challenger != s.caller {
+			return nil, fmt.Errorf("cannot spoof challenger identity %q (authenticated as %q)", ch.Challenger, s.caller)
+		}
+		ch.ChallengePayload.Challenger = s.caller
+		return s.engine.Challenge(ctx, s.sessionID, s.caller, ch.ChallengePayload)
 
 	case "peer.resolve":
-		var res protocol.ResolutionPayload
+		var res struct {
+			protocol.ResolutionPayload
+			From   string `json:"from"`
+			Caller string `json:"caller"`
+		}
 		if err := json.Unmarshal(argsJSON, &res); err != nil {
 			return nil, fmt.Errorf("parse peer.resolve args: %w", err)
 		}
-		return s.engine.Resolve(ctx, s.sessionID, s.caller, res)
+		if res.From != "" && res.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof resolving agent identity %q (authenticated as %q)", res.From, s.caller)
+		}
+		if res.Caller != "" && res.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof resolving agent identity %q (authenticated as %q)", res.Caller, s.caller)
+		}
+		if res.ResolvingAgent != "" && res.ResolvingAgent != s.caller {
+			return nil, fmt.Errorf("cannot spoof resolving agent identity %q (authenticated as %q)", res.ResolvingAgent, s.caller)
+		}
+		res.ResolutionPayload.ResolvingAgent = s.caller
+		return s.engine.Resolve(ctx, s.sessionID, s.caller, res.ResolutionPayload)
 
 	case "peer.reply":
-		var rep protocol.ReplyPayload
+		var rep struct {
+			protocol.ReplyPayload
+			From   string `json:"from"`
+			Caller string `json:"caller"`
+		}
 		if err := json.Unmarshal(argsJSON, &rep); err != nil {
 			return nil, fmt.Errorf("parse peer.reply args: %w", err)
 		}
-		return s.engine.Reply(ctx, s.sessionID, s.caller, rep, 1, "")
+		if rep.From != "" && rep.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", rep.From, s.caller)
+		}
+		if rep.Caller != "" && rep.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", rep.Caller, s.caller)
+		}
+		return s.engine.Reply(ctx, s.sessionID, s.caller, rep.ReplyPayload, 1, "")
 
 	case "peer.converse":
 		var convReq struct {
@@ -1032,9 +1453,17 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 			ExpectedResponseType string                          `json:"expected_outcome"`
 			CausationID          string                          `json:"causation_id"`
 			IdempotencyKey       string                          `json:"idempotency_key"`
+			From                 string                          `json:"from"`
+			Caller               string                          `json:"caller"`
 		}
 		if err := json.Unmarshal(argsJSON, &convReq); err != nil {
 			return nil, fmt.Errorf("parse peer.converse args: %w", err)
+		}
+		if convReq.From != "" && convReq.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", convReq.From, s.caller)
+		}
+		if convReq.Caller != "" && convReq.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", convReq.Caller, s.caller)
 		}
 		return s.engine.Converse(ctx, s.sessionID, s.caller, protocol.ConverseRequest{
 			Peer:                 convReq.Peer,
@@ -1054,11 +1483,12 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &pubReq); err != nil {
 			return nil, fmt.Errorf("parse collaboration.publish args: %w", err)
 		}
+		if pubReq.From != "" && pubReq.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", pubReq.From, s.caller)
+		}
+		pubReq.From = s.caller
 		if pubReq.SpaceID == "" {
 			pubReq.SpaceID = s.sessionID
-		}
-		if pubReq.From == "" {
-			pubReq.From = s.caller
 		}
 		return s.engine.Publish(ctx, &pubReq)
 
@@ -1067,12 +1497,20 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 			SpaceID  string   `json:"space_id"`
 			Channel  string   `json:"channel"`
 			ThreadID string   `json:"thread_id"`
+			From     string   `json:"from"`
+			Author   string   `json:"author"`
 			Message  string   `json:"message"`
 			Mentions []string `json:"mentions"`
 			Scope    []string `json:"scope"`
 		}
 		if err := json.Unmarshal(argsJSON, &repReq); err != nil {
 			return nil, fmt.Errorf("parse collaboration.reply args: %w", err)
+		}
+		if repReq.From != "" && repReq.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", repReq.From, s.caller)
+		}
+		if repReq.Author != "" && repReq.Author != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", repReq.Author, s.caller)
 		}
 		spaceID := repReq.SpaceID
 		if spaceID == "" {
@@ -1127,11 +1565,12 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &sub); err != nil {
 			return nil, fmt.Errorf("parse collaboration.subscribe args: %w", err)
 		}
+		if sub.ParticipantID != "" && sub.ParticipantID != s.caller {
+			return nil, fmt.Errorf("cannot spoof participant identity %q (authenticated as %q)", sub.ParticipantID, s.caller)
+		}
+		sub.ParticipantID = s.caller
 		if sub.SpaceID == "" {
 			sub.SpaceID = s.sessionID
-		}
-		if sub.ParticipantID == "" {
-			sub.ParticipantID = s.caller
 		}
 		if err := s.engine.Subscribe(ctx, &sub); err != nil {
 			return nil, err
@@ -1142,14 +1581,45 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		var unsubReq struct {
 			SpaceID        string `json:"space_id"`
 			SubscriptionID string `json:"subscription_id"`
+			ParticipantID  string `json:"participant_id"`
+			From           string `json:"from"`
+			Caller         string `json:"caller"`
 		}
 		if err := json.Unmarshal(argsJSON, &unsubReq); err != nil {
 			return nil, fmt.Errorf("parse collaboration.unsubscribe args: %w", err)
 		}
-		if err := s.engine.Unsubscribe(ctx, unsubReq.SpaceID, unsubReq.SubscriptionID); err != nil {
+		if unsubReq.ParticipantID != "" && unsubReq.ParticipantID != s.caller {
+			return nil, fmt.Errorf("cannot spoof participant identity %q (authenticated as %q)", unsubReq.ParticipantID, s.caller)
+		}
+		if unsubReq.From != "" && unsubReq.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", unsubReq.From, s.caller)
+		}
+		if unsubReq.Caller != "" && unsubReq.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", unsubReq.Caller, s.caller)
+		}
+		spaceID := unsubReq.SpaceID
+		if spaceID == "" {
+			spaceID = s.sessionID
+		}
+		// Authorization check: verify subscription ownership
+		subs, err := s.engine.Store().GetParticipantSubscriptions(ctx, spaceID, s.caller)
+		if err != nil {
+			return nil, fmt.Errorf("lookup subscriptions: %w", err)
+		}
+		owned := false
+		for _, sub := range subs {
+			if sub.ID == unsubReq.SubscriptionID {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			return nil, fmt.Errorf("unauthorized: caller %q does not own subscription %q", s.caller, unsubReq.SubscriptionID)
+		}
+		if err := s.engine.Unsubscribe(ctx, spaceID, unsubReq.SubscriptionID); err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": "unsubscribed", "space_id": unsubReq.SpaceID, "subscription_id": unsubReq.SubscriptionID}, nil
+		return map[string]any{"status": "unsubscribed", "space_id": spaceID, "subscription_id": unsubReq.SubscriptionID}, nil
 
 	case "collaboration.decide":
 		var decReq struct {
@@ -1159,10 +1629,26 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 			Title              string   `json:"title"`
 			Statement          string   `json:"statement"`
 			Rationale          string   `json:"rationale"`
+			ProposedBy         string   `json:"proposed_by"`
+			AcceptedBy         string   `json:"accepted_by"`
+			From               string   `json:"from"`
+			Caller             string   `json:"caller"`
 			EvidenceReferences []string `json:"evidence_references"`
 		}
 		if err := json.Unmarshal(argsJSON, &decReq); err != nil {
 			return nil, fmt.Errorf("parse collaboration.decide args: %w", err)
+		}
+		if decReq.From != "" && decReq.From != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", decReq.From, s.caller)
+		}
+		if decReq.Caller != "" && decReq.Caller != s.caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", decReq.Caller, s.caller)
+		}
+		if decReq.ProposedBy != "" && decReq.ProposedBy != s.caller {
+			return nil, fmt.Errorf("cannot spoof proposer identity %q (authenticated as %q)", decReq.ProposedBy, s.caller)
+		}
+		if decReq.AcceptedBy != "" && decReq.AcceptedBy != s.caller {
+			return nil, fmt.Errorf("cannot spoof acceptor identity %q (authenticated as %q)", decReq.AcceptedBy, s.caller)
 		}
 		spaceID := decReq.SpaceID
 		if spaceID == "" {
@@ -1350,6 +1836,200 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		}
 		kept, err := s.engine.KnowledgeCompact(ctx, before)
 		return map[string]any{"kept_records": kept, "before": before}, err
+
+	case "change.create":
+		var req struct {
+			ChangeID     string `json:"change_id"`
+			SpaceID      string `json:"space_id"`
+			SessionID    string `json:"session_id"`
+			RepositoryID string `json:"repository_id"`
+			Author       string `json:"author"`
+			Title        string `json:"title"`
+			Intent       string `json:"intent"`
+			BaseCommit   string `json:"base_commit"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse change.create args: %w", err)
+		}
+		author := req.Author
+		if author == "" {
+			author = s.caller
+		}
+		sessID := req.SessionID
+		if sessID == "" {
+			sessID = s.sessionID
+		}
+		chg, err := s.engine.CreateChange(ctx, &protocol.CreateChangeRequest{
+			ChangeID:          req.ChangeID,
+			SpaceID:           req.SpaceID,
+			SessionID:         sessID,
+			RepositoryID:      req.RepositoryID,
+			AuthorParticipant: author,
+			Title:             req.Title,
+			Intent:            req.Intent,
+			BaseCommit:        req.BaseCommit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		obls, _ := s.engine.GetProofObligations(ctx, chg.ID)
+		paths, _ := s.engine.GetChangePaths(ctx, chg.ID)
+		return map[string]any{
+			"change":         chg,
+			"obligations":    obls,
+			"affected_paths": paths,
+			"tree_hash":      chg.CurrentTreeHash,
+		}, nil
+
+	case "change.prepare":
+		var req struct {
+			ChangeID string `json:"change_id"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse change.prepare args: %w", err)
+		}
+		if req.ChangeID == "" {
+			return nil, fmt.Errorf("change_id is required")
+		}
+		return s.engine.PrepareChange(ctx, req.ChangeID)
+
+	case "change.status":
+		var req struct {
+			ChangeID string `json:"change_id"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse change.status args: %w", err)
+		}
+		if req.ChangeID == "" {
+			return nil, fmt.Errorf("change_id is required")
+		}
+		chg, err := s.engine.GetMeshChange(ctx, req.ChangeID)
+		if err != nil || chg == nil {
+			return nil, fmt.Errorf("change %q not found", req.ChangeID)
+		}
+		obls, _ := s.engine.GetProofObligations(ctx, req.ChangeID)
+		evs, _ := s.engine.GetChangeEvidence(ctx, req.ChangeID)
+		gate, _ := s.engine.GetLatestGateResult(ctx, req.ChangeID)
+		return map[string]any{
+			"change":      chg,
+			"obligations": obls,
+			"evidence":    evs,
+			"gate_result": gate,
+		}, nil
+
+	case "change.diff":
+		var req struct {
+			ChangeID string `json:"change_id"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse change.diff args: %w", err)
+		}
+		if req.ChangeID == "" {
+			return nil, fmt.Errorf("change_id is required")
+		}
+		paths, err := s.engine.GetChangePaths(ctx, req.ChangeID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"change_id": req.ChangeID,
+			"paths":     paths,
+		}, nil
+
+	case "change.verify":
+		var req struct {
+			ChangeID     string `json:"change_id"`
+			ObligationID string `json:"obligation_id"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse change.verify args: %w", err)
+		}
+		if req.ChangeID == "" || req.ObligationID == "" {
+			return nil, fmt.Errorf("change_id and obligation_id are required")
+		}
+		return s.engine.ExecuteProof(ctx, req.ChangeID, req.ObligationID)
+
+	case "change.evidence":
+		var req struct {
+			ChangeID          string         `json:"change_id"`
+			ObligationID      string         `json:"obligation_id"`
+			TreeHash          string         `json:"tree_hash"`
+			SourceParticipant string         `json:"source_participant"`
+			EvidenceType      string         `json:"evidence_type"`
+			Result            string         `json:"result"`
+			Command           string         `json:"command"`
+			ExitCode          *int           `json:"exit_code"`
+			ArtifactHash      string         `json:"artifact_hash"`
+			Metadata          map[string]any `json:"metadata"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse change.evidence args: %w", err)
+		}
+		if req.ChangeID == "" || req.EvidenceType == "" || req.Result == "" {
+			return nil, fmt.Errorf("change_id, evidence_type, and result ('passed'/'failed') are required")
+		}
+		source := req.SourceParticipant
+		if source == "" {
+			source = s.caller
+		}
+		ev := &protocol.ChangeEvidence{
+			ChangeID:          req.ChangeID,
+			ObligationID:      req.ObligationID,
+			TreeHash:          req.TreeHash,
+			SourceParticipant: source,
+			EvidenceType:      protocol.EvidenceType(req.EvidenceType),
+			Result:            req.Result,
+			Command:           req.Command,
+			ExitCode:          req.ExitCode,
+			ArtifactHash:      req.ArtifactHash,
+			Metadata:          req.Metadata,
+			Valid:             true,
+		}
+		return s.engine.SubmitChangeEvidence(ctx, ev)
+
+	case "change.abort":
+		var req struct {
+			ChangeID string `json:"change_id"`
+			Reason   string `json:"reason"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse change.abort args: %w", err)
+		}
+		if req.ChangeID == "" {
+			return nil, fmt.Errorf("change_id is required")
+		}
+		return s.engine.AbortChange(ctx, req.ChangeID, req.Reason)
+
+	case "change.commit_status":
+		var req struct {
+			ChangeID string `json:"change_id"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse change.commit_status args: %w", err)
+		}
+		if req.ChangeID == "" {
+			return nil, fmt.Errorf("change_id is required")
+		}
+		gate, err := s.engine.EvaluateGate(ctx, req.ChangeID)
+		if err != nil {
+			return nil, err
+		}
+		chg, _ := s.engine.GetMeshChange(ctx, req.ChangeID)
+		var chgStatus protocol.MeshChangeStatus
+		if chg != nil {
+			chgStatus = chg.Status
+		}
+		return map[string]any{
+			"change_id":     req.ChangeID,
+			"committable":   gate.Status == protocol.GateStatusCommittable,
+			"gate_status":   gate.Status,
+			"change_status": chgStatus,
+			"passed":        gate.PassedObligations,
+			"pending":       gate.PendingObligations,
+			"failed":        gate.FailedObligations,
+			"stale":         gate.StaleObligations,
+			"reasons":       gate.Reasons,
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown collaboration tool %q", toolName)

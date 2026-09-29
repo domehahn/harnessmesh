@@ -891,8 +891,8 @@ func TestStore_AtomicUpdateBudget(t *testing.T) {
 		Title:          "Atomic Space",
 		LifecycleState: protocol.SpaceStateActive,
 		Budget: protocol.BudgetStatus{
-			Known:          true,
-			MaxTotalTokens: 1000,
+			Known:           true,
+			MaxTotalTokens:  1000,
 			UsedTotalTokens: 0,
 		},
 	}
@@ -902,12 +902,12 @@ func TestStore_AtomicUpdateBudget(t *testing.T) {
 
 	// 3. Atomically update budget
 	newBudget := protocol.BudgetStatus{
-		Known:           true,
-		MaxTotalTokens:  1000,
-		UsedTotalTokens: 350,
-		UsedInputTokens: 150,
+		Known:            true,
+		MaxTotalTokens:   1000,
+		UsedTotalTokens:  350,
+		UsedInputTokens:  150,
 		UsedOutputTokens: 200,
-		UsedCostUSD:     0.02,
+		UsedCostUSD:      0.02,
 	}
 	if err := db.UpdateBudget(ctx, "sp_atomic_1", newBudget); err != nil {
 		t.Fatalf("UpdateBudget failed: %v", err)
