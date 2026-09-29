@@ -123,12 +123,12 @@
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
+    "@types/node": "^20.19.43",
     "@types/vscode": "^1.85.0",
-    "@types/node": "^20.0.0",
-    "@types/ws": "^8.5.10",
-    "typescript": "^5.4.0"
+    "@types/ws": "^8.18.2",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
-    "ws": "^8.16.0"
+    "ws": "^8.22.0"
   }
 }
