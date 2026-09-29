@@ -49,11 +49,11 @@ type ChatGPTBridgeConfig struct {
 // VS Code extension. It is a pure collaboration-state transport and never
 // itself contacts a metered LLM backend.
 type BridgeConfig struct {
-	Enabled           bool   `json:"enabled,omitempty"`
-	Listen            string `json:"listen,omitempty"` // default 127.0.0.1:8788
-	WebSocketEnabled  bool   `json:"websocket_enabled,omitempty"`
-	Token             string `json:"token,omitempty"`
-	AllowedOrigins    []string `json:"allowed_origins,omitempty"`
+	Enabled          bool     `json:"enabled,omitempty"`
+	Listen           string   `json:"listen,omitempty"` // default 127.0.0.1:8788
+	WebSocketEnabled bool     `json:"websocket_enabled,omitempty"`
+	Token            string   `json:"token,omitempty"`
+	AllowedOrigins   []string `json:"allowed_origins,omitempty"`
 }
 
 type SelectionConfig struct {
