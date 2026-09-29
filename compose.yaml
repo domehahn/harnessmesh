@@ -107,6 +107,45 @@ services:
       - --token
       - ${HARNESSMESH_BRIDGE_TOKEN:?HARNESSMESH_BRIDGE_TOKEN must be set}
 
+  # Codex-compatible model-provider gateway (POST /v1/responses). Not
+  # started by default; enable explicitly with `docker compose --profile
+  # provider up`. This service has no collaboration-plane state at all - it
+  # does not mount the harnessmesh-data volume - and never needs
+  # OPENAI_API_KEY unless an operator has deliberately disabled
+  # zero_credit_mode and configured an "openai-api" backend (not done
+  # here). By default it only reaches the "local" backend on the Docker
+  # network's host gateway; adjust HARNESSMESH_PROVIDER_LOCAL_BACKEND_URL
+  # to point at your actual local inference server.
+  harnessmesh-provider:
+    profiles: ["provider"]
+    build:
+      context: .
+    working_dir: /workspace
+    volumes:
+      - ${HARNESSMESH_REPO:-.}:/workspace
+      - ./harnessmesh.json:/etc/harnessmesh/harnessmesh.json:ro
+    environment:
+      HOME: /tmp/harnessmesh-home
+      HARNESSMESH_PROVIDER_TOKEN: ${HARNESSMESH_PROVIDER_TOKEN:?HARNESSMESH_PROVIDER_TOKEN must be set}
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:8789:8789"
+    entrypoint:
+      - /usr/local/bin/harnessmesh
+    command:
+      - provider
+      - serve
+      - --config
+      - /etc/harnessmesh/harnessmesh.json
+      - --listen
+      - 0.0.0.0:8789
+
 volumes:
   # Persistent collaboration-state database (tasks, findings, evidence,
   # reviews, decisions) so it survives container restarts, per HarnessMesh's
