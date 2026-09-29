@@ -107,4 +107,11 @@ func (b *bufferingSink) Send(ev StreamEvent) error {
 }
 
 func (b *bufferingSink) Done() <-chan struct{} { return b.done }
-func (b *bufferingSink) Close()                { close(b.done) }
+
+// Close must be called exactly once, after the producing goroutine's call
+// into StreamResponse has returned (so no further Send call can race a
+// close of the events channel), to unblock a `range sink.events` reader.
+func (b *bufferingSink) Close() {
+	close(b.done)
+	close(b.events)
+}
