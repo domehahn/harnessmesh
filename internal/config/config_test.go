@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -240,5 +241,135 @@ func TestConfigV2RolesAndRouting(t *testing.T) {
 	}
 	if len(cfg.CapabilityRouting["security"]) != 1 || cfg.CapabilityRouting["security"][0] != "sec" {
 		t.Errorf("expected capability_routing security to map to [sec]")
+	}
+}
+
+func TestProviderGateway_ZeroCreditMode_RejectsMeteredDefaultBackend(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"claude": {"adapter": "claude-code", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"default_backend": "openai",
+			"backends": {"openai": {"type": "openai-api"}}
+		}
+	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected zero-credit mode (the default) to reject a default_backend resolving to a metered type")
+	} else if !strings.Contains(err.Error(), "zero_credit_mode forbids") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestProviderGateway_ZeroCreditMode_RejectsMeteredFallback(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"claude": {"adapter": "claude-code", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"default_backend": "local",
+			"backends": {
+				"local": {"type": "openai-compatible", "base_url": "http://127.0.0.1:8000/v1"},
+				"codex": {"type": "codex"}
+			},
+			"fallback": {"enabled": true, "order": ["codex"]}
+		}
+	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected zero-credit mode to reject a fallback order entry resolving to a metered type")
+	}
+}
+
+func TestProviderGateway_ZeroCreditMode_ExplicitlyDisabled_AllowsMeteredBackend(t *testing.T) {
+	falseVal := false
+	raw, err := json.Marshal(map[string]any{
+		"version": 2,
+		"agents":  map[string]any{"claude": map[string]any{"adapter": "claude-code", "writable": true}},
+		"provider": map[string]any{
+			"enabled":          true,
+			"zero_credit_mode": falseVal,
+			"default_backend":  "openai",
+			"backends":         map[string]any{"openai": map[string]any{"type": "openai-api"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	cfg, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("expected explicit zero_credit_mode=false to allow a metered default backend, got: %v", err)
+	}
+	if cfg.Provider.IsZeroCreditMode() {
+		t.Fatalf("expected IsZeroCreditMode() to report false")
+	}
+}
+
+func TestProviderGateway_OpenAICompatibleRequiresBaseURL(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"claude": {"adapter": "claude-code", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"default_backend": "local",
+			"backends": {"local": {"type": "openai-compatible"}}
+		}
+	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected an openai-compatible backend with no base_url to be rejected")
+	}
+}
+
+func TestProviderGateway_DefaultBackendMustExist(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"claude": {"adapter": "claude-code", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"default_backend": "does-not-exist",
+			"backends": {"local": {"type": "openai-compatible", "base_url": "http://127.0.0.1:8000/v1"}}
+		}
+	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected a default_backend referencing an undefined backend to be rejected")
+	}
+}
+
+func TestProviderGateway_ValidZeroCreditConfig_Passes(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"claude": {"adapter": "claude-code", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"token": "test-token",
+			"default_backend": "local",
+			"backends": {
+				"local": {"type": "openai-compatible", "base_url": "http://127.0.0.1:8000/v1"},
+				"openai": {"type": "openai-api"},
+				"codex": {"type": "codex"}
+			},
+			"denied_backend_types": ["openai-api", "codex"]
+		}
+	}`)
+	cfg, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("expected a well-formed zero-credit config to pass validation, got: %v", err)
+	}
+	if !cfg.Provider.IsZeroCreditMode() {
+		t.Fatalf("expected zero-credit mode to default to true")
+	}
+}
+
+func TestProviderGateway_OnlyProviderEnabled_NoAgentsRequired(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"provider": {
+			"enabled": true,
+			"token": "test-token",
+			"default_backend": "local",
+			"backends": {"local": {"type": "openai-compatible", "base_url": "http://127.0.0.1:8000/v1"}}
+		}
+	}`)
+	if _, err := Parse(raw); err != nil {
+		t.Fatalf("expected a provider-only config (no collaboration agents) to be valid, got: %v", err)
 	}
 }

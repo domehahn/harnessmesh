@@ -155,8 +155,8 @@ type fakeInferenceBackend struct {
 	capabilities Capabilities
 }
 
-func (f *fakeInferenceBackend) Name() string             { return f.name }
-func (f *fakeInferenceBackend) Type() string              { return f.typ }
+func (f *fakeInferenceBackend) Name() string               { return f.name }
+func (f *fakeInferenceBackend) Type() string               { return f.typ }
 func (f *fakeInferenceBackend) Capabilities() Capabilities { return f.capabilities }
 func (f *fakeInferenceBackend) Health(ctx context.Context) error {
 	return f.healthErr
