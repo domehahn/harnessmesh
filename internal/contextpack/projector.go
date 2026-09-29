@@ -228,7 +228,17 @@ func (p *Projector) Project(ctx context.Context, req ProjectRequest) (*Projected
 			return nil, &protocol.ContextRejectedError{Path: sc, Reason: reason}
 		}
 
-		fullPath := filepath.Clean(filepath.Join(p.repo, sc))
+		cleanedRel := filepath.Clean(sc)
+		if strings.HasPrefix(cleanedRel, "..") || filepath.IsAbs(cleanedRel) {
+			return nil, &protocol.ContextRejectedError{Path: sc, Reason: "path traverses outside repository"}
+		}
+
+		fullPath := filepath.Clean(filepath.Join(p.repo, cleanedRel))
+		relCheck, errRel := filepath.Rel(p.repo, fullPath)
+		if errRel != nil || strings.HasPrefix(relCheck, "..") {
+			return nil, &protocol.ContextRejectedError{Path: sc, Reason: "path traverses outside repository"}
+		}
+
 		if err := validatePathInsideRepo(p.repo, fullPath); err != nil {
 			return nil, &protocol.ContextRejectedError{Path: sc, Reason: err.Error()}
 		}
@@ -553,7 +563,17 @@ func ReadFileForContext(root, relative string, max int) (string, error) {
 		return "", fmt.Errorf("path rejected: %s", reason)
 	}
 
-	full := filepath.Clean(filepath.Join(root, relative))
+	cleanedRel := filepath.Clean(relative)
+	if strings.HasPrefix(cleanedRel, "..") || filepath.IsAbs(cleanedRel) {
+		return "", fmt.Errorf("path rejected: traverses outside repository")
+	}
+
+	full := filepath.Clean(filepath.Join(root, cleanedRel))
+	relCheck, errRel := filepath.Rel(root, full)
+	if errRel != nil || strings.HasPrefix(relCheck, "..") {
+		return "", fmt.Errorf("path rejected: traverses outside repository")
+	}
+
 	if err := validatePathInsideRepo(root, full); err != nil {
 		return "", err
 	}
