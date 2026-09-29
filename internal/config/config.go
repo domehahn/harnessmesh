@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 )
 
 type WorkspaceConfig struct {
@@ -26,6 +28,32 @@ type Config struct {
 	Agents               map[string]AgentConfig               `json:"agents"`
 	CapabilityRouting    map[string][]string                  `json:"capability_routing,omitempty"`
 	ChangeControl        ChangeControlConfig                  `json:"change_control,omitempty"`
+	ChatGPT              ChatGPTBridgeConfig                  `json:"chatgpt,omitempty"`
+	Bridge               BridgeConfig                         `json:"bridge,omitempty"`
+}
+
+// ChatGPTBridgeConfig configures the ChatGPT-as-collaboration-peer path.
+// It never enables any OpenAI API or Codex usage; CreditIsolation is the
+// explicit, fail-closed guard against that ever happening by accident.
+type ChatGPTBridgeConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// Participant is the agent name (in Agents) that represents the
+	// ChatGPT-browser peer. It must be execution_mode=external and
+	// writable=false.
+	Participant string `json:"participant,omitempty"`
+	// CreditIsolation is "strict" (default) or "off". See internal/creditguard.
+	CreditIsolation string `json:"credit_isolation,omitempty"`
+}
+
+// BridgeConfig configures the local REST/WebSocket bridge used by the
+// VS Code extension. It is a pure collaboration-state transport and never
+// itself contacts a metered LLM backend.
+type BridgeConfig struct {
+	Enabled           bool   `json:"enabled,omitempty"`
+	Listen            string `json:"listen,omitempty"` // default 127.0.0.1:8788
+	WebSocketEnabled  bool   `json:"websocket_enabled,omitempty"`
+	Token             string `json:"token,omitempty"`
+	AllowedOrigins    []string `json:"allowed_origins,omitempty"`
 }
 
 type SelectionConfig struct {
@@ -515,6 +543,21 @@ func Parse(raw []byte) (*Config, error) {
 		default:
 			if !a.IsExternal() {
 				return nil, fmt.Errorf("agent %q: unsupported kind/adapter %q", name, a.Kind)
+			}
+		}
+
+		// Credit isolation: an external participant (the ChatGPT bridge role)
+		// must never be configured to resolve through a metered LLM backend.
+		// Fail closed at load time so this can never reach runtime.
+		if a.IsExternal() {
+			mode := creditguard.ResolveMode(cfg.ChatGPT.CreditIsolation)
+			if err := creditguard.CheckParticipant(mode, name, true, a.Kind); err != nil {
+				return nil, err
+			}
+			if a.ModelRouting != nil {
+				if err := creditguard.CheckParticipant(mode, name, true, a.ModelRouting.Backend); err != nil {
+					return nil, err
+				}
 			}
 		}
 

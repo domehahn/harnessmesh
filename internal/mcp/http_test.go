@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/collaboration"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
 )
@@ -866,5 +868,166 @@ func TestStreamableHTTP_SubscriptionAuthorization(t *testing.T) {
 	_ = json.NewDecoder(recOwn.Body).Decode(&jsonOwnResp)
 	if jsonOwnResp.Result.IsError {
 		t.Fatalf("expected successful unsubscribe for owned subscription, got error: %+v", jsonOwnResp)
+	}
+}
+
+// callToolRaw performs a single tools/call over the Streamable HTTP handler
+// and returns the decoded content text of the first content block, plus
+// whether the JSON-RPC/tool call resulted in an error.
+func callToolRaw(t *testing.T, handler http.Handler, token, tool string, args map[string]any) (string, bool) {
+	t.Helper()
+	argsJSON, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	payload := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      tool,
+			"arguments": json.RawMessage(argsJSON),
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	res := rec.Result()
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("tool %s: expected 200 OK, got %d: %s", tool, res.StatusCode, string(b))
+	}
+
+	var jsonResp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+		Error any `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&jsonResp); err != nil {
+		t.Fatalf("tool %s: decode response: %v", tool, err)
+	}
+	text := ""
+	if len(jsonResp.Result.Content) > 0 {
+		text = jsonResp.Result.Content[0].Text
+	}
+	return text, jsonResp.Result.IsError || jsonResp.Error != nil
+}
+
+// Scenario F: full ChatGPT-bridge task lifecycle (mission spec section 37),
+// exercised end to end over the same Streamable HTTP transport ChatGPT
+// itself would use, with an explicit, automated proof that the workflow
+// invokes zero OpenAI API calls and zero Codex invocations — even though
+// OPENAI_API_KEY is present in the environment and a "codex" binary that
+// would leave a tripwire file is reachable on PATH. This directly proves
+// acceptance criteria in mission sections 34-37 and 64.
+func TestStreamableHTTP_ScenarioF_FullLifecycleWithCreditIsolationProof(t *testing.T) {
+	tripwireDir := t.TempDir()
+	tripwireFile := filepath.Join(tripwireDir, "codex-was-invoked")
+	fakeCodex := filepath.Join(tripwireDir, "codex")
+	script := "#!/bin/sh\ntouch " + tripwireFile + "\nexit 1\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	oldPath := os.Getenv("PATH")
+	oldKey := os.Getenv("OPENAI_API_KEY")
+	t.Cleanup(func() {
+		os.Setenv("PATH", oldPath)
+		os.Setenv("OPENAI_API_KEY", oldKey)
+	})
+	os.Setenv("PATH", tripwireDir+string(os.PathListSeparator)+oldPath)
+	os.Setenv("OPENAI_API_KEY", "sk-test-should-never-be-used-by-chatgpt-bridge")
+
+	creditguard.ResetForTest()
+
+	server, eng, mockClaude, token, spaceID := setupTestCollabEnv(t)
+	handler := server.StreamableHTTPHandler(token)
+	ctx := context.Background()
+
+	// 1. Claude (managed executor) completes work and submits evidence -
+	//    the artifact/result of the task.
+	mockClaude.invokeFunc = func(ctx context.Context, req agent.InvokeRequest) (agent.InvokeResult, error) {
+		return agent.InvokeResult{AgentName: "claude-executor", Text: "Inspected auth middleware; no issues found."}, nil
+	}
+	_, err := eng.SubmitEvidence(ctx, "sess_chatgpt_claude", "claude-executor", protocol.EvidencePayload{
+		ID:          "ev_1",
+		SourceAgent: "claude-executor",
+		Type:        protocol.EvidenceType("test_result"),
+		Command:     "go test ./...",
+		Result:      "ok",
+		Excerpt:     "all tests passed",
+	})
+	if err != nil {
+		t.Fatalf("SubmitEvidence failed: %v", err)
+	}
+
+	// Claude notifies the space, mentioning the ChatGPT participant so the
+	// result lands in its passive/pull-based inbox (mission section 17).
+	if _, err := eng.Publish(ctx, &protocol.PublishRequest{
+		SpaceID:   spaceID,
+		ChannelID: "general",
+		From:      "claude-executor",
+		Mentions:  []string{"chatgpt-browser"},
+		Message:   "@chatgpt-browser TASK-12 complete: inspected auth middleware, evidence ev_1 attached.",
+	}); err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	// 2. ChatGPT (external, over MCP/Streamable HTTP) pulls its inbox.
+	inboxText, isErr := callToolRaw(t, handler, token, "collaboration.inbox", map[string]any{"space_id": spaceID})
+	if isErr || !strings.Contains(inboxText, "TASK-12 complete") {
+		t.Fatalf("expected chatgpt-browser to see task completion in inbox, got isErr=%v text=%s", isErr, inboxText)
+	}
+
+	// 3. ChatGPT submits a review finding over MCP.
+	_, isErr = callToolRaw(t, handler, token, "peer.submit_finding", map[string]any{
+		"id":       "finding_1",
+		"severity": "info",
+		"category": "security",
+		"claim":    "Auth middleware correctly compares tokens in constant time.",
+	})
+	if isErr {
+		t.Fatalf("expected peer.submit_finding to succeed for external reviewer")
+	}
+
+	// 4. Proof: the external participant must never be able to open a
+	//    MeshCommit change transaction (single-writer invariant).
+	_, isErr = callToolRaw(t, handler, token, "change.create", map[string]any{
+		"title":  "ChatGPT tries to write the repo",
+		"author": "chatgpt-browser",
+	})
+	if !isErr {
+		t.Fatalf("expected change.create to be denied for external participant chatgpt-browser")
+	}
+
+	// 5. Credit isolation proof: across this entire lifecycle, with
+	//    OPENAI_API_KEY set and a codex binary reachable on PATH, neither
+	//    metered backend was ever called.
+	if got := creditguard.Calls(creditguard.BackendOpenAIAPI); got != 0 {
+		t.Fatalf("expected 0 OpenAI API calls during ChatGPT bridge workflow, got %d", got)
+	}
+	if got := creditguard.Calls(creditguard.BackendCodex); got != 0 {
+		t.Fatalf("expected 0 Codex invocations during ChatGPT bridge workflow, got %d", got)
+	}
+	if _, err := os.Stat(tripwireFile); err == nil {
+		t.Fatalf("codex tripwire file exists: codex binary was executed during ChatGPT bridge workflow")
+	}
+	if mockClaude.invocations != 0 {
+		// claude-executor was driven directly via engine calls (SubmitEvidence/Publish),
+		// not via peer.ask/peer.converse, in this scenario - this assertion documents
+		// that no unexpected autonomous invocation of the executor occurred either.
+		t.Fatalf("expected 0 direct invocations of claude-executor in this scenario, got %d", mockClaude.invocations)
 	}
 }

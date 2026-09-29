@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/config"
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 	"github.com/domehahn/harnessmesh/internal/executil"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 )
@@ -97,6 +98,11 @@ type codexEvent struct {
 }
 
 func (a *CodexAdapter) Invoke(parent context.Context, req InvokeRequest) (InvokeResult, error) {
+	// Recorded unconditionally, before any credential/binary resolution, so
+	// tests can prove zero Codex invocations across a full workflow
+	// regardless of why the call would otherwise fail or succeed.
+	creditguard.RecordCall(creditguard.BackendCodex)
+
 	timeout := time.Duration(a.cfg.TimeoutMinutes) * time.Minute
 	if timeout <= 0 {
 		timeout = 45 * time.Minute

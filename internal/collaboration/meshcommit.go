@@ -64,6 +64,21 @@ func (c *MeshCommitCoordinator) CreateChange(ctx context.Context, req *protocol.
 		return nil, fmt.Errorf("author_participant cannot be empty")
 	}
 
+	// Enforce single-writer invariant against the participant's own configuration:
+	// an external (e.g. ChatGPT) or explicitly non-writable participant must never
+	// be able to open a MeshCommit change transaction, since that transaction is
+	// the vehicle through which repository state is ultimately committed.
+	if c.config != nil {
+		if aCfg, exists := c.config.Agents[req.AuthorParticipant]; exists {
+			if aCfg.IsExternal() || !aCfg.Writable {
+				return nil, &protocol.PolicyDeniedError{
+					Action: "create_change",
+					Reason: fmt.Sprintf("participant %q is not a writable/managed executor (execution_mode=%q, writable=%v) and cannot open a change transaction", req.AuthorParticipant, aCfg.ExecutionMode, aCfg.Writable),
+				}
+			}
+		}
+	}
+
 	// Verify single-writer invariant if space is specified
 	if req.SpaceID != "" && c.spaceService != nil {
 		space, err := c.spaceService.GetSpace(ctx, req.SpaceID)
@@ -716,6 +731,27 @@ func (c *MeshCommitCoordinator) CommitChange(ctx context.Context, changeID strin
 			ChangeID: changeID,
 			Status:   chg.Status,
 			Reasons:  []string{fmt.Sprintf("change is in status %q; must be %q", chg.Status, protocol.ChangeStatusCommittable)},
+		}
+	}
+
+	// Single-writer invariant, defense in depth: only the original author may
+	// commit their own change, and that author must still resolve to a
+	// writable/managed executor. This holds even though CommitChange is
+	// currently only reachable from the local CLI, never from a remote/MCP tool.
+	if strings.TrimSpace(authorID) != "" && authorID != chg.AuthorParticipant {
+		return nil, &protocol.PolicyDeniedError{
+			Action: "commit_change",
+			Reason: fmt.Sprintf("caller %q is not the author %q of change %q", authorID, chg.AuthorParticipant, changeID),
+		}
+	}
+	if c.config != nil {
+		if aCfg, exists := c.config.Agents[chg.AuthorParticipant]; exists {
+			if aCfg.IsExternal() || !aCfg.Writable {
+				return nil, &protocol.PolicyDeniedError{
+					Action: "commit_change",
+					Reason: fmt.Sprintf("author %q is not a writable/managed executor (execution_mode=%q, writable=%v)", chg.AuthorParticipant, aCfg.ExecutionMode, aCfg.Writable),
+				}
+			}
 		}
 	}
 

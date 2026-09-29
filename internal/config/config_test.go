@@ -1,8 +1,11 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 )
 
 func TestParseV1Config(t *testing.T) {
@@ -109,6 +112,58 @@ func TestSingleWriterConstraint(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "single-writer invariant violated") {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestCreditIsolation_RejectsMeteredAdapterOnExternalAgent(t *testing.T) {
+	os.Unsetenv(creditguard.EnvVar)
+	raw := []byte(`{
+		"version": 2,
+		"agents": {
+			"claude-executor": {
+				"adapter": "claude-code",
+				"writable": true
+			},
+			"chatgpt-browser": {
+				"adapter": "openai-api",
+				"execution_mode": "external",
+				"writable": false
+			}
+		}
+	}`)
+
+	_, err := Parse(raw)
+	if err == nil {
+		t.Fatal("expected credit isolation violation, got nil")
+	}
+	if !strings.Contains(err.Error(), "ChatGPTCreditIsolationViolation") {
+		t.Fatalf("expected ChatGPTCreditIsolationViolation, got: %v", err)
+	}
+}
+
+func TestCreditIsolation_AllowsPassiveAdapterOnExternalAgent(t *testing.T) {
+	os.Unsetenv(creditguard.EnvVar)
+	raw := []byte(`{
+		"version": 2,
+		"agents": {
+			"claude-executor": {
+				"adapter": "claude-code",
+				"writable": true
+			},
+			"chatgpt-browser": {
+				"adapter": "mcp-remote",
+				"execution_mode": "external",
+				"writable": false
+			}
+		}
+	}`)
+
+	cfg, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("expected mcp-remote external agent to pass validation, got: %v", err)
+	}
+	if cfg.Agents["chatgpt-browser"].IsExternal() != true {
+		t.Fatalf("expected chatgpt-browser to remain external")
 	}
 }
 

@@ -136,6 +136,88 @@ func TestMeshCommit_SingleWriterEnforcement(t *testing.T) {
 	}
 }
 
+func TestMeshCommit_ExternalParticipantCannotCreateOrCommitChange(t *testing.T) {
+	ctx := context.Background()
+	repoDir := t.TempDir()
+	dbDir := t.TempDir()
+
+	srcDir := filepath.Join(repoDir, "src")
+	_ = os.MkdirAll(srcDir, 0755)
+	_ = os.WriteFile(filepath.Join(srcDir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644)
+
+	dbPath := filepath.Join(dbDir, "test.db")
+	st, err := store.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	cfg := &config.Config{
+		Agents: map[string]config.AgentConfig{
+			"chatgpt-browser": {
+				ExecutionMode: "external",
+				Writable:      false,
+			},
+			"reviewer-only": {
+				ExecutionMode: "managed",
+				Writable:      false,
+			},
+			"claude-executor": {
+				ExecutionMode: "managed",
+				Writable:      true,
+			},
+		},
+	}
+
+	eng := NewEngine(EngineConfig{Config: cfg, Store: st, Repo: repoDir})
+	mc := eng.MeshCommit()
+
+	// External participant must never be able to open a change transaction.
+	_, err = mc.CreateChange(ctx, &protocol.CreateChangeRequest{
+		Title:             "ChatGPT tries to change repo",
+		AuthorParticipant: "chatgpt-browser",
+	})
+	if err == nil {
+		t.Fatalf("expected external participant to be denied CreateChange, got nil error")
+	}
+	var pd *protocol.PolicyDeniedError
+	if !asPolicyDenied(err, &pd) {
+		t.Fatalf("expected PolicyDeniedError, got %T: %v", err, err)
+	}
+
+	// A managed-but-non-writable participant must also be denied.
+	_, err = mc.CreateChange(ctx, &protocol.CreateChangeRequest{
+		Title:             "Reviewer tries to change repo",
+		AuthorParticipant: "reviewer-only",
+	})
+	if err == nil {
+		t.Fatalf("expected non-writable participant to be denied CreateChange, got nil error")
+	}
+
+	// The writable/managed executor succeeds.
+	chg, err := mc.CreateChange(ctx, &protocol.CreateChangeRequest{
+		Title:             "Executor changes repo",
+		AuthorParticipant: "claude-executor",
+	})
+	if err != nil {
+		t.Fatalf("expected writable executor to succeed, got %v", err)
+	}
+
+	// Even if somehow committable, CommitChange must reject a caller
+	// impersonating a different author, and must reject a non-writable author.
+	_, err = mc.CommitChange(ctx, chg.ID, "chatgpt-browser", "msg")
+	if err == nil {
+		t.Fatalf("expected CommitChange to reject mismatched/non-writer author, got nil")
+	}
+}
+
+func asPolicyDenied(err error, target **protocol.PolicyDeniedError) bool {
+	if pd, ok := err.(*protocol.PolicyDeniedError); ok {
+		*target = pd
+		return true
+	}
+	return false
+}
+
 func TestMeshCommit_IndependentReviewAntiSpoofing(t *testing.T) {
 	ctx := context.Background()
 	mc, _, _, _ := setupTestMeshCommit(t)

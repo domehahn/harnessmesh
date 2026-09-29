@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/config"
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 )
 
@@ -79,6 +80,12 @@ func (s *SwitchyardBackend) Health(ctx context.Context) error {
 }
 
 func (s *SwitchyardBackend) ConfigureParticipant(cfg *config.AgentConfig) error {
+	if cfg.IsExternal() {
+		mode := creditguard.ResolveMode("")
+		if err := creditguard.CheckParticipant(mode, "switchyard-participant", true, "openai-api"); err != nil {
+			return fmt.Errorf("refusing to route external participant through switchyard->OpenAI: %w", err)
+		}
+	}
 	cfg.UseSwitchyard = true
 	if cfg.ModelRouting != nil && cfg.ModelRouting.Route != "" {
 		cfg.SwitchyardRouteID = cfg.ModelRouting.Route
