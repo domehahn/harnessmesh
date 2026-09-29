@@ -61,6 +61,8 @@ func main() {
 		err = mcpCmd(os.Args[2:])
 	case "bridge":
 		err = bridgeCmd(os.Args[2:])
+	case "provider":
+		err = providerCmd(os.Args[2:])
 	case "peer":
 		err = peerCmd(os.Args[2:])
 	case "agents":
@@ -114,10 +116,12 @@ Usage:
   harnessmesh subscriptions <list|add|remove> [options]
   harnessmesh decide <list|propose|accept> [options]
   harnessmesh change <create|list|show|prepare|verify|evidence|gate|commit|abort> [options]
-  harnessmesh integrate <antigravity|chatgpt> [--config <path>] [--repo <path>] [--dry-run]
+  harnessmesh integrate <antigravity|chatgpt|codex-provider> [--config <path>] [--repo <path>] [--dry-run]
   harnessmesh mcp serve [--repo <path>] [--config <path>] [--session <id>] [--caller <name>] [--endpoint <path>]
   harnessmesh mcp install <claude|codex|antigravity|copilot> [--scope <project|user>]
   harnessmesh bridge serve [--repo <path>] [--config <path>] [--caller <name>] [--listen <addr>]
+  harnessmesh provider serve [--config <path>] [--listen <addr>] [--token <token>]
+  harnessmesh provider doctor [--config <path>]
   harnessmesh peer converse --message "..." [--peer <name>] [--outcome <type>] [options]
   harnessmesh peer ask --peer <name> --question "..." [options]
   harnessmesh peer review --peer <name> [options]
@@ -863,15 +867,17 @@ func installAntigravityMCP(scope, repo string) error {
 
 func integrateCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: harnessmesh integrate <antigravity|chatgpt> [--repo <path>] [--config <path>] [--dry-run]")
+		return errors.New("usage: harnessmesh integrate <antigravity|chatgpt|codex-provider> [--repo <path>] [--config <path>] [--dry-run]")
 	}
 	switch strings.ToLower(args[0]) {
 	case "antigravity", "google-antigravity":
 		return integrateAntigravity(args[1:])
 	case "chatgpt", "chatgpt-web", "openai-chatgpt":
 		return integrateChatGPT(args[1:])
+	case "codex-provider", "codex":
+		return integrateCodexProvider(args[1:])
 	default:
-		return fmt.Errorf("unsupported integration target %q (supported: antigravity, chatgpt)", args[0])
+		return fmt.Errorf("unsupported integration target %q (supported: antigravity, chatgpt, codex-provider)", args[0])
 	}
 }
 
@@ -1801,6 +1807,10 @@ func doctor(args []string) error {
 	}
 
 	if doctorChatGPT(cfg) {
+		failed = true
+	}
+
+	if doctorProvider(cfg) {
 		failed = true
 	}
 
