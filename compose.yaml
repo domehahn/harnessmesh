@@ -21,3 +21,94 @@ services:
       - print-config
       - --config
       - /etc/harnessmesh/harnessmesh.json
+
+  # Remote MCP server (e.g. for a ChatGPT remote MCP connector). Not started
+  # by default; enable explicitly with `docker compose --profile mcp up`.
+  # HARNESSMESH_MCP_TOKEN must be set in the environment - there is no
+  # default, and the server refuses to start without it.
+  harnessmesh-mcp:
+    profiles: ["mcp"]
+    build:
+      context: .
+    working_dir: /workspace
+    volumes:
+      - ${HARNESSMESH_REPO:-.}:/workspace
+      - ./harnessmesh.json:/etc/harnessmesh/harnessmesh.json:ro
+      - harnessmesh-data:/data
+    environment:
+      HOME: /data
+      HARNESSMESH_DB_PATH: /data/harnessmesh.db
+      HARNESSMESH_MCP_TOKEN: ${HARNESSMESH_MCP_TOKEN:?HARNESSMESH_MCP_TOKEN must be set}
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Loopback-only by default. Put a TLS-terminating reverse proxy or the
+    # OpenAI-supported secure tunnel mechanism in front for remote access -
+    # see docs/chatgpt-integration.md. Never publish 0.0.0.0 here.
+    ports:
+      - "127.0.0.1:8787:8787"
+    entrypoint:
+      - /usr/local/bin/harnessmesh
+    command:
+      - mcp
+      - serve
+      - --config
+      - /etc/harnessmesh/harnessmesh.json
+      - --repo
+      - /workspace
+      - --listen
+      - 0.0.0.0:8787
+      - --token
+      - ${HARNESSMESH_MCP_TOKEN:?HARNESSMESH_MCP_TOKEN must be set}
+
+  # Local REST+WebSocket bridge for the VS Code extension. Not started by
+  # default; enable explicitly with `docker compose --profile bridge up`.
+  # In most developer setups this runs on the host via `harnessmesh bridge
+  # serve` instead of in a container, since the VS Code extension host
+  # itself runs on the host - this service exists for containerized/remote
+  # development environments.
+  harnessmesh-bridge:
+    profiles: ["bridge"]
+    build:
+      context: .
+    working_dir: /workspace
+    volumes:
+      - ${HARNESSMESH_REPO:-.}:/workspace
+      - ./harnessmesh.json:/etc/harnessmesh/harnessmesh.json:ro
+      - harnessmesh-data:/data
+    environment:
+      HOME: /data
+      HARNESSMESH_DB_PATH: /data/harnessmesh.db
+      HARNESSMESH_BRIDGE_TOKEN: ${HARNESSMESH_BRIDGE_TOKEN:?HARNESSMESH_BRIDGE_TOKEN must be set}
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:8788:8788"
+    entrypoint:
+      - /usr/local/bin/harnessmesh
+    command:
+      - bridge
+      - serve
+      - --config
+      - /etc/harnessmesh/harnessmesh.json
+      - --repo
+      - /workspace
+      - --listen
+      - 0.0.0.0:8788
+      - --token
+      - ${HARNESSMESH_BRIDGE_TOKEN:?HARNESSMESH_BRIDGE_TOKEN must be set}
+
+volumes:
+  # Persistent collaboration-state database (tasks, findings, evidence,
+  # reviews, decisions) so it survives container restarts, per HarnessMesh's
+  # durability requirements. Never mounted read_only.
+  harnessmesh-data:

@@ -377,6 +377,7 @@ Usage:
 - [Antigravity & OpenAI Codex Peer Integration](docs/antigravity-integration.md)
 - [Interactive Peer Conversation Protocol](docs/peer-conversation.md)
 - [Model Context Protocol (MCP)](docs/mcp.md)
+- [ChatGPT Integration (remote MCP bridge)](docs/chatgpt-integration.md)
 - [Peer Protocol Specification](docs/peer-protocol.md)
 - [Security & Context Filtering](docs/security.md)
 - [Context Projection Engine](docs/context-projection.md)

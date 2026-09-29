@@ -1,0 +1,134 @@
+{
+  "name": "harnessmesh-vscode",
+  "displayName": "HarnessMesh",
+  "description": "Thin VS Code UI over the local HarnessMesh collaboration-plane bridge (REST + WebSocket). No LLM reasoning happens in this extension.",
+  "version": "0.1.0",
+  "publisher": "harnessmesh",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "harnessmesh.connect",
+        "title": "HarnessMesh: Connect to Bridge"
+      },
+      {
+        "command": "harnessmesh.disconnect",
+        "title": "HarnessMesh: Disconnect from Bridge"
+      },
+      {
+        "command": "harnessmesh.selectWorkspace",
+        "title": "HarnessMesh: Select Workspace"
+      },
+      {
+        "command": "harnessmesh.openCollaboration",
+        "title": "HarnessMesh: Show Collaboration Status"
+      },
+      {
+        "command": "harnessmesh.showInbox",
+        "title": "HarnessMesh: Show Inbox"
+      },
+      {
+        "command": "harnessmesh.showTasks",
+        "title": "HarnessMesh: Show Tasks"
+      },
+      {
+        "command": "harnessmesh.showReviews",
+        "title": "HarnessMesh: Show Reviews"
+      },
+      {
+        "command": "harnessmesh.showFindings",
+        "title": "HarnessMesh: Show Findings"
+      },
+      {
+        "command": "harnessmesh.sendMessage",
+        "title": "HarnessMesh: Send Message"
+      },
+      {
+        "command": "harnessmesh.setToken",
+        "title": "HarnessMesh: Set Bridge Token"
+      },
+      {
+        "command": "harnessmesh.refreshTrees",
+        "title": "HarnessMesh: Refresh",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "harnessmesh",
+          "title": "HarnessMesh",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "harnessmesh": [
+        {
+          "id": "harnessmesh.participants",
+          "name": "Participants"
+        },
+        {
+          "id": "harnessmesh.tasks",
+          "name": "Tasks"
+        },
+        {
+          "id": "harnessmesh.reviews",
+          "name": "Reviews"
+        },
+        {
+          "id": "harnessmesh.findings",
+          "name": "Findings"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "harnessmesh.refreshTrees",
+          "when": "view == harnessmesh.tasks || view == harnessmesh.reviews || view == harnessmesh.findings || view == harnessmesh.participants",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "HarnessMesh",
+      "properties": {
+        "harnessmesh.bridgeUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8788",
+          "description": "Base URL of the local HarnessMesh bridge server (see 'harnessmesh bridge serve')."
+        },
+        "harnessmesh.autoConnect": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically connect to the bridge when VS Code starts, if a token is already stored."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
