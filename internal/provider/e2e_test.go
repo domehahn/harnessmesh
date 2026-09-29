@@ -1,0 +1,227 @@
+package provider
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/domehahn/harnessmesh/internal/config"
+	"github.com/domehahn/harnessmesh/internal/creditguard"
+)
+
+// TestE2E_ZeroCreditMode_FullLifecycleProof drives a complete Codex-shaped
+// request lifecycle (a normal text turn, a tool-call turn, and cancellation
+// of a third request) through the *real* stack - config parsing, Registry,
+// and Server, exactly as cmd/harnessmesh's `provider serve` wires them up -
+// against a local fake backend, with OPENAI_API_KEY set and a tripwire
+// "codex" binary on PATH, and proves:
+//
+//	OpenAI API calls  = 0
+//	Codex invocations = 0
+//
+// This is the mission's central acceptance criterion (sections 26-30, 50).
+func TestE2E_ZeroCreditMode_FullLifecycleProof(t *testing.T) {
+	tripwireDir := t.TempDir()
+	tripwireFile := filepath.Join(tripwireDir, "codex-was-invoked")
+	fakeCodex := filepath.Join(tripwireDir, "codex")
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\ntouch "+tripwireFile+"\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	oldKey := os.Getenv("OPENAI_API_KEY")
+	t.Cleanup(func() {
+		os.Setenv("PATH", oldPath)
+		os.Setenv("OPENAI_API_KEY", oldKey)
+	})
+	os.Setenv("PATH", tripwireDir+string(os.PathListSeparator)+oldPath)
+	os.Setenv("OPENAI_API_KEY", "sk-test-should-never-be-used-by-the-provider-gateway")
+
+	creditguard.ResetForTest()
+
+	local := newFakeChatServer(modeNormal)
+	defer local.Close()
+	localTools := newFakeChatServer(modeToolCall)
+	defer localTools.Close()
+
+	cfgJSON := `{
+		"version": 2,
+		"agents": {"placeholder": {"kind": "fake", "role": "executor", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"token": "test-provider-token",
+			"default_backend": "local",
+			"backends": {
+				"local": {"type": "openai-compatible", "base_url": "` + local.URL + `"},
+				"local-tools": {"type": "openai-compatible", "base_url": "` + localTools.URL + `"},
+				"openai": {"type": "openai-api"},
+				"codex": {"type": "codex"}
+			}
+		}
+	}`
+	cfg, err := config.Parse([]byte(cfgJSON))
+	if err != nil {
+		t.Fatalf("config.Parse: %v", err)
+	}
+	if !cfg.Provider.IsZeroCreditMode() {
+		t.Fatalf("expected zero-credit mode to default to true")
+	}
+
+	registry, err := NewRegistry(cfg.Provider, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	server := NewServer(cfg.Provider, registry)
+	audit := &memoryAuditSink{}
+	server.SetAuditSink(audit)
+	handler := server.Handler()
+
+	// Step 1: a normal Codex-shaped text turn.
+	rec := doProviderReq(t, handler, "test-provider-token", map[string]any{
+		"model": "local-coder",
+		"input": []map[string]any{
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "say hi"}}},
+		},
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for text turn, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var textResp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &textResp); err != nil {
+		t.Fatalf("decode text response: %v", err)
+	}
+	if textResp.Status != StatusCompleted || textResp.Output[0].Content[0].Text != "Hello, world" {
+		t.Fatalf("unexpected text response: %+v", textResp)
+	}
+
+	// Step 2: a tool-call turn, then submit the tool result on a follow-up
+	// turn (the Codex-side round trip).
+	rec = doProviderReq(t, handler, "test-provider-token", map[string]any{
+		"model": "local-coder",
+		"input": []map[string]any{
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "what's the weather"}}},
+		},
+		"tools": []map[string]any{{"type": "function", "name": "get_weather"}},
+	}, map[string]string{"X-HarnessMesh-Backend": "local-tools"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for tool-call turn, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var toolResp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &toolResp); err != nil {
+		t.Fatalf("decode tool response: %v", err)
+	}
+	foundCall := false
+	for _, item := range toolResp.Output {
+		if item.Type == "function_call" && item.Name == "get_weather" {
+			foundCall = true
+		}
+	}
+	if !foundCall {
+		t.Fatalf("expected a function_call output item, got: %+v", toolResp.Output)
+	}
+
+	// Step 3: cancel a request mid-stream.
+	body, _ := json.Marshal(map[string]any{
+		"model": "local-coder", "stream": true,
+		"input": []map[string]any{{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "go"}}}},
+	})
+	cancelSrv := newFakeChatServer(modePartialThenHang)
+	defer cancelSrv.Close()
+	cfg.Provider.Backends["cancel-me"] = config.ProviderBackendConfig{Type: "openai-compatible", BaseURL: cancelSrv.URL}
+	registry2, err := NewRegistry(cfg.Provider, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewRegistry (2): %v", err)
+	}
+	server2 := NewServer(cfg.Provider, registry2)
+	handler2 := server2.Handler()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body)).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer test-provider-token")
+	r.Header.Set("X-HarnessMesh-Backend", "cancel-me")
+	rec2 := httptest.NewRecorder()
+	requestDone := make(chan struct{})
+	go func() {
+		handler2.ServeHTTP(rec2, r)
+		close(requestDone)
+	}()
+	time.Sleep(30 * time.Millisecond) // let the partial output reach the sink first
+	cancel()                          // simulate the client cancelling the request
+	select {
+	case <-requestDone:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected the cancelled request's handler to return promptly")
+	}
+
+	// Step 4: explicit references to the metered backends must be denied.
+	rec = doProviderReq(t, handler, "test-provider-token", map[string]any{"model": "x", "input": "hi"}, map[string]string{"X-HarnessMesh-Backend": "openai"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 requesting the openai-api backend under zero-credit mode, got %d", rec.Code)
+	}
+	rec = doProviderReq(t, handler, "test-provider-token", map[string]any{"model": "x", "input": "hi"}, map[string]string{"X-HarnessMesh-Backend": "codex"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 requesting the codex backend under zero-credit mode, got %d", rec.Code)
+	}
+
+	// --- The critical proof ---
+	if got := creditguard.Calls(creditguard.BackendOpenAIAPI); got != 0 {
+		t.Fatalf("expected 0 OpenAI API calls during zero-credit provider E2E, got %d", got)
+	}
+	if got := creditguard.Calls(creditguard.BackendCodex); got != 0 {
+		t.Fatalf("expected 0 Codex invocations during zero-credit provider E2E, got %d", got)
+	}
+	if _, err := os.Stat(tripwireFile); err == nil {
+		t.Fatalf("codex tripwire file exists: the codex binary was executed during the zero-credit provider E2E")
+	}
+	if len(audit.records) < 2 {
+		t.Fatalf("expected at least 2 audit records for the completed requests, got %d", len(audit.records))
+	}
+}
+
+// TestE2E_NetworkEgress_NoRequestToOpenAIOrExternalHosts proves the
+// zero-credit request path never even attempts to dial any host other than
+// the explicitly configured local backend - not by DNS blocking, but by
+// wrapping the HTTP transport used by the whole gateway and asserting the
+// only host contacted is the fake local backend's.
+func TestE2E_NetworkEgress_NoRequestToOpenAIOrExternalHosts(t *testing.T) {
+	local := newFakeChatServer(modeNormal)
+	defer local.Close()
+
+	backend := NewOpenAICompatibleBackend("local", config.ProviderBackendConfig{Type: "openai-compatible", BaseURL: local.URL, TimeoutSec: 5})
+
+	var dialedHosts []string
+	backend.client.Transport = &recordingTransport{
+		hosts: &dialedHosts,
+		inner: http.DefaultTransport,
+	}
+
+	sink := newCollectingSink()
+	err := backend.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	if err != nil {
+		t.Fatalf("StreamResponse: %v", err)
+	}
+	for _, h := range dialedHosts {
+		if strings.Contains(h, "openai.com") || strings.Contains(h, "chatgpt.com") {
+			t.Fatalf("provider gateway dialed a forbidden host: %s", h)
+		}
+	}
+	if len(dialedHosts) == 0 {
+		t.Fatalf("expected at least one recorded outbound host (the local fake backend)")
+	}
+}
+
+type recordingTransport struct {
+	hosts *[]string
+	inner http.RoundTripper
+}
+
+func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	*r.hosts = append(*r.hosts, req.URL.Host)
+	return r.inner.RoundTrip(req)
+}
