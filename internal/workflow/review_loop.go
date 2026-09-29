@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -175,7 +176,7 @@ func (r *Runner) Run(ctx context.Context, task string) (*protocol.RunResult, err
 				result.Status = "stalled"
 				result.StopReason = "same material findings repeated in consecutive rounds"
 				result.CompletedAt = time.Now().UTC()
-				return result, fmt.Errorf(result.StopReason)
+				return result, errors.New(result.StopReason)
 			}
 			previousHash = hash
 		default:
@@ -217,7 +218,7 @@ func (r *Runner) Run(ctx context.Context, task string) (*protocol.RunResult, err
 	result.Status = "max_rounds"
 	result.StopReason = fmt.Sprintf("reached max_rounds=%d without approval", r.Config.Workflow.MaxRounds)
 	result.CompletedAt = time.Now().UTC()
-	return result, fmt.Errorf(result.StopReason)
+	return result, errors.New(result.StopReason)
 }
 
 func validateReview(r protocol.ReviewResult) error {
