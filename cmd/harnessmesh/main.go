@@ -623,16 +623,28 @@ func bridgeServe(args []string) error {
 	})
 	defer eng.Close()
 
+	// --websocket defaults to true and is the effective control here. It is
+	// intentionally not AND-ed with cfg.Bridge.WebSocketEnabled: that config
+	// field has no way to represent "unset" (Go's bool zero value is
+	// false), so AND-ing against it would silently disable the WebSocket
+	// endpoint for every deployment that doesn't explicitly set
+	// bridge.websocket_enabled: true - defeating the "enabled by default"
+	// intent and breaking the VS Code extension's live updates with no
+	// visible error (a 404 on the WS upgrade endpoint the extension just
+	// keeps retrying). If a config-only (no-flags) way to force it off is
+	// ever needed, give BridgeConfig a proper tri-state (*bool) field.
+	wsEnabled := *websocketEnabled
+
 	srv := bridge.NewServer(eng, bridge.Config{
 		Listen:           listenAddr,
 		Token:            bridgeToken,
 		AllowedOrigins:   cfg.Bridge.AllowedOrigins,
-		WebSocketEnabled: *websocketEnabled && cfg.Bridge.WebSocketEnabled,
+		WebSocketEnabled: wsEnabled,
 		Caller:           callerName,
 	})
 	defer srv.Close()
 
-	fmt.Fprintf(os.Stderr, "HarnessMesh bridge listening on %s (caller=%q, websocket=%v)\n", listenAddrOrDefault(listenAddr), callerName, *websocketEnabled)
+	fmt.Fprintf(os.Stderr, "HarnessMesh bridge listening on %s (caller=%q, websocket=%v)\n", listenAddrOrDefault(listenAddr), callerName, wsEnabled)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

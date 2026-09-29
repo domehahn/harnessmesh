@@ -51,6 +51,35 @@ func (c *MeshCommitCoordinator) incMetric(name string) {
 	}
 }
 
+// requireWritableExecutor enforces the single-writer invariant against a
+// participant's own configuration: an external (e.g. ChatGPT) or explicitly
+// non-writable participant must never open or commit a MeshCommit change
+// transaction. action identifies the operation being denied, for the error
+// message only.
+func (c *MeshCommitCoordinator) requireWritableExecutor(participant, action string) error {
+	if c.config == nil || len(c.config.Agents) == 0 {
+		// No agent-config model is in play for this deployment/test (e.g.
+		// MeshCommit used standalone without internal/config.AgentConfig
+		// entries) - nothing to enforce against. Once any agent is
+		// registered, enforcement below applies and is fail-closed.
+		return nil
+	}
+	aCfg, exists := c.config.Agents[participant]
+	if !exists {
+		return &protocol.PolicyDeniedError{
+			Action: action,
+			Reason: fmt.Sprintf("participant %q is not a registered agent and cannot %s (fail-closed: agents are configured for this deployment)", participant, action),
+		}
+	}
+	if aCfg.IsExternal() || !aCfg.Writable {
+		return &protocol.PolicyDeniedError{
+			Action: action,
+			Reason: fmt.Sprintf("participant %q is not a writable/managed executor (execution_mode=%q, writable=%v) and cannot %s", participant, aCfg.ExecutionMode, aCfg.Writable, action),
+		}
+	}
+	return nil
+}
+
 // CreateChange initiates a new Change transaction in "draft" status.
 // Enforces Single-Writer invariant, computes isolated TreeHash, resolves & locks ProofPolicy.
 func (c *MeshCommitCoordinator) CreateChange(ctx context.Context, req *protocol.CreateChangeRequest) (*protocol.MeshChange, error) {
@@ -68,15 +97,8 @@ func (c *MeshCommitCoordinator) CreateChange(ctx context.Context, req *protocol.
 	// an external (e.g. ChatGPT) or explicitly non-writable participant must never
 	// be able to open a MeshCommit change transaction, since that transaction is
 	// the vehicle through which repository state is ultimately committed.
-	if c.config != nil {
-		if aCfg, exists := c.config.Agents[req.AuthorParticipant]; exists {
-			if aCfg.IsExternal() || !aCfg.Writable {
-				return nil, &protocol.PolicyDeniedError{
-					Action: "create_change",
-					Reason: fmt.Sprintf("participant %q is not a writable/managed executor (execution_mode=%q, writable=%v) and cannot open a change transaction", req.AuthorParticipant, aCfg.ExecutionMode, aCfg.Writable),
-				}
-			}
-		}
+	if err := c.requireWritableExecutor(req.AuthorParticipant, "create_change"); err != nil {
+		return nil, err
 	}
 
 	// Verify single-writer invariant if space is specified
@@ -225,14 +247,27 @@ func (c *MeshCommitCoordinator) CreateChange(ctx context.Context, req *protocol.
 	return chg, nil
 }
 
-// PrepareChange transitions a change from draft to "prepared", ready for verification.
-func (c *MeshCommitCoordinator) PrepareChange(ctx context.Context, changeID string) (*protocol.MeshChange, error) {
+// PrepareChange transitions a change from draft to "prepared", ready for
+// verification. actorID, when non-empty, must match the change's original
+// author - this prevents one participant from managing another's in-flight
+// change transaction (e.g. over the bridge or MCP, where multiple
+// participants share one HarnessMesh instance). Pass "" only from trusted
+// local-operator call sites (the CLI) that have no participant identity of
+// their own to assert.
+func (c *MeshCommitCoordinator) PrepareChange(ctx context.Context, changeID, actorID string) (*protocol.MeshChange, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	chg, err := c.store.GetMeshChange(ctx, changeID)
 	if err != nil || chg == nil {
 		return nil, &protocol.ChangeNotFoundError{ChangeID: changeID}
+	}
+
+	if strings.TrimSpace(actorID) != "" && actorID != chg.AuthorParticipant {
+		return nil, &protocol.PolicyDeniedError{
+			Action: "prepare_change",
+			Reason: fmt.Sprintf("caller %q is not the author %q of change %q", actorID, chg.AuthorParticipant, changeID),
+		}
 	}
 
 	if chg.Status == protocol.ChangeStatusCommitted || chg.Status == protocol.ChangeStatusAborted {
@@ -744,15 +779,8 @@ func (c *MeshCommitCoordinator) CommitChange(ctx context.Context, changeID strin
 			Reason: fmt.Sprintf("caller %q is not the author %q of change %q", authorID, chg.AuthorParticipant, changeID),
 		}
 	}
-	if c.config != nil {
-		if aCfg, exists := c.config.Agents[chg.AuthorParticipant]; exists {
-			if aCfg.IsExternal() || !aCfg.Writable {
-				return nil, &protocol.PolicyDeniedError{
-					Action: "commit_change",
-					Reason: fmt.Sprintf("author %q is not a writable/managed executor (execution_mode=%q, writable=%v)", chg.AuthorParticipant, aCfg.ExecutionMode, aCfg.Writable),
-				}
-			}
-		}
+	if err := c.requireWritableExecutor(chg.AuthorParticipant, "commit_change"); err != nil {
+		return nil, err
 	}
 
 	// TOCTOU Invariant Check: Verify that current working tree matches Change.CurrentTreeHash exactly!
@@ -830,13 +858,22 @@ func (c *MeshCommitCoordinator) CommitChange(ctx context.Context, changeID strin
 }
 
 // AbortChange marks a change as aborted.
-func (c *MeshCommitCoordinator) AbortChange(ctx context.Context, changeID string, reason string) (*protocol.MeshChange, error) {
+// AbortChange transitions a change to "aborted". actorID has the same
+// authorship-matching semantics as PrepareChange - see its doc comment.
+func (c *MeshCommitCoordinator) AbortChange(ctx context.Context, changeID, actorID, reason string) (*protocol.MeshChange, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	chg, err := c.store.GetMeshChange(ctx, changeID)
 	if err != nil || chg == nil {
 		return nil, &protocol.ChangeNotFoundError{ChangeID: changeID}
+	}
+
+	if strings.TrimSpace(actorID) != "" && actorID != chg.AuthorParticipant {
+		return nil, &protocol.PolicyDeniedError{
+			Action: "abort_change",
+			Reason: fmt.Sprintf("caller %q is not the author %q of change %q", actorID, chg.AuthorParticipant, changeID),
+		}
 	}
 
 	if chg.Status == protocol.ChangeStatusCommitted {

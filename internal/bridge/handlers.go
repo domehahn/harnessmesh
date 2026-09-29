@@ -30,6 +30,10 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if strings.HasSuffix(id, "/status") {
 		id = strings.TrimSuffix(id, "/status")
 		status, err := s.engine.SpaceStatus(r.Context(), id)
@@ -39,10 +43,6 @@ func (s *Server) handleWorkspaceByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, status)
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	space, err := s.engine.SpaceService().GetSpace(r.Context(), id)
@@ -97,11 +97,12 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if req.From != "" && req.From != s.cfg.Caller {
-		writeError(w, http.StatusForbidden, errSpoof(req.From, s.cfg.Caller))
+	from, err := s.resolveCaller(req.From)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err)
 		return
 	}
-	req.From = s.cfg.Caller
+	req.From = from
 	res, err := s.engine.Publish(r.Context(), &req)
 	if err != nil {
 		s.errors.Add(1)
@@ -144,11 +145,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if req.AuthorParticipant != "" && req.AuthorParticipant != s.cfg.Caller {
-		writeError(w, http.StatusForbidden, errSpoof(req.AuthorParticipant, s.cfg.Caller))
+	author, err := s.resolveCaller(req.AuthorParticipant)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err)
 		return
 	}
-	req.AuthorParticipant = s.cfg.Caller
+	req.AuthorParticipant = author
 	chg, err := s.engine.CreateChange(r.Context(), &req)
 	if err != nil {
 		s.errors.Add(1)
@@ -187,9 +189,9 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 		var err error
 		switch body.Action {
 		case "prepare":
-			chg, err = s.engine.PrepareChange(r.Context(), id)
+			chg, err = s.engine.PrepareChange(r.Context(), id, s.cfg.Caller)
 		case "abort":
-			chg, err = s.engine.AbortChange(r.Context(), id, body.Reason)
+			chg, err = s.engine.AbortChange(r.Context(), id, s.cfg.Caller, body.Reason)
 		default:
 			writeError(w, http.StatusBadRequest, errUnsupportedAction(body.Action))
 			return
@@ -242,11 +244,12 @@ func (s *Server) postArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errMissingParam("session_id"))
 		return
 	}
-	if req.SourceAgent != "" && req.SourceAgent != s.cfg.Caller {
-		writeError(w, http.StatusForbidden, errSpoof(req.SourceAgent, s.cfg.Caller))
+	source, err := s.resolveCaller(req.SourceAgent)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err)
 		return
 	}
-	req.EvidencePayload.SourceAgent = s.cfg.Caller
+	req.EvidencePayload.SourceAgent = source
 	ev, err := s.engine.SubmitEvidence(r.Context(), req.SessionID, s.cfg.Caller, req.EvidencePayload)
 	if err != nil {
 		s.errors.Add(1)
@@ -293,12 +296,13 @@ func (s *Server) postFinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errMissingParam("session_id"))
 		return
 	}
-	if req.SourceParticipant != "" && req.SourceParticipant != s.cfg.Caller {
-		writeError(w, http.StatusForbidden, errSpoof(req.SourceParticipant, s.cfg.Caller))
+	participant, err := s.resolveCaller(req.SourceParticipant)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err)
 		return
 	}
-	req.FindingPayload.SourceParticipant = s.cfg.Caller
-	req.FindingPayload.SourceAgent = s.cfg.Caller
+	req.FindingPayload.SourceParticipant = participant
+	req.FindingPayload.SourceAgent = participant
 	if req.Timestamp.IsZero() {
 		req.Timestamp = time.Now().UTC()
 	}

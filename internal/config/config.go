@@ -520,6 +520,7 @@ func Parse(raw []byte) (*Config, error) {
 	}
 
 	writableCount := 0
+	creditIsolationMode := creditguard.ResolveMode(cfg.ChatGPT.CreditIsolation)
 	for name, a := range cfg.Agents {
 		// Normalize kind / adapter
 		if a.Adapter != "" && a.Kind == "" {
@@ -550,12 +551,11 @@ func Parse(raw []byte) (*Config, error) {
 		// must never be configured to resolve through a metered LLM backend.
 		// Fail closed at load time so this can never reach runtime.
 		if a.IsExternal() {
-			mode := creditguard.ResolveMode(cfg.ChatGPT.CreditIsolation)
-			if err := creditguard.CheckParticipant(mode, name, true, a.Kind); err != nil {
+			if err := creditguard.CheckParticipant(creditIsolationMode, name, true, a.Kind); err != nil {
 				return nil, err
 			}
 			if a.ModelRouting != nil {
-				if err := creditguard.CheckParticipant(mode, name, true, a.ModelRouting.Backend); err != nil {
+				if err := creditguard.CheckParticipant(creditIsolationMode, name, true, a.ModelRouting.Backend); err != nil {
 					return nil, err
 				}
 			}

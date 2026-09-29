@@ -43,7 +43,7 @@ CORS on `/mcp` and on the VS Code bridge's `/api/v1/*` is a strict, explicit ori
 
 ## Credit isolation (ChatGPT bridge)
 
-An `execution_mode: external` participant (the ChatGPT-browser role) can never resolve to a metered backend (the OpenAI API or the Codex CLI): this is enforced at config-load time (`internal/creditguard`, config validation rejects such a configuration outright) and is provable at runtime via `harnessmesh_metered_backend_calls_total{backend=...}` in `/metrics`, which must stay at zero across any ChatGPT-bridge workflow. See [docs/chatgpt-integration.md](chatgpt-integration.md#credit-isolation) for the full guarantee and its test coverage.
+An `execution_mode: external` participant (the ChatGPT-browser role) can never resolve to a metered backend (the OpenAI API or the Codex CLI): this is enforced at config-load time (`internal/creditguard`, config validation rejects such a configuration outright). `harnessmesh_metered_backend_calls_total{backend=...}` on `/metrics` exposes the same process-global counters an automated end-to-end test asserts stay at zero across a full ChatGPT-bridge workflow (see [docs/chatgpt-integration.md](chatgpt-integration.md#credit-isolation)). In a deployment that also runs a *legitimate*, separately-configured managed OpenAI/Codex executor in the same process, this metric will be nonzero for that executor's own traffic - it is not a per-participant signal, so use it as a coarse operational sanity check, not as proof that isolation holds for a specific request. The real guarantee is the config-load-time rejection plus the structural fact that external participants are never built into the invocable harness map.
 
 ## Single-writer invariant
 

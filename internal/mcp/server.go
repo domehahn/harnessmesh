@@ -366,10 +366,11 @@ func (s *Server) StreamableHTTPHandler(token string) http.Handler {
 			s.errors.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"code":    -32600,
-					"message": fmt.Sprintf("unsupported Mcp-Protocol-Version %q; supported versions: %s", protocolVersion, strings.Join(supportedProtocolVersions, ", ")),
+			_ = json.NewEncoder(w).Encode(&JSONRPCResponse{
+				JSONRPC: "2.0",
+				Error: &JSONRPCError{
+					Code:    -32600,
+					Message: fmt.Sprintf("unsupported Mcp-Protocol-Version %q; supported versions: %s", protocolVersion, strings.Join(supportedProtocolVersions, ", ")),
 				},
 			})
 			return
@@ -1934,7 +1935,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if req.ChangeID == "" {
 			return nil, fmt.Errorf("change_id is required")
 		}
-		return s.engine.PrepareChange(ctx, req.ChangeID)
+		return s.engine.PrepareChange(ctx, req.ChangeID, s.caller)
 
 	case "change.status":
 		var req struct {
@@ -2041,7 +2042,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if req.ChangeID == "" {
 			return nil, fmt.Errorf("change_id is required")
 		}
-		return s.engine.AbortChange(ctx, req.ChangeID, req.Reason)
+		return s.engine.AbortChange(ctx, req.ChangeID, s.caller, req.Reason)
 
 	case "change.commit_status":
 		var req struct {

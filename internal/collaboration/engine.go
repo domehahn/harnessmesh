@@ -3201,11 +3201,11 @@ func (e *Engine) CreateChange(ctx context.Context, req *protocol.CreateChangeReq
 	return e.meshCommit.CreateChange(ctx, req)
 }
 
-func (e *Engine) PrepareChange(ctx context.Context, changeID string) (*protocol.MeshChange, error) {
+func (e *Engine) PrepareChange(ctx context.Context, changeID, actorID string) (*protocol.MeshChange, error) {
 	if e.meshCommit == nil {
 		return nil, errors.New("meshcommit is not configured")
 	}
-	return e.meshCommit.PrepareChange(ctx, changeID)
+	return e.meshCommit.PrepareChange(ctx, changeID, actorID)
 }
 
 func (e *Engine) SubmitChangeEvidence(ctx context.Context, ev *protocol.ChangeEvidence) (*protocol.GateResult, error) {
@@ -3236,11 +3236,11 @@ func (e *Engine) CommitChange(ctx context.Context, changeID string, authorID str
 	return e.meshCommit.CommitChange(ctx, changeID, authorID, commitMsg)
 }
 
-func (e *Engine) AbortChange(ctx context.Context, changeID string, reason string) (*protocol.MeshChange, error) {
+func (e *Engine) AbortChange(ctx context.Context, changeID, actorID, reason string) (*protocol.MeshChange, error) {
 	if e.meshCommit == nil {
 		return nil, errors.New("meshcommit is not configured")
 	}
-	return e.meshCommit.AbortChange(ctx, changeID, reason)
+	return e.meshCommit.AbortChange(ctx, changeID, actorID, reason)
 }
 
 func (e *Engine) GetMeshChange(ctx context.Context, changeID string) (*protocol.MeshChange, error) {

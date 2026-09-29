@@ -308,7 +308,7 @@ func changePrepare(args []string) error {
 	defer st.Close()
 
 	ctx := context.Background()
-	chg, err := eng.PrepareChange(ctx, changeID)
+	chg, err := eng.PrepareChange(ctx, changeID, "")
 	if err != nil {
 		return err
 	}
@@ -546,7 +546,7 @@ func changeAbort(args []string) error {
 	defer st.Close()
 
 	ctx := context.Background()
-	chg, err := eng.AbortChange(ctx, changeID, *reason)
+	chg, err := eng.AbortChange(ctx, changeID, "", *reason)
 	if err != nil {
 		return err
 	}

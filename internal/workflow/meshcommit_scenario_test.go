@@ -515,7 +515,7 @@ func TestScenarioK_AbortChangeTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	aborted, err := eng.AbortChange(ctx, chg.ID, "requirements changed")
+	aborted, err := eng.AbortChange(ctx, chg.ID, "", "requirements changed")
 	if err != nil {
 		t.Fatalf("AbortChange failed: %v", err)
 	}

@@ -279,6 +279,24 @@ export class BridgeClient extends EventEmitter {
       void code;
     });
 
+    // `ws` emits 'unexpected-response' (with the HTTP response) when the
+    // server rejects the upgrade before completing the handshake - this is
+    // how a 401 (bad/expired token) surfaces on the WebSocket path, as
+    // opposed to a generic connection-level 'error'. Without handling this
+    // separately, a stale token here would just loop through silent
+    // reconnect-with-backoff forever instead of prompting the user to
+    // re-enter it, the way the REST 401 path already does.
+    socket.on('unexpected-response', (_req, res) => {
+      if (res.statusCode === 401) {
+        this.emit('error', new BridgeAuthError());
+      } else {
+        this.emit(
+          'error',
+          new Error(`HarnessMesh bridge WebSocket handshake failed: HTTP ${res.statusCode}`)
+        );
+      }
+    });
+
     socket.on('error', (err: Error) => {
       this.emit('error', err);
       // 'close' will typically follow and trigger reconnect logic.

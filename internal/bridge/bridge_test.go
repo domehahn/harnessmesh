@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -211,6 +212,48 @@ func TestBridge_IdempotentTaskCreate(t *testing.T) {
 	}
 	if len(listed.Tasks) != 1 {
 		t.Fatalf("expected exactly 1 task after idempotent retry, got %d", len(listed.Tasks))
+	}
+}
+
+func TestBridge_IdempotentTaskCreate_ConcurrentRetriesProduceOneRecord(t *testing.T) {
+	s, _, spaceID := setupTestBridge(t)
+	h := s.Handler()
+
+	body := mustJSON(t, map[string]any{"space_id": spaceID, "title": "Concurrent idempotent task", "intent": "test"})
+
+	const n = 20
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(body))
+			r.Header.Set("Authorization", "Bearer bridge-test-token")
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Idempotency-Key", "concurrent-idem-1")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, r)
+			codes[i] = rec.Code
+		}(i)
+	}
+	wg.Wait()
+
+	for _, c := range codes {
+		if c != http.StatusCreated {
+			t.Fatalf("expected all concurrent idempotent requests to return 201, got %d", c)
+		}
+	}
+
+	tasks := doReq(t, h, http.MethodGet, "/api/v1/tasks?space_id="+spaceID, "bridge-test-token", nil)
+	var listed struct {
+		Tasks []protocol.MeshChange `json:"tasks"`
+	}
+	if err := json.Unmarshal(tasks.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode task list: %v", err)
+	}
+	if len(listed.Tasks) != 1 {
+		t.Fatalf("expected exactly 1 task after %d concurrent identical idempotent requests, got %d", n, len(listed.Tasks))
 	}
 }
 

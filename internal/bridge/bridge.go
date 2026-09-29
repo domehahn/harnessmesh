@@ -165,18 +165,11 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if r.URL.Path != "/api/v1/events/ws" {
-			// Bearer check for plain HTTP; the WS upgrade path checks the
-			// token itself (browsers cannot set arbitrary headers on the
-			// WebSocket handshake in all embedding contexts).
-			if !s.authorized(r) {
-				s.denials.Add(1)
-				w.Header().Set("WWW-Authenticate", `Bearer realm="harnessmesh-bridge"`)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		} else if !s.authorized(r) {
+		if !s.authorized(r) {
 			s.denials.Add(1)
+			if r.URL.Path != "/api/v1/events/ws" {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="harnessmesh-bridge"`)
+			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -294,19 +287,33 @@ func decodeJSONBody(r *http.Request, v any) error {
 func (s *Server) withIdempotency(route string, fn func(w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("Idempotency-Key")
-		if key != "" {
-			if status, body, ok := s.idc.get(route, key); ok {
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Idempotency-Replayed", "true")
-				w.WriteHeader(status)
-				_, _ = w.Write(body)
-				return
-			}
+		if key == "" {
+			// Nothing to cache a replay against - skip the capture buffer
+			// entirely so the common (non-idempotent) request path never
+			// pays for copying the response body.
+			fn(w, r)
+			return
 		}
+
+		// beginOrWait serializes concurrent requests carrying the same key:
+		// only one becomes the owner and actually runs fn; any request that
+		// races it (the exact scenario an Idempotency-Key exists to guard
+		// against) blocks here and then replays the owner's result instead
+		// of also executing fn and creating a second logical record.
+		if status, body, done := s.idc.beginOrWait(route, key); done {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Idempotency-Replayed", "true")
+			w.WriteHeader(status)
+			_, _ = w.Write(body)
+			return
+		}
+
 		rec := &captureWriter{ResponseWriter: w, status: http.StatusOK}
 		fn(rec, r)
-		if key != "" && rec.status < 500 {
-			s.idc.put(route, key, rec.status, rec.body)
+		if rec.status < 500 {
+			s.idc.finish(route, key, rec.status, rec.body)
+		} else {
+			s.idc.abort(route, key)
 		}
 	}
 }
@@ -333,6 +340,17 @@ func errMissingParam(name string) error {
 
 func errSpoof(claimed, actual string) error {
 	return fmt.Errorf("cannot spoof identity %q (bridge authenticated as %q)", claimed, actual)
+}
+
+// resolveCaller returns the bridge's own caller identity, or an error if
+// claimed names a different identity. Every mutating endpoint uses this so
+// a request body can never assert an identity other than the one this
+// bridge instance is configured/authenticated as.
+func (s *Server) resolveCaller(claimed string) (string, error) {
+	if claimed != "" && claimed != s.cfg.Caller {
+		return "", errSpoof(claimed, s.cfg.Caller)
+	}
+	return s.cfg.Caller, nil
 }
 
 func errUnsupportedAction(action string) error {

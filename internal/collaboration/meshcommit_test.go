@@ -210,6 +210,82 @@ func TestMeshCommit_ExternalParticipantCannotCreateOrCommitChange(t *testing.T) 
 	}
 }
 
+func TestMeshCommit_PrepareAndAbortRejectNonAuthorActor(t *testing.T) {
+	ctx := context.Background()
+	repoDir := t.TempDir()
+	dbDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(repoDir, "src"), 0755)
+	_ = os.WriteFile(filepath.Join(repoDir, "src", "main.go"), []byte("package main\n"), 0644)
+
+	st, err := store.OpenSQLite(filepath.Join(dbDir, "test.db"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	cfg := &config.Config{
+		Agents: map[string]config.AgentConfig{
+			"claude-executor": {ExecutionMode: "managed", Writable: true},
+			"other-agent":     {ExecutionMode: "managed", Writable: false},
+		},
+	}
+	eng := NewEngine(EngineConfig{Config: cfg, Store: st, Repo: repoDir})
+	mc := eng.MeshCommit()
+
+	chg, err := mc.CreateChange(ctx, &protocol.CreateChangeRequest{
+		Title:             "Executor's own change",
+		AuthorParticipant: "claude-executor",
+	})
+	if err != nil {
+		t.Fatalf("CreateChange failed: %v", err)
+	}
+
+	// A different participant must not be able to prepare or abort someone
+	// else's in-flight change transaction.
+	if _, err := mc.PrepareChange(ctx, chg.ID, "other-agent"); err == nil {
+		t.Fatalf("expected PrepareChange by a non-author actor to be denied")
+	}
+	if _, err := mc.AbortChange(ctx, chg.ID, "other-agent", "trying to interfere"); err == nil {
+		t.Fatalf("expected AbortChange by a non-author actor to be denied")
+	}
+
+	// The actual author can still prepare and abort their own change.
+	if _, err := mc.PrepareChange(ctx, chg.ID, "claude-executor"); err != nil {
+		t.Fatalf("expected author to successfully prepare their own change, got %v", err)
+	}
+	if _, err := mc.AbortChange(ctx, chg.ID, "claude-executor", "no longer needed"); err != nil {
+		t.Fatalf("expected author to successfully abort their own change, got %v", err)
+	}
+}
+
+func TestMeshCommit_RequireWritableExecutor_FailsClosedForUnknownParticipant(t *testing.T) {
+	ctx := context.Background()
+	mc, _, _, _ := setupTestMeshCommit(t)
+
+	// setupTestMeshCommit's config has no Agents map at all, so enforcement
+	// is a no-op there (legacy/standalone MeshCommit usage) - verify that
+	// baseline first.
+	if _, err := mc.CreateChange(ctx, &protocol.CreateChangeRequest{
+		Title:             "No agents configured",
+		AuthorParticipant: "anyone",
+	}); err != nil {
+		t.Fatalf("expected no-agents-configured deployment to remain permissive, got %v", err)
+	}
+
+	// Once any agent is registered, an unregistered participant name must
+	// be rejected (fail closed), not silently allowed through.
+	mc.config = &config.Config{
+		Agents: map[string]config.AgentConfig{
+			"claude-executor": {ExecutionMode: "managed", Writable: true},
+		},
+	}
+	if _, err := mc.CreateChange(ctx, &protocol.CreateChangeRequest{
+		Title:             "Unregistered participant",
+		AuthorParticipant: "not-a-registered-agent",
+	}); err == nil {
+		t.Fatalf("expected CreateChange by an unregistered participant to be denied once agents are configured")
+	}
+}
+
 func asPolicyDenied(err error, target **protocol.PolicyDeniedError) bool {
 	if pd, ok := err.(*protocol.PolicyDeniedError); ok {
 		*target = pd
@@ -282,7 +358,7 @@ func TestMeshCommit_GateEvaluation_And_Commit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = mc.PrepareChange(ctx, chg.ID)
+	_, err = mc.PrepareChange(ctx, chg.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
