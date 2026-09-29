@@ -19,6 +19,7 @@ import (
 type ParticipantInfo struct {
 	AgentName        string   `json:"agent_name"`
 	Adapter          string   `json:"adapter,omitempty"`
+	ExecutionMode    string   `json:"execution_mode,omitempty"`
 	HarnessSessionID string   `json:"harness_session_id"`
 	Role             string   `json:"role"`
 	Roles            []string `json:"roles,omitempty"`
@@ -137,6 +138,28 @@ type Store interface {
 
 	SaveSummary(ctx context.Context, spaceID, targetType, targetID, text string, sourceMsgIDs []string) error
 	GetSummaries(ctx context.Context, spaceID, targetID string) ([]string, error)
+
+	// MeshCommit Change Control & Proof Transactions
+	SaveMeshChange(ctx context.Context, change *protocol.MeshChange) error
+	GetMeshChange(ctx context.Context, id string) (*protocol.MeshChange, error)
+	ListMeshChanges(ctx context.Context, spaceID string, status protocol.MeshChangeStatus) ([]*protocol.MeshChange, error)
+
+	SaveChangePaths(ctx context.Context, paths []protocol.ChangePath) error
+	GetChangePaths(ctx context.Context, changeID string) ([]protocol.ChangePath, error)
+
+	SaveProofObligation(ctx context.Context, obl *protocol.ProofObligation) error
+	GetProofObligation(ctx context.Context, id string) (*protocol.ProofObligation, error)
+	GetProofObligations(ctx context.Context, changeID string) ([]*protocol.ProofObligation, error)
+	UpdateProofObligationStatus(ctx context.Context, id string, status protocol.ProofObligationStatus, evidenceID string) error
+
+	SaveChangeEvidence(ctx context.Context, ev *protocol.ChangeEvidence) error
+	GetChangeEvidence(ctx context.Context, id string) (*protocol.ChangeEvidence, error)
+	GetChangeEvidenceForObligation(ctx context.Context, obligationID string) ([]*protocol.ChangeEvidence, error)
+	GetChangeEvidenceForChange(ctx context.Context, changeID string) ([]*protocol.ChangeEvidence, error)
+	InvalidateChangeEvidence(ctx context.Context, id string, reason string) error
+
+	SaveGateResult(ctx context.Context, result *protocol.GateResult) error
+	GetLatestGateResult(ctx context.Context, changeID string) (*protocol.GateResult, error)
 
 	Close() error
 }
@@ -807,6 +830,149 @@ func (s *SQLiteStore) migrate() error {
 					created_at TIMESTAMP NOT NULL, PRIMARY KEY(job_id, depends_on)
 				);
 				CREATE INDEX IF NOT EXISTS idx_job_dependencies_job ON job_dependencies(job_id, status);
+			`,
+		},
+		{
+			version: 11,
+			sql: `
+				CREATE TABLE IF NOT EXISTS space_participants_v2 (
+					space_id TEXT NOT NULL,
+					participant_id TEXT NOT NULL,
+					adapter TEXT NOT NULL DEFAULT '',
+					execution_mode TEXT NOT NULL DEFAULT 'managed',
+					roles_json TEXT NOT NULL DEFAULT '[]',
+					capabilities_json TEXT NOT NULL DEFAULT '[]',
+					mode TEXT NOT NULL DEFAULT 'active',
+					writable INTEGER NOT NULL DEFAULT 0,
+					joined_at TIMESTAMP NOT NULL,
+					updated_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (space_id, participant_id),
+					FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE
+				);
+				CREATE TABLE IF NOT EXISTS space_participants (
+					space_id TEXT NOT NULL,
+					participant_id TEXT NOT NULL,
+					adapter TEXT NOT NULL DEFAULT '',
+					roles_json TEXT NOT NULL DEFAULT '[]',
+					capabilities_json TEXT NOT NULL DEFAULT '[]',
+					mode TEXT NOT NULL DEFAULT 'active',
+					writable INTEGER NOT NULL DEFAULT 0,
+					joined_at TIMESTAMP NOT NULL,
+					updated_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (space_id, participant_id),
+					FOREIGN KEY (space_id) REFERENCES collaboration_spaces(id) ON DELETE CASCADE
+				);
+				INSERT OR IGNORE INTO space_participants_v2 (space_id, participant_id, adapter, execution_mode, roles_json, capabilities_json, mode, writable, joined_at, updated_at)
+				SELECT space_id, participant_id, adapter, 'managed', roles_json, capabilities_json, mode, writable, joined_at, updated_at FROM space_participants;
+				DROP TABLE IF EXISTS space_participants;
+				ALTER TABLE space_participants_v2 RENAME TO space_participants;
+			`,
+		},
+		{
+			version: 12,
+			sql: `
+				CREATE TABLE IF NOT EXISTS mesh_changes (
+					id TEXT PRIMARY KEY,
+					session_id TEXT NOT NULL DEFAULT '',
+					space_id TEXT NOT NULL DEFAULT '',
+					repository_id TEXT NOT NULL DEFAULT '',
+					title TEXT NOT NULL,
+					intent TEXT NOT NULL DEFAULT '',
+					author_participant TEXT NOT NULL,
+					base_commit TEXT NOT NULL DEFAULT '',
+					base_tree_hash TEXT NOT NULL DEFAULT '',
+					current_tree_hash TEXT NOT NULL DEFAULT '',
+					verified_tree_hash TEXT NOT NULL DEFAULT '',
+					status TEXT NOT NULL DEFAULT 'draft',
+					proof_policy_json TEXT NOT NULL DEFAULT '{}',
+					policy_source TEXT NOT NULL DEFAULT 'policy',
+					commit_sha TEXT NOT NULL DEFAULT '',
+					metadata_json TEXT NOT NULL DEFAULT '{}',
+					created_at TIMESTAMP NOT NULL,
+					updated_at TIMESTAMP NOT NULL,
+					committed_at TIMESTAMP,
+					aborted_at TIMESTAMP
+				);
+				CREATE INDEX IF NOT EXISTS idx_mesh_changes_status ON mesh_changes(status);
+				CREATE INDEX IF NOT EXISTS idx_mesh_changes_space ON mesh_changes(space_id, status);
+				CREATE INDEX IF NOT EXISTS idx_mesh_changes_repo ON mesh_changes(repository_id);
+
+				CREATE TABLE IF NOT EXISTS change_paths (
+					change_id TEXT NOT NULL,
+					path TEXT NOT NULL,
+					change_type TEXT NOT NULL DEFAULT 'modified',
+					content_hash_before TEXT NOT NULL DEFAULT '',
+					content_hash_after TEXT NOT NULL DEFAULT '',
+					created_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (change_id, path),
+					FOREIGN KEY (change_id) REFERENCES mesh_changes(id) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_change_paths_change ON change_paths(change_id);
+
+				CREATE TABLE IF NOT EXISTS proof_obligations (
+					id TEXT PRIMARY KEY,
+					change_id TEXT NOT NULL,
+					type TEXT NOT NULL,
+					name TEXT NOT NULL,
+					description TEXT NOT NULL DEFAULT '',
+					required INTEGER NOT NULL DEFAULT 1,
+					status TEXT NOT NULL DEFAULT 'pending',
+					policy_source TEXT NOT NULL DEFAULT 'policy',
+					scope_json TEXT NOT NULL DEFAULT '[]',
+					required_capability TEXT NOT NULL DEFAULT '',
+					required_participant TEXT NOT NULL DEFAULT '',
+					command TEXT NOT NULL DEFAULT '',
+					expected_exit_code INTEGER NOT NULL DEFAULT 0,
+					freshness_policy TEXT NOT NULL DEFAULT 'exact_tree',
+					current_evidence_id TEXT NOT NULL DEFAULT '',
+					waived_by TEXT NOT NULL DEFAULT '',
+					waived_reason TEXT NOT NULL DEFAULT '',
+					created_at TIMESTAMP NOT NULL,
+					updated_at TIMESTAMP NOT NULL,
+					FOREIGN KEY (change_id) REFERENCES mesh_changes(id) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_proof_obligations_change ON proof_obligations(change_id, status);
+				CREATE INDEX IF NOT EXISTS idx_proof_obligations_type ON proof_obligations(change_id, type);
+
+				CREATE TABLE IF NOT EXISTS change_evidence (
+					id TEXT PRIMARY KEY,
+					change_id TEXT NOT NULL,
+					obligation_id TEXT NOT NULL,
+					tree_hash TEXT NOT NULL,
+					source_participant TEXT NOT NULL,
+					source_adapter TEXT NOT NULL DEFAULT '',
+					evidence_type TEXT NOT NULL,
+					command TEXT NOT NULL DEFAULT '',
+					exit_code INTEGER,
+					result TEXT NOT NULL DEFAULT '',
+					artifact_hash TEXT NOT NULL DEFAULT '',
+					metadata_json TEXT NOT NULL DEFAULT '{}',
+					valid INTEGER NOT NULL DEFAULT 1,
+					invalidated_at TIMESTAMP,
+					invalidation_reason TEXT NOT NULL DEFAULT '',
+					created_at TIMESTAMP NOT NULL,
+					FOREIGN KEY (change_id) REFERENCES mesh_changes(id) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_change_evidence_change ON change_evidence(change_id, valid);
+				CREATE INDEX IF NOT EXISTS idx_change_evidence_tree ON change_evidence(change_id, tree_hash);
+				CREATE INDEX IF NOT EXISTS idx_change_evidence_obl ON change_evidence(obligation_id);
+
+				CREATE TABLE IF NOT EXISTS change_gate_results (
+					id TEXT PRIMARY KEY,
+					change_id TEXT NOT NULL,
+					status TEXT NOT NULL,
+					current_tree_hash TEXT NOT NULL,
+					verified_tree_hash TEXT NOT NULL DEFAULT '',
+					passed_json TEXT NOT NULL DEFAULT '[]',
+					pending_json TEXT NOT NULL DEFAULT '[]',
+					failed_json TEXT NOT NULL DEFAULT '[]',
+					stale_json TEXT NOT NULL DEFAULT '[]',
+					open_findings_json TEXT NOT NULL DEFAULT '[]',
+					reasons_json TEXT NOT NULL DEFAULT '[]',
+					evaluated_at TIMESTAMP NOT NULL,
+					FOREIGN KEY (change_id) REFERENCES mesh_changes(id) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_change_gate_results_change ON change_gate_results(change_id, evaluated_at);
 			`,
 		},
 	}
@@ -1819,17 +1985,23 @@ func (s *SQLiteStore) SaveSpace(ctx context.Context, space *protocol.Collaborati
 		}
 		p.UpdatedAt = now
 
+		execMode := p.ExecutionMode
+		if execMode == "" {
+			execMode = protocol.ExecutionModeManaged
+		}
+
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO space_participants (space_id, participant_id, adapter, roles_json, capabilities_json, mode, writable, joined_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO space_participants (space_id, participant_id, adapter, execution_mode, roles_json, capabilities_json, mode, writable, joined_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(space_id, participant_id) DO UPDATE SET
 				adapter = excluded.adapter,
+				execution_mode = excluded.execution_mode,
 				roles_json = excluded.roles_json,
 				capabilities_json = excluded.capabilities_json,
 				mode = excluded.mode,
 				writable = excluded.writable,
 				updated_at = excluded.updated_at;
-		`, space.ID, p.ID, p.Adapter, string(rolesJSON), string(capsJSON), string(p.Mode), writableInt, p.JoinedAt, p.UpdatedAt)
+		`, space.ID, p.ID, p.Adapter, execMode, string(rolesJSON), string(capsJSON), string(p.Mode), writableInt, p.JoinedAt, p.UpdatedAt)
 		if err != nil {
 			return err
 		}
@@ -1886,7 +2058,7 @@ func (s *SQLiteStore) GetSpace(ctx context.Context, id string) (*protocol.Collab
 
 	// Fetch participants
 	pRows, err := s.db.QueryContext(ctx, `
-		SELECT participant_id, adapter, roles_json, capabilities_json, mode, writable, joined_at, updated_at
+		SELECT participant_id, adapter, execution_mode, roles_json, capabilities_json, mode, writable, joined_at, updated_at
 		FROM space_participants WHERE space_id = ?;
 	`, id)
 	if err != nil {
@@ -1899,8 +2071,11 @@ func (s *SQLiteStore) GetSpace(ctx context.Context, id string) (*protocol.Collab
 		var p protocol.SpaceParticipant
 		var rolesJSON, capsJSON, modeStr string
 		var writableInt int
-		if err := pRows.Scan(&p.ID, &p.Adapter, &rolesJSON, &capsJSON, &modeStr, &writableInt, &p.JoinedAt, &p.UpdatedAt); err != nil {
+		if err := pRows.Scan(&p.ID, &p.Adapter, &p.ExecutionMode, &rolesJSON, &capsJSON, &modeStr, &writableInt, &p.JoinedAt, &p.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if p.ExecutionMode == "" {
+			p.ExecutionMode = protocol.ExecutionModeManaged
 		}
 		p.Mode = protocol.ParticipantActivityMode(modeStr)
 		p.Writable = writableInt == 1
@@ -1965,7 +2140,7 @@ func (s *SQLiteStore) ListSpaces(ctx context.Context) ([]*protocol.Collaboration
 	// Populate participants and channels for each space
 	for _, sp := range out {
 		pRows, err := s.db.QueryContext(ctx, `
-			SELECT participant_id, adapter, roles_json, capabilities_json, mode, writable, joined_at, updated_at
+			SELECT participant_id, adapter, execution_mode, roles_json, capabilities_json, mode, writable, joined_at, updated_at
 			FROM space_participants WHERE space_id = ?;
 		`, sp.ID)
 		if err == nil {
@@ -1974,7 +2149,10 @@ func (s *SQLiteStore) ListSpaces(ctx context.Context) ([]*protocol.Collaboration
 				var p protocol.SpaceParticipant
 				var rolesJSON, capsJSON, modeStr string
 				var writableInt int
-				if err := pRows.Scan(&p.ID, &p.Adapter, &rolesJSON, &capsJSON, &modeStr, &writableInt, &p.JoinedAt, &p.UpdatedAt); err == nil {
+				if err := pRows.Scan(&p.ID, &p.Adapter, &p.ExecutionMode, &rolesJSON, &capsJSON, &modeStr, &writableInt, &p.JoinedAt, &p.UpdatedAt); err == nil {
+					if p.ExecutionMode == "" {
+						p.ExecutionMode = protocol.ExecutionModeManaged
+					}
 					p.Mode = protocol.ParticipantActivityMode(modeStr)
 					p.Writable = writableInt == 1
 					_ = json.Unmarshal([]byte(rolesJSON), &p.Roles)
@@ -2047,18 +2225,23 @@ func (s *SQLiteStore) AddSpaceParticipant(ctx context.Context, spaceID string, p
 	if p.Writable {
 		writableInt = 1
 	}
+	execMode := p.ExecutionMode
+	if execMode == "" {
+		execMode = protocol.ExecutionModeManaged
+	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO space_participants (space_id, participant_id, adapter, roles_json, capabilities_json, mode, writable, joined_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO space_participants (space_id, participant_id, adapter, execution_mode, roles_json, capabilities_json, mode, writable, joined_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(space_id, participant_id) DO UPDATE SET
 			adapter = excluded.adapter,
+			execution_mode = excluded.execution_mode,
 			roles_json = excluded.roles_json,
 			capabilities_json = excluded.capabilities_json,
 			mode = excluded.mode,
 			writable = excluded.writable,
 			updated_at = excluded.updated_at;
-	`, spaceID, p.ID, p.Adapter, string(rolesJSON), string(capsJSON), string(p.Mode), writableInt, p.JoinedAt, p.UpdatedAt)
+	`, spaceID, p.ID, p.Adapter, execMode, string(rolesJSON), string(capsJSON), string(p.Mode), writableInt, p.JoinedAt, p.UpdatedAt)
 	return err
 }
 
@@ -2972,4 +3155,494 @@ func (s *SQLiteStore) GetSummaries(ctx context.Context, spaceID, targetID string
 		out = append(out, text)
 	}
 	return out, nil
+}
+
+// -----------------------------------------------------------------------------
+// MeshCommit SQLite Store Methods (v0.5.0)
+// -----------------------------------------------------------------------------
+
+func (s *SQLiteStore) SaveMeshChange(ctx context.Context, change *protocol.MeshChange) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	metaJSON, _ := json.Marshal(change.Metadata)
+	policyJSON := change.ProofPolicyJSON
+	if policyJSON == "" {
+		policyJSON = "{}"
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO mesh_changes (
+			id, session_id, space_id, repository_id, title, intent, author_participant,
+			base_commit, base_tree_hash, current_tree_hash, verified_tree_hash, status,
+			proof_policy_json, policy_source, commit_sha, metadata_json, created_at, updated_at,
+			committed_at, aborted_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			title = excluded.title,
+			intent = excluded.intent,
+			base_commit = excluded.base_commit,
+			base_tree_hash = excluded.base_tree_hash,
+			current_tree_hash = excluded.current_tree_hash,
+			verified_tree_hash = excluded.verified_tree_hash,
+			status = excluded.status,
+			proof_policy_json = excluded.proof_policy_json,
+			policy_source = excluded.policy_source,
+			commit_sha = excluded.commit_sha,
+			metadata_json = excluded.metadata_json,
+			updated_at = excluded.updated_at,
+			committed_at = excluded.committed_at,
+			aborted_at = excluded.aborted_at;
+	`,
+		change.ID, change.SessionID, change.SpaceID, change.RepositoryID, change.Title, change.Intent, change.AuthorParticipant,
+		change.BaseCommit, change.BaseTreeHash, change.CurrentTreeHash, change.VerifiedTreeHash, string(change.Status),
+		policyJSON, change.PolicySource, change.CommitSHA, string(metaJSON), change.CreatedAt, change.UpdatedAt,
+		change.CommittedAt, change.AbortedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetMeshChange(ctx context.Context, id string) (*protocol.MeshChange, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var c protocol.MeshChange
+	var statusStr, policyJSON, metaStr string
+	var committedAt, abortedAt *time.Time
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, session_id, space_id, repository_id, title, intent, author_participant,
+		       base_commit, base_tree_hash, current_tree_hash, verified_tree_hash, status,
+		       proof_policy_json, policy_source, commit_sha, metadata_json, created_at, updated_at,
+		       committed_at, aborted_at
+		FROM mesh_changes WHERE id = ?;
+	`, id).Scan(
+		&c.ID, &c.SessionID, &c.SpaceID, &c.RepositoryID, &c.Title, &c.Intent, &c.AuthorParticipant,
+		&c.BaseCommit, &c.BaseTreeHash, &c.CurrentTreeHash, &c.VerifiedTreeHash, &statusStr,
+		&policyJSON, &c.PolicySource, &c.CommitSHA, &metaStr, &c.CreatedAt, &c.UpdatedAt,
+		&committedAt, &abortedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, &protocol.ChangeNotFoundError{ChangeID: id}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	c.Status = protocol.MeshChangeStatus(statusStr)
+	c.ProofPolicyJSON = policyJSON
+	c.CommittedAt = committedAt
+	c.AbortedAt = abortedAt
+	if metaStr != "" {
+		_ = json.Unmarshal([]byte(metaStr), &c.Metadata)
+	}
+	return &c, nil
+}
+
+func (s *SQLiteStore) ListMeshChanges(ctx context.Context, spaceID string, status protocol.MeshChangeStatus) ([]*protocol.MeshChange, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query := `
+		SELECT id, session_id, space_id, repository_id, title, intent, author_participant,
+		       base_commit, base_tree_hash, current_tree_hash, verified_tree_hash, status,
+		       proof_policy_json, policy_source, commit_sha, metadata_json, created_at, updated_at,
+		       committed_at, aborted_at
+		FROM mesh_changes
+		WHERE (space_id = ? OR ? = '') AND (status = ? OR ? = '')
+		ORDER BY created_at DESC;
+	`
+	rows, err := s.db.QueryContext(ctx, query, spaceID, spaceID, string(status), string(status))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var changes []*protocol.MeshChange
+	for rows.Next() {
+		var c protocol.MeshChange
+		var statusStr, policyJSON, metaStr string
+		var committedAt, abortedAt *time.Time
+		if err := rows.Scan(
+			&c.ID, &c.SessionID, &c.SpaceID, &c.RepositoryID, &c.Title, &c.Intent, &c.AuthorParticipant,
+			&c.BaseCommit, &c.BaseTreeHash, &c.CurrentTreeHash, &c.VerifiedTreeHash, &statusStr,
+			&policyJSON, &c.PolicySource, &c.CommitSHA, &metaStr, &c.CreatedAt, &c.UpdatedAt,
+			&committedAt, &abortedAt,
+		); err != nil {
+			return nil, err
+		}
+		c.Status = protocol.MeshChangeStatus(statusStr)
+		c.ProofPolicyJSON = policyJSON
+		c.CommittedAt = committedAt
+		c.AbortedAt = abortedAt
+		if metaStr != "" {
+			_ = json.Unmarshal([]byte(metaStr), &c.Metadata)
+		}
+		changes = append(changes, &c)
+	}
+	return changes, nil
+}
+
+func (s *SQLiteStore) SaveChangePaths(ctx context.Context, paths []protocol.ChangePath) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO change_paths (change_id, path, change_type, content_hash_before, content_hash_after, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(change_id, path) DO UPDATE SET
+			change_type = excluded.change_type,
+			content_hash_before = excluded.content_hash_before,
+			content_hash_after = excluded.content_hash_after;
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, p := range paths {
+		if _, err := stmt.ExecContext(ctx, p.ChangeID, p.Path, p.ChangeType, p.ContentHashBefore, p.ContentHashAfter, p.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) GetChangePaths(ctx context.Context, changeID string) ([]protocol.ChangePath, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT change_id, path, change_type, content_hash_before, content_hash_after, created_at
+		FROM change_paths WHERE change_id = ? ORDER BY path ASC;
+	`, changeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var paths []protocol.ChangePath
+	for rows.Next() {
+		var p protocol.ChangePath
+		if err := rows.Scan(&p.ChangeID, &p.Path, &p.ChangeType, &p.ContentHashBefore, &p.ContentHashAfter, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		paths = append(paths, p)
+	}
+	return paths, nil
+}
+
+func (s *SQLiteStore) SaveProofObligation(ctx context.Context, obl *protocol.ProofObligation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	scopeJSON, _ := json.Marshal(obl.Scope)
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO proof_obligations (
+			id, change_id, type, name, description, required, status, policy_source,
+			scope_json, required_capability, required_participant, command, expected_exit_code,
+			freshness_policy, current_evidence_id, waived_by, waived_reason, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			status = excluded.status,
+			current_evidence_id = excluded.current_evidence_id,
+			waived_by = excluded.waived_by,
+			waived_reason = excluded.waived_reason,
+			updated_at = excluded.updated_at;
+	`,
+		obl.ID, obl.ChangeID, obl.Type, obl.Name, obl.Description, obl.Required, string(obl.Status),
+		obl.PolicySource, string(scopeJSON), obl.RequiredCapability, obl.RequiredParticipant,
+		obl.Command, obl.ExpectedExitCode, obl.FreshnessPolicy, obl.CurrentEvidenceID,
+		obl.WaivedBy, obl.WaivedReason, obl.CreatedAt, obl.UpdatedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetProofObligation(ctx context.Context, id string) (*protocol.ProofObligation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var obl protocol.ProofObligation
+	var statusStr, scopeStr string
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, change_id, type, name, description, required, status, policy_source,
+		       scope_json, required_capability, required_participant, command, expected_exit_code,
+		       freshness_policy, current_evidence_id, waived_by, waived_reason, created_at, updated_at
+		FROM proof_obligations WHERE id = ?;
+	`, id).Scan(
+		&obl.ID, &obl.ChangeID, &obl.Type, &obl.Name, &obl.Description, &obl.Required, &statusStr,
+		&obl.PolicySource, &scopeStr, &obl.RequiredCapability, &obl.RequiredParticipant,
+		&obl.Command, &obl.ExpectedExitCode, &obl.FreshnessPolicy, &obl.CurrentEvidenceID,
+		&obl.WaivedBy, &obl.WaivedReason, &obl.CreatedAt, &obl.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, &protocol.ProofObligationNotFoundError{ObligationID: id}
+	}
+	if err != nil {
+		return nil, err
+	}
+	obl.Status = protocol.ProofObligationStatus(statusStr)
+	if scopeStr != "" {
+		_ = json.Unmarshal([]byte(scopeStr), &obl.Scope)
+	}
+	return &obl, nil
+}
+
+func (s *SQLiteStore) GetProofObligations(ctx context.Context, changeID string) ([]*protocol.ProofObligation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, change_id, type, name, description, required, status, policy_source,
+		       scope_json, required_capability, required_participant, command, expected_exit_code,
+		       freshness_policy, current_evidence_id, waived_by, waived_reason, created_at, updated_at
+		FROM proof_obligations WHERE change_id = ? ORDER BY created_at ASC;
+	`, changeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var obls []*protocol.ProofObligation
+	for rows.Next() {
+		var obl protocol.ProofObligation
+		var statusStr, scopeStr string
+		if err := rows.Scan(
+			&obl.ID, &obl.ChangeID, &obl.Type, &obl.Name, &obl.Description, &obl.Required, &statusStr,
+			&obl.PolicySource, &scopeStr, &obl.RequiredCapability, &obl.RequiredParticipant,
+			&obl.Command, &obl.ExpectedExitCode, &obl.FreshnessPolicy, &obl.CurrentEvidenceID,
+			&obl.WaivedBy, &obl.WaivedReason, &obl.CreatedAt, &obl.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		obl.Status = protocol.ProofObligationStatus(statusStr)
+		if scopeStr != "" {
+			_ = json.Unmarshal([]byte(scopeStr), &obl.Scope)
+		}
+		obls = append(obls, &obl)
+	}
+	return obls, nil
+}
+
+func (s *SQLiteStore) UpdateProofObligationStatus(ctx context.Context, id string, status protocol.ProofObligationStatus, evidenceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE proof_obligations
+		SET status = ?, current_evidence_id = ?, updated_at = ?
+		WHERE id = ?;
+	`, string(status), evidenceID, time.Now().UTC(), id)
+	return err
+}
+
+func (s *SQLiteStore) SaveChangeEvidence(ctx context.Context, ev *protocol.ChangeEvidence) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	metaJSON, _ := json.Marshal(ev.Metadata)
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO change_evidence (
+			id, change_id, obligation_id, tree_hash, source_participant, source_adapter,
+			evidence_type, command, exit_code, result, artifact_hash, metadata_json,
+			valid, invalidated_at, invalidation_reason, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			valid = excluded.valid,
+			invalidated_at = excluded.invalidated_at,
+			invalidation_reason = excluded.invalidation_reason;
+	`,
+		ev.ID, ev.ChangeID, ev.ObligationID, ev.TreeHash, ev.SourceParticipant, ev.SourceAdapter,
+		string(ev.EvidenceType), ev.Command, ev.ExitCode, ev.Result, ev.ArtifactHash, string(metaJSON),
+		ev.Valid, ev.InvalidatedAt, ev.InvalidationReason, ev.CreatedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetChangeEvidence(ctx context.Context, id string) (*protocol.ChangeEvidence, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var ev protocol.ChangeEvidence
+	var typeStr, metaStr string
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, change_id, obligation_id, tree_hash, source_participant, source_adapter,
+		       evidence_type, command, exit_code, result, artifact_hash, metadata_json,
+		       valid, invalidated_at, invalidation_reason, created_at
+		FROM change_evidence WHERE id = ?;
+	`, id).Scan(
+		&ev.ID, &ev.ChangeID, &ev.ObligationID, &ev.TreeHash, &ev.SourceParticipant, &ev.SourceAdapter,
+		&typeStr, &ev.Command, &ev.ExitCode, &ev.Result, &ev.ArtifactHash, &metaStr,
+		&ev.Valid, &ev.InvalidatedAt, &ev.InvalidationReason, &ev.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ev.EvidenceType = protocol.EvidenceType(typeStr)
+	if metaStr != "" {
+		_ = json.Unmarshal([]byte(metaStr), &ev.Metadata)
+	}
+	return &ev, nil
+}
+
+func (s *SQLiteStore) GetChangeEvidenceForObligation(ctx context.Context, obligationID string) ([]*protocol.ChangeEvidence, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, change_id, obligation_id, tree_hash, source_participant, source_adapter,
+		       evidence_type, command, exit_code, result, artifact_hash, metadata_json,
+		       valid, invalidated_at, invalidation_reason, created_at
+		FROM change_evidence WHERE obligation_id = ? ORDER BY created_at DESC;
+	`, obligationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*protocol.ChangeEvidence
+	for rows.Next() {
+		var ev protocol.ChangeEvidence
+		var typeStr, metaStr string
+		if err := rows.Scan(
+			&ev.ID, &ev.ChangeID, &ev.ObligationID, &ev.TreeHash, &ev.SourceParticipant, &ev.SourceAdapter,
+			&typeStr, &ev.Command, &ev.ExitCode, &ev.Result, &ev.ArtifactHash, &metaStr,
+			&ev.Valid, &ev.InvalidatedAt, &ev.InvalidationReason, &ev.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		ev.EvidenceType = protocol.EvidenceType(typeStr)
+		if metaStr != "" {
+			_ = json.Unmarshal([]byte(metaStr), &ev.Metadata)
+		}
+		list = append(list, &ev)
+	}
+	return list, nil
+}
+
+func (s *SQLiteStore) GetChangeEvidenceForChange(ctx context.Context, changeID string) ([]*protocol.ChangeEvidence, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, change_id, obligation_id, tree_hash, source_participant, source_adapter,
+		       evidence_type, command, exit_code, result, artifact_hash, metadata_json,
+		       valid, invalidated_at, invalidation_reason, created_at
+		FROM change_evidence WHERE change_id = ? ORDER BY created_at DESC;
+	`, changeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*protocol.ChangeEvidence
+	for rows.Next() {
+		var ev protocol.ChangeEvidence
+		var typeStr, metaStr string
+		if err := rows.Scan(
+			&ev.ID, &ev.ChangeID, &ev.ObligationID, &ev.TreeHash, &ev.SourceParticipant, &ev.SourceAdapter,
+			&typeStr, &ev.Command, &ev.ExitCode, &ev.Result, &ev.ArtifactHash, &metaStr,
+			&ev.Valid, &ev.InvalidatedAt, &ev.InvalidationReason, &ev.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		ev.EvidenceType = protocol.EvidenceType(typeStr)
+		if metaStr != "" {
+			_ = json.Unmarshal([]byte(metaStr), &ev.Metadata)
+		}
+		list = append(list, &ev)
+	}
+	return list, nil
+}
+
+func (s *SQLiteStore) InvalidateChangeEvidence(ctx context.Context, id string, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE change_evidence
+		SET valid = 0, invalidated_at = ?, invalidation_reason = ?
+		WHERE id = ?;
+	`, now, reason, id)
+	return err
+}
+
+func (s *SQLiteStore) SaveGateResult(ctx context.Context, result *protocol.GateResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	passedJSON, _ := json.Marshal(result.PassedObligations)
+	pendingJSON, _ := json.Marshal(result.PendingObligations)
+	failedJSON, _ := json.Marshal(result.FailedObligations)
+	staleJSON, _ := json.Marshal(result.StaleObligations)
+	openFindingsJSON, _ := json.Marshal(result.OpenFindings)
+	reasonsJSON, _ := json.Marshal(result.Reasons)
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO change_gate_results (
+			id, change_id, status, current_tree_hash, verified_tree_hash,
+			passed_json, pending_json, failed_json, stale_json, open_findings_json, reasons_json, evaluated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			status = excluded.status,
+			current_tree_hash = excluded.current_tree_hash,
+			verified_tree_hash = excluded.verified_tree_hash,
+			passed_json = excluded.passed_json,
+			pending_json = excluded.pending_json,
+			failed_json = excluded.failed_json,
+			stale_json = excluded.stale_json,
+			open_findings_json = excluded.open_findings_json,
+			reasons_json = excluded.reasons_json,
+			evaluated_at = excluded.evaluated_at;
+	`,
+		result.ID, result.ChangeID, string(result.Status), result.CurrentTreeHash, result.VerifiedTreeHash,
+		string(passedJSON), string(pendingJSON), string(failedJSON), string(staleJSON), string(openFindingsJSON),
+		string(reasonsJSON), result.EvaluatedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetLatestGateResult(ctx context.Context, changeID string) (*protocol.GateResult, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var gr protocol.GateResult
+	var statusStr, passedStr, pendingStr, failedStr, staleStr, findingsStr, reasonsStr string
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, change_id, status, current_tree_hash, verified_tree_hash,
+		       passed_json, pending_json, failed_json, stale_json, open_findings_json, reasons_json, evaluated_at
+		FROM change_gate_results
+		WHERE change_id = ?
+		ORDER BY evaluated_at DESC LIMIT 1;
+	`, changeID).Scan(
+		&gr.ID, &gr.ChangeID, &statusStr, &gr.CurrentTreeHash, &gr.VerifiedTreeHash,
+		&passedStr, &pendingStr, &failedStr, &staleStr, &findingsStr, &reasonsStr, &gr.EvaluatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	gr.Status = protocol.GateStatus(statusStr)
+	_ = json.Unmarshal([]byte(passedStr), &gr.PassedObligations)
+	_ = json.Unmarshal([]byte(pendingStr), &gr.PendingObligations)
+	_ = json.Unmarshal([]byte(failedStr), &gr.FailedObligations)
+	_ = json.Unmarshal([]byte(staleStr), &gr.StaleObligations)
+	_ = json.Unmarshal([]byte(findingsStr), &gr.OpenFindings)
+	_ = json.Unmarshal([]byte(reasonsStr), &gr.Reasons)
+	return &gr, nil
 }

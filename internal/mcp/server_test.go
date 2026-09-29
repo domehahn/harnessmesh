@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -68,8 +70,8 @@ func TestMCPServerHandshakeAndTools(t *testing.T) {
 		t.Fatalf("unexpected tools/list result type: %T", resp.Result)
 	}
 	tools, ok := resMap["tools"].([]ToolDefinition)
-	if !ok || len(tools) != 34 {
-		t.Fatalf("expected 34 tools, got: %d", len(tools))
+	if !ok || len(tools) != 42 {
+		t.Fatalf("expected 42 tools, got: %d", len(tools))
 	}
 
 	// 3. tools/call peer.list
@@ -212,8 +214,8 @@ func TestMCPServer_StdioContract(t *testing.T) {
 	}
 	resMap := listResp.Result.(map[string]any)
 	toolsSlice := resMap["tools"].([]any)
-	if len(toolsSlice) != 34 {
-		t.Fatalf("expected 34 tools, got %d", len(toolsSlice))
+	if len(toolsSlice) != 42 {
+		t.Fatalf("expected 42 tools, got %d", len(toolsSlice))
 	}
 
 	// 3. Send peer.list over pipe
@@ -485,5 +487,149 @@ func TestMCPServer_CollaborationTools(t *testing.T) {
 	resp, err = server.HandleMessage(ctx, statusCall)
 	if err != nil || resp.Error != nil {
 		t.Fatalf("collaboration.status failed: err=%v, respErr=%+v", err, resp.Error)
+	}
+}
+
+func TestMCPServer_ChangeTools(t *testing.T) {
+	ctx := context.Background()
+	repoDir := t.TempDir()
+	dbDir := t.TempDir()
+	st, err := store.OpenSQLite(filepath.Join(dbDir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	_ = os.WriteFile(filepath.Join(repoDir, "hello.txt"), []byte("world\n"), 0644)
+
+	cfg := &config.Config{
+		ChangeControl: config.ChangeControlConfig{
+			Enabled: true,
+		},
+	}
+	eng := collaboration.NewEngine(collaboration.EngineConfig{
+		Config: cfg,
+		Store:  st,
+		Repo:   repoDir,
+	})
+
+	server := NewServer(eng, "", "test-caller")
+
+	// 1. change.create
+	createCall := []byte(`{
+		"jsonrpc": "2.0",
+		"id": 20,
+		"method": "tools/call",
+		"params": {
+			"name": "change.create",
+			"arguments": {
+				"title": "Add hello feature",
+				"intent": "Demonstrate MeshCommit over MCP",
+				"author": "antigravity"
+			}
+		}
+	}`)
+	resp, err := server.HandleMessage(ctx, createCall)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("change.create failed: err=%v, respErr=%+v", err, resp.Error)
+	}
+
+	callRes, ok := resp.Result.(ToolCallResult)
+	if !ok || len(callRes.Content) == 0 {
+		t.Fatalf("unexpected change.create result: %+v", resp.Result)
+	}
+
+	var createData struct {
+		Change struct {
+			ID       string `json:"id"`
+			TreeHash string `json:"current_tree_hash"`
+		} `json:"change"`
+		Obligations []struct {
+			ID string `json:"id"`
+		} `json:"obligations"`
+	}
+	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &createData); err != nil {
+		t.Fatalf("failed to parse change.create response: %v", err)
+	}
+
+	changeID := createData.Change.ID
+	if changeID == "" {
+		t.Fatalf("expected non-empty change ID")
+	}
+	treeHash := createData.Change.TreeHash
+
+	// 2. change.status
+	statusCall := []byte(fmt.Sprintf(`{
+		"jsonrpc": "2.0",
+		"id": 21,
+		"method": "tools/call",
+		"params": {
+			"name": "change.status",
+			"arguments": {
+				"change_id": "%s"
+			}
+		}
+	}`, changeID))
+	resp, err = server.HandleMessage(ctx, statusCall)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("change.status failed: err=%v, respErr=%+v", err, resp.Error)
+	}
+
+	// 3. change.diff
+	diffCall := []byte(fmt.Sprintf(`{
+		"jsonrpc": "2.0",
+		"id": 22,
+		"method": "tools/call",
+		"params": {
+			"name": "change.diff",
+			"arguments": {
+				"change_id": "%s"
+			}
+		}
+	}`, changeID))
+	resp, err = server.HandleMessage(ctx, diffCall)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("change.diff failed: err=%v, respErr=%+v", err, resp.Error)
+	}
+
+	// 4. change.evidence
+	if len(createData.Obligations) > 0 {
+		oblID := createData.Obligations[0].ID
+		evidenceCall := []byte(fmt.Sprintf(`{
+			"jsonrpc": "2.0",
+			"id": 23,
+			"method": "tools/call",
+			"params": {
+				"name": "change.evidence",
+				"arguments": {
+					"change_id": "%s",
+					"obligation_id": "%s",
+					"tree_hash": "%s",
+					"evidence_type": "unit_tests",
+					"result": "passed"
+				}
+			}
+		}`, changeID, oblID, treeHash))
+		resp, err = server.HandleMessage(ctx, evidenceCall)
+		if err != nil || resp.Error != nil {
+			t.Fatalf("change.evidence failed: err=%v, respErr=%+v", err, resp.Error)
+		}
+	}
+
+	// 5. change.commit_status
+	csCall := []byte(fmt.Sprintf(`{
+		"jsonrpc": "2.0",
+		"id": 24,
+		"method": "tools/call",
+		"params": {
+			"name": "change.commit_status",
+			"arguments": {
+				"change_id": "%s"
+			}
+		}
+	}`, changeID))
+	resp, err = server.HandleMessage(ctx, csCall)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("change.commit_status failed: err=%v, respErr=%+v", err, resp.Error)
 	}
 }

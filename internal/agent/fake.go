@@ -142,10 +142,10 @@ func (a *FakeAdapter) Invoke(ctx context.Context, req InvokeRequest) (InvokeResu
 				}
 			}
 			return InvokeResult{
-				AgentName:  a.Name(),
-				SessionID:  req.SessionID,
-				Text:       text,
-				RawOutput:  text,
+				AgentName: a.Name(),
+				SessionID: req.SessionID,
+				Text:      text,
+				RawOutput: text,
 				Usage: map[string]any{
 					"input_tokens":  int64(len(req.Prompt) / 4),
 					"output_tokens": outTokens,
@@ -164,10 +164,10 @@ func (a *FakeAdapter) Invoke(ctx context.Context, req InvokeRequest) (InvokeResu
 		}
 	}
 	return InvokeResult{
-		AgentName:  a.Name(),
-		SessionID:  req.SessionID,
-		Text:       text,
-		RawOutput:  text,
+		AgentName: a.Name(),
+		SessionID: req.SessionID,
+		Text:      text,
+		RawOutput: text,
 		Usage: map[string]any{
 			"input_tokens":  int64(len(req.Prompt) / 4),
 			"output_tokens": outTokens,

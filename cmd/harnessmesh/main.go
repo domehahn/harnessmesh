@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -27,7 +29,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/workflow"
 )
 
-var version = "0.3.0"
+var version = "0.5.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -51,6 +53,8 @@ func main() {
 		err = subscriptionsCmd(os.Args[2:])
 	case "decide":
 		err = decideCmd(os.Args[2:])
+	case "change":
+		err = changeCmd(os.Args[2:])
 	case "mcp":
 		err = mcpCmd(os.Args[2:])
 	case "peer":
@@ -105,8 +109,9 @@ Usage:
   harnessmesh inbox list --space <id> [options]
   harnessmesh subscriptions <list|add|remove> [options]
   harnessmesh decide <list|propose|accept> [options]
-  harnessmesh integrate antigravity [--config <path>] [--repo <path>] [--dry-run]
-  harnessmesh mcp serve [--repo <path>] [--config <path>] [--session <id>] [--caller <name>]
+  harnessmesh change <create|list|show|prepare|verify|evidence|gate|commit|abort> [options]
+  harnessmesh integrate <antigravity|chatgpt> [--config <path>] [--repo <path>] [--dry-run]
+  harnessmesh mcp serve [--repo <path>] [--config <path>] [--session <id>] [--caller <name>] [--endpoint <path>]
   harnessmesh mcp install <claude|codex|antigravity|copilot> [--scope <project|user>]
   harnessmesh peer converse --message "..." [--peer <name>] [--outcome <type>] [options]
   harnessmesh peer ask --peer <name> --question "..." [options]
@@ -462,11 +467,16 @@ func mcpServe(args []string) error {
 	sessionID := fs.String("session", "", "existing session id to attach")
 	caller := fs.String("caller", "claude", "caller agent name")
 	listen := fs.String("listen", "", "optional remote HTTP listen address, e.g. 127.0.0.1:8787")
+	endpoint := fs.String("endpoint", "/mcp", "MCP streamable HTTP endpoint path")
 	token := fs.String("token", os.Getenv("HARNESSMESH_MCP_TOKEN"), "remote MCP bearer token")
 	tlsCert := fs.String("tls-cert", os.Getenv("HARNESSMESH_MCP_TLS_CERT"), "TLS certificate for remote MCP")
 	tlsKey := fs.String("tls-key", os.Getenv("HARNESSMESH_MCP_TLS_KEY"), "TLS private key for remote MCP")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	if *endpoint != "" {
+		_ = os.Setenv("HARNESSMESH_MCP_PATH", *endpoint)
 	}
 
 	absRepo, err := filepath.Abs(*repo)
@@ -487,6 +497,9 @@ func mcpServe(args []string) error {
 
 	harnesses := make(map[string]agent.Harness)
 	for name, aCfg := range cfg.Agents {
+		if aCfg.IsExternal() {
+			continue
+		}
 		h, err := agent.NewHarness(name, aCfg, cfg.Switchyard)
 		if err == nil {
 			harnesses[name] = h
@@ -554,22 +567,34 @@ func installClaudeMCP(scope, repo string) error {
 			return err
 		}
 		mcpJSONPath := filepath.Join(absRepo, ".mcp.json")
-		configData := map[string]any{
-			"mcpServers": map[string]any{
-				"harnessmesh": map[string]any{
-					"command": binPath,
-					"args":    []string{"mcp", "serve"},
-				},
-			},
+
+		rootConfig := make(map[string]any)
+		if data, err := os.ReadFile(mcpJSONPath); err == nil {
+			_ = json.Unmarshal(data, &rootConfig)
 		}
-		raw, err := json.MarshalIndent(configData, "", "  ")
+
+		mcpServers, ok := rootConfig["mcpServers"].(map[string]any)
+		if !ok {
+			mcpServers = make(map[string]any)
+		}
+
+		mcpServers["harnessmesh"] = map[string]any{
+			"command": binPath,
+			"args":    []string{"mcp", "serve"},
+		}
+		rootConfig["mcpServers"] = mcpServers
+
+		raw, err := json.MarshalIndent(rootConfig, "", "  ")
 		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(mcpJSONPath), 0755); err != nil {
 			return err
 		}
 		if err := os.WriteFile(mcpJSONPath, raw, 0644); err != nil {
 			return fmt.Errorf("write %s: %w", mcpJSONPath, err)
 		}
-		fmt.Printf("✓ Successfully configured HarnessMesh MCP server in %s\n", mcpJSONPath)
+		fmt.Printf("✓ Successfully configured HarnessMesh MCP server in %s (merge-safe)\n", mcpJSONPath)
 		fmt.Println("Claude Code will now automatically load HarnessMesh peer collaboration tools.")
 		return nil
 	}
@@ -705,14 +730,92 @@ func installAntigravityMCP(scope, repo string) error {
 
 func integrateCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: harnessmesh integrate antigravity [--repo <path>] [--config <path>] [--dry-run]")
+		return errors.New("usage: harnessmesh integrate <antigravity|chatgpt> [--repo <path>] [--config <path>] [--dry-run]")
 	}
 	switch strings.ToLower(args[0]) {
 	case "antigravity", "google-antigravity":
 		return integrateAntigravity(args[1:])
+	case "chatgpt", "chatgpt-web", "openai-chatgpt":
+		return integrateChatGPT(args[1:])
 	default:
-		return fmt.Errorf("unsupported integration target %q (supported: antigravity)", args[0])
+		return fmt.Errorf("unsupported integration target %q (supported: antigravity, chatgpt)", args[0])
 	}
+}
+
+func integrateChatGPT(args []string) error {
+	fs := flag.NewFlagSet("integrate chatgpt", flag.ContinueOnError)
+	repo := fs.String("repo", ".", "repository path")
+	configPath := fs.String("config", "configs/chatgpt-claude.json", "configuration profile to use")
+	listen := fs.String("listen", "127.0.0.1:8787", "remote Streamable HTTP address for ChatGPT MCP connector")
+	token := fs.String("token", "", "bearer token for ChatGPT MCP connector (auto-generated if empty)")
+	installClaude := fs.Bool("install-claude", true, "also configure Claude Code .mcp.json in the repository")
+	dryRun := fs.Bool("dry-run", false, "print instructions and configuration without writing files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	absRepo, err := filepath.Abs(*repo)
+	if err != nil {
+		return err
+	}
+
+	absConfig, err := filepath.Abs(*configPath)
+	if err != nil {
+		return err
+	}
+
+	if *token == "" {
+		*token = os.Getenv("HARNESSMESH_MCP_TOKEN")
+		if *token == "" {
+			b := make([]byte, 16)
+			_, _ = rand.Read(b)
+			*token = hex.EncodeToString(b)
+		}
+	}
+
+	endpointURL := fmt.Sprintf("http://%s/mcp", *listen)
+	if strings.HasPrefix(*listen, ":") {
+		endpointURL = fmt.Sprintf("http://127.0.0.1%s/mcp", *listen)
+	}
+
+	fmt.Println("================================================================")
+	fmt.Println("  HarnessMesh v0.4.0 — ChatGPT Web Custom MCP App Integration")
+	fmt.Println("================================================================")
+	fmt.Printf("Repository:     %s\n", absRepo)
+	fmt.Printf("Profile:        %s\n", absConfig)
+	fmt.Printf("MCP Endpoint:   %s\n", endpointURL)
+	fmt.Printf("Bearer Token:   %s\n", *token)
+	fmt.Println()
+
+	if !*dryRun {
+		if *installClaude {
+			if err := installClaudeMCP("project", absRepo); err != nil {
+				fmt.Printf("Warning: could not configure Claude Code .mcp.json: %v\n", err)
+			}
+		}
+	} else {
+		fmt.Println("[dry-run] Would configure merge-safe .mcp.json for Claude Code in repository.")
+	}
+
+	fmt.Println()
+	fmt.Println("ChatGPT Web Setup Instructions:")
+	fmt.Println("1. Start the HarnessMesh Streamable HTTP server:")
+	fmt.Printf("   harnessmesh mcp serve --caller chatgpt-browser --config %s --repo %s --listen %s --token %s\n", *configPath, *repo, *listen, *token)
+	fmt.Println()
+	fmt.Println("2. If hosting locally, expose via a secure tunnel (Cloudflare Tunnel, ngrok, tailscale):")
+	fmt.Printf("   cloudflared tunnel --url http://%s\n", *listen)
+	fmt.Println()
+	fmt.Println("3. In ChatGPT Web (ChatGPT Plus/Team/Enterprise):")
+	fmt.Println("   a. Open Settings > Connectors > Add MCP Connector (or enable Developer Mode)")
+	fmt.Println("   b. Enter your public tunnel URL with path '/mcp' (e.g. https://<tunnel-host>/mcp)")
+	fmt.Printf("   c. Select 'Bearer Token' authentication and enter: %s\n", *token)
+	fmt.Println("   d. Save the connector. All HarnessMesh collaboration tools will appear in chat.")
+	fmt.Println()
+	fmt.Println("4. In any chat with ChatGPT:")
+	fmt.Println("   - Ask ChatGPT to converse with Claude: \"Ask Claude Code to review our auth flow\"")
+	fmt.Println("   - ChatGPT will invoke 'peer.converse' directly to Claude without copy/pasting!")
+	fmt.Println("================================================================")
+	return nil
 }
 
 func integrateAntigravity(args []string) error {

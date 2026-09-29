@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "workspace": {
+    "single_writer": true
+  },
+  "collaboration": {
+    "max_peer_rounds": 3,
+    "max_peer_depth": 2,
+    "max_peer_calls": 10,
+    "max_parallel_peers": 3,
+    "peer_selection_policy": "first",
+    "session_timeout": "60m",
+    "max_idle_duration": "15m"
+  },
+  "workflow": {
+    "executor": "claude-executor",
+    "reviewer": "chatgpt-browser",
+    "max_rounds": 3,
+    "max_wall_time_minutes": 120,
+    "stop_on_repeat": true,
+    "test_command": []
+  },
+  "context": {
+    "max_context_chars": 100000,
+    "max_diff_chars": 60000,
+    "max_test_output_chars": 30000,
+    "max_file_chars": 20000,
+    "max_files": 25,
+    "diff_context_lines": 30,
+    "include_untracked": true
+  },
+  "agents": {
+    "chatgpt-browser": {
+      "execution_mode": "external",
+      "adapter": "mcp-remote",
+      "role": "peer",
+      "roles": ["peer", "consultant"],
+      "writable": false,
+      "mode": "passive",
+      "timeout_minutes": 45,
+      "capabilities": {
+        "read_repository": true,
+        "write_repository": false,
+        "run_commands": false,
+        "review": true,
+        "answer_questions": true,
+        "submit_evidence": true
+      }
+    },
+    "claude-executor": {
+      "execution_mode": "managed",
+      "adapter": "claude-code",
+      "role": "executor",
+      "roles": ["executor"],
+      "writable": true,
+      "command": "claude",
+      "mode": "acceptEdits",
+      "timeout_minutes": 45,
+      "capabilities": {
+        "read_repository": true,
+        "write_repository": true,
+        "run_commands": true,
+        "review": true,
+        "answer_questions": true,
+        "submit_evidence": true
+      }
+    }
+  },
+  "capability_routing": {
+    "review": ["claude-executor"],
+    "answer_questions": ["claude-executor"]
+  }
+}
+

@@ -532,15 +532,21 @@ type Thread struct {
 	UpdatedAt     time.Time    `json:"updated_at"`
 }
 
+const (
+	ExecutionModeManaged  = "managed"
+	ExecutionModeExternal = "external"
+)
+
 type SpaceParticipant struct {
-	ID           string                  `json:"id"`
-	Adapter      string                  `json:"adapter"`
-	Roles        []string                `json:"roles"`
-	Capabilities []string                `json:"capabilities"`
-	Mode         ParticipantActivityMode `json:"mode"`
-	Writable     bool                    `json:"writable"`
-	JoinedAt     time.Time               `json:"joined_at"`
-	UpdatedAt    time.Time               `json:"updated_at"`
+	ID            string                  `json:"id"`
+	Adapter       string                  `json:"adapter"`
+	ExecutionMode string                  `json:"execution_mode,omitempty"`
+	Roles         []string                `json:"roles"`
+	Capabilities  []string                `json:"capabilities"`
+	Mode          ParticipantActivityMode `json:"mode"`
+	Writable      bool                    `json:"writable"`
+	JoinedAt      time.Time               `json:"joined_at"`
+	UpdatedAt     time.Time               `json:"updated_at"`
 }
 
 type CollaborationSpace struct {
@@ -597,6 +603,28 @@ const (
 	EventHumanResume       = "human.resume"
 	EventHumanStop         = "human.stop"
 	EventWorkspaceChanged  = "workspace.changed"
+
+	// MeshCommit Change Control Events
+	EventChangeCreated     = "change.created"
+	EventChangePrepared    = "change.prepared"
+	EventChangeUpdated     = "change.updated"
+	EventChangeAborted     = "change.aborted"
+	EventChangeCommittable = "change.committable"
+	EventChangeCommitted   = "change.committed"
+
+	EventProofRequired = "proof.required"
+	EventProofStarted  = "proof.started"
+	EventProofPassed   = "proof.passed"
+	EventProofFailed   = "proof.failed"
+	EventProofStale    = "proof.stale"
+	EventProofWaived   = "proof.waived"
+
+	EventEvidenceAttached    = "evidence.attached"
+	EventEvidenceInvalidated = "evidence.invalidated"
+
+	EventGateBlocked  = "gate.blocked"
+	EventGateOpened   = "gate.opened"
+	EventGateVerified = "gate.verified"
 )
 
 type CollaborationEvent struct {
@@ -1233,4 +1261,206 @@ func QuotaRetryAt(err error) (time.Time, bool) {
 
 func IsAuthPermanent(err error) bool {
 	return ClassifyError(err) == RetryCategoryPermanentAuth
+}
+
+// -----------------------------------------------------------------------------
+// MeshCommit: Evidence-Gated Change Transactions (v0.5.0)
+// -----------------------------------------------------------------------------
+
+type MeshChangeStatus string
+
+const (
+	ChangeStatusDraft             MeshChangeStatus = "draft"
+	ChangeStatusPrepared          MeshChangeStatus = "prepared"
+	ChangeStatusUnderVerification MeshChangeStatus = "under_verification"
+	ChangeStatusBlocked           MeshChangeStatus = "blocked"
+	ChangeStatusVerified          MeshChangeStatus = "verified"
+	ChangeStatusCommittable       MeshChangeStatus = "committable"
+	ChangeStatusCommitted         MeshChangeStatus = "committed"
+	ChangeStatusAborted           MeshChangeStatus = "aborted"
+)
+
+type MeshChange struct {
+	ID                string           `json:"id"`
+	SessionID         string           `json:"session_id,omitempty"`
+	SpaceID           string           `json:"space_id,omitempty"`
+	RepositoryID      string           `json:"repository_id"`
+	Title             string           `json:"title"`
+	Intent            string           `json:"intent"`
+	AuthorParticipant string           `json:"author_participant"`
+	BaseCommit        string           `json:"base_commit"`
+	BaseTreeHash      string           `json:"base_tree_hash"`
+	CurrentTreeHash   string           `json:"current_tree_hash"`
+	VerifiedTreeHash  string           `json:"verified_tree_hash,omitempty"`
+	Status            MeshChangeStatus `json:"status"`
+	ProofPolicyJSON   string           `json:"proof_policy_json"`
+	PolicySource      string           `json:"policy_source"`
+	CommitSHA         string           `json:"commit_sha,omitempty"`
+	Metadata          map[string]any   `json:"metadata,omitempty"`
+	CreatedAt         time.Time        `json:"created_at"`
+	UpdatedAt         time.Time        `json:"updated_at"`
+	CommittedAt       *time.Time       `json:"committed_at,omitempty"`
+	AbortedAt         *time.Time       `json:"aborted_at,omitempty"`
+}
+
+type CreateChangeRequest struct {
+	ChangeID          string `json:"change_id,omitempty"`
+	SpaceID           string `json:"space_id,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
+	RepositoryID      string `json:"repository_id,omitempty"`
+	AuthorParticipant string `json:"author_participant"`
+	Title             string `json:"title"`
+	Intent            string `json:"intent,omitempty"`
+	BaseCommit        string `json:"base_commit,omitempty"`
+}
+
+type ChangePath struct {
+	ChangeID          string    `json:"change_id"`
+	Path              string    `json:"path"`
+	ChangeType        string    `json:"change_type"` // "added", "modified", "deleted", "renamed"
+	ContentHashBefore string    `json:"content_hash_before,omitempty"`
+	ContentHashAfter  string    `json:"content_hash_after,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+type ProofObligationStatus string
+
+const (
+	ProofStatusPending       ProofObligationStatus = "pending"
+	ProofStatusRunning       ProofObligationStatus = "running"
+	ProofStatusPassed        ProofObligationStatus = "passed"
+	ProofStatusFailed        ProofObligationStatus = "failed"
+	ProofStatusStale         ProofObligationStatus = "stale"
+	ProofStatusWaived        ProofObligationStatus = "waived"
+	ProofStatusRequiresHuman ProofObligationStatus = "requires_human"
+)
+
+type ProofObligation struct {
+	ID                  string                `json:"id"`
+	ChangeID            string                `json:"change_id"`
+	Type                string                `json:"type"`
+	Name                string                `json:"name"`
+	Description         string                `json:"description"`
+	Required            bool                  `json:"required"`
+	Status              ProofObligationStatus `json:"status"`
+	PolicySource        string                `json:"policy_source"`
+	Scope               []string              `json:"scope,omitempty"`
+	RequiredCapability  string                `json:"required_capability,omitempty"`
+	RequiredParticipant string                `json:"required_participant,omitempty"`
+	Command             string                `json:"command,omitempty"`
+	ExpectedExitCode    int                   `json:"expected_exit_code"`
+	FreshnessPolicy     string                `json:"freshness_policy"` // "exact_tree", "path_scoped", "manual"
+	CurrentEvidenceID   string                `json:"current_evidence_id,omitempty"`
+	WaivedBy            string                `json:"waived_by,omitempty"`
+	WaivedReason        string                `json:"waived_reason,omitempty"`
+	CreatedAt           time.Time             `json:"created_at"`
+	UpdatedAt           time.Time             `json:"updated_at"`
+}
+
+type ChangeEvidence struct {
+	ID                 string         `json:"id"`
+	ChangeID           string         `json:"change_id"`
+	ObligationID       string         `json:"obligation_id"`
+	TreeHash           string         `json:"tree_hash"`
+	SourceParticipant  string         `json:"source_participant"`
+	SourceAdapter      string         `json:"source_adapter,omitempty"`
+	EvidenceType       EvidenceType   `json:"evidence_type"`
+	Command            string         `json:"command,omitempty"`
+	ExitCode           *int           `json:"exit_code,omitempty"`
+	Result             string         `json:"result,omitempty"`
+	ArtifactHash       string         `json:"artifact_hash,omitempty"`
+	Metadata           map[string]any `json:"metadata,omitempty"`
+	Valid              bool           `json:"valid"`
+	InvalidatedAt      *time.Time     `json:"invalidated_at,omitempty"`
+	InvalidationReason string         `json:"invalidation_reason,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+type GateStatus string
+
+const (
+	GateStatusCommittable GateStatus = "committable"
+	GateStatusBlocked     GateStatus = "blocked"
+	GateStatusVerifying   GateStatus = "verifying"
+)
+
+type GateResult struct {
+	ID                 string     `json:"id"`
+	ChangeID           string     `json:"change_id"`
+	Status             GateStatus `json:"status"`
+	CurrentTreeHash    string     `json:"current_tree_hash"`
+	VerifiedTreeHash   string     `json:"verified_tree_hash,omitempty"`
+	PassedObligations  []string   `json:"passed_obligations"`
+	PendingObligations []string   `json:"pending_obligations"`
+	FailedObligations  []string   `json:"failed_obligations"`
+	StaleObligations   []string   `json:"stale_obligations"`
+	OpenFindings       []string   `json:"open_findings,omitempty"`
+	Reasons            []string   `json:"reasons"`
+	EvaluatedAt        time.Time  `json:"evaluated_at"`
+}
+
+// Typed MeshCommit Errors
+
+type ChangeNotFoundError struct {
+	ChangeID string
+}
+
+func (e *ChangeNotFoundError) Error() string {
+	return fmt.Sprintf("mesh change %q not found", e.ChangeID)
+}
+
+type ProofObligationNotFoundError struct {
+	ObligationID string
+}
+
+func (e *ProofObligationNotFoundError) Error() string {
+	return fmt.Sprintf("proof obligation %q not found", e.ObligationID)
+}
+
+type SelfReviewForbiddenError struct {
+	Participant string
+	ChangeID    string
+}
+
+func (e *SelfReviewForbiddenError) Error() string {
+	return fmt.Sprintf("self-review forbidden: participant %q cannot review change %q authored by itself", e.Participant, e.ChangeID)
+}
+
+type PolicyDowngradeForbiddenError struct {
+	ChangeID string
+	Reason   string
+}
+
+func (e *PolicyDowngradeForbiddenError) Error() string {
+	return fmt.Sprintf("policy downgrade forbidden on change %q: %s", e.ChangeID, e.Reason)
+}
+
+type CommitTreeMismatchError struct {
+	ChangeID     string
+	VerifiedTree string
+	CommitTree   string
+}
+
+func (e *CommitTreeMismatchError) Error() string {
+	return fmt.Sprintf("commit tree mismatch on change %q: commit tree %q does not match verified tree %q", e.ChangeID, e.CommitTree, e.VerifiedTree)
+}
+
+type ChangeNotCommittableError struct {
+	ChangeID string
+	Status   MeshChangeStatus
+	Reasons  []string
+}
+
+func (e *ChangeNotCommittableError) Error() string {
+	return fmt.Sprintf("change %q is not committable (status: %s): %s", e.ChangeID, e.Status, strings.Join(e.Reasons, "; "))
+}
+
+type InvalidChangeTransitionError struct {
+	ChangeID string
+	From     MeshChangeStatus
+	To       MeshChangeStatus
+}
+
+func (e *InvalidChangeTransitionError) Error() string {
+	return fmt.Sprintf("invalid change state transition for %q: %s -> %s", e.ChangeID, e.From, e.To)
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -24,6 +25,7 @@ type Config struct {
 	ModelRoutingBackends map[string]ModelRoutingBackendConfig `json:"model_routing_backends,omitempty"`
 	Agents               map[string]AgentConfig               `json:"agents"`
 	CapabilityRouting    map[string][]string                  `json:"capability_routing,omitempty"`
+	ChangeControl        ChangeControlConfig                  `json:"change_control,omitempty"`
 }
 
 type SelectionConfig struct {
@@ -126,6 +128,183 @@ type ContextConfig struct {
 	DeniedPaths        []string `json:"denied_paths,omitempty"`
 }
 
+type ChangeControlConfig struct {
+	Enabled       bool                `json:"enabled"`
+	DefaultProofs []string            `json:"default_proofs,omitempty"`
+	Rules         []ChangeControlRule `json:"rules,omitempty"`
+	AutoCommit    bool                `json:"auto_commit,omitempty"`
+}
+
+type ChangeControlRule struct {
+	Paths   []string `json:"paths"`
+	Require []string `json:"require"`
+}
+
+type ProofObligationSpec struct {
+	Type                string   `json:"type"`
+	Name                string   `json:"name"`
+	Description         string   `json:"description"`
+	Required            bool     `json:"required"`
+	Scope               []string `json:"scope,omitempty"`
+	Command             string   `json:"command,omitempty"`
+	ExpectedExitCode    int      `json:"expected_exit_code"`
+	RequiredCapability  string   `json:"required_capability,omitempty"`
+	RequiredParticipant string   `json:"required_participant,omitempty"`
+	PolicySource        string   `json:"policy_source"`
+}
+
+// NormalizeObligationType normalizes hyphenated names like "unit-tests" to canonical "unit_tests".
+func NormalizeObligationType(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	s = strings.ReplaceAll(s, "-", "_")
+	switch s {
+	case "unit_test", "unit_tests", "unittest", "unittests":
+		return "unit_tests"
+	case "race", "race_detector", "race_detect":
+		return "race_detector"
+	case "build", "compile":
+		return "build"
+	case "lint", "vet":
+		return "lint"
+	case "independent_review", "peer_review", "review":
+		return "independent_review"
+	case "security_review", "security_scan", "security", "security_audit":
+		return "security_review"
+	case "architecture_review", "architecture":
+		return "architecture_review"
+	default:
+		return s
+	}
+}
+
+// MatchPathPattern tests if a relative targetPath matches a pattern (supports "**" recursive wildcards).
+func MatchPathPattern(pattern, targetPath string) bool {
+	pattern = filepath.ToSlash(filepath.Clean(pattern))
+	targetPath = filepath.ToSlash(filepath.Clean(targetPath))
+	if pattern == targetPath || pattern == "*" || pattern == "**" || pattern == "**/*" {
+		return true
+	}
+	if strings.HasSuffix(pattern, "/**") {
+		prefix := strings.TrimSuffix(pattern, "/**")
+		return targetPath == prefix || strings.HasPrefix(targetPath, prefix+"/")
+	}
+	if strings.HasPrefix(pattern, "**/") {
+		suffix := strings.TrimPrefix(pattern, "**/")
+		return targetPath == suffix || strings.HasSuffix(targetPath, "/"+suffix)
+	}
+	if matched, err := filepath.Match(pattern, targetPath); err == nil && matched {
+		return true
+	}
+	return false
+}
+
+// ResolveProofPolicy deterministically computes the set of required proof obligations for a change.
+func (cc ChangeControlConfig) ResolveProofPolicy(affectedPaths []string) []ProofObligationSpec {
+	proofTypes := make([]string, 0)
+	seen := make(map[string]bool)
+	scopes := make(map[string][]string)
+
+	addProof := func(p string, scope []string) {
+		norm := NormalizeObligationType(p)
+		if norm != "" {
+			if !seen[norm] {
+				seen[norm] = true
+				proofTypes = append(proofTypes, norm)
+			}
+			if len(scope) > 0 {
+				scopes[norm] = append(scopes[norm], scope...)
+			}
+		}
+	}
+
+	// 1. Add default proofs
+	var defaults []string
+	if cc.DefaultProofs == nil {
+		defaults = []string{"unit-tests", "independent-review"}
+	} else {
+		defaults = cc.DefaultProofs
+	}
+	for _, p := range defaults {
+		addProof(p, nil)
+	}
+
+	// 2. Add rule-matched proofs
+	for _, rule := range cc.Rules {
+		matched := false
+		if len(rule.Paths) == 0 {
+			matched = true
+		} else {
+			for _, pat := range rule.Paths {
+				for _, p := range affectedPaths {
+					if MatchPathPattern(pat, p) {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					break
+				}
+			}
+		}
+		if matched {
+			for _, req := range rule.Require {
+				addProof(req, rule.Paths)
+			}
+		}
+	}
+
+	// 3. Build specifications
+	specs := make([]ProofObligationSpec, 0, len(proofTypes))
+	for _, pt := range proofTypes {
+		spec := ProofObligationSpec{
+			Type:         pt,
+			Required:     true,
+			PolicySource: "policy",
+			Scope:        scopes[pt],
+		}
+		switch pt {
+		case "unit_tests":
+			spec.Name = "Unit Tests"
+			spec.Description = "Execute repository test suite via go test ./..."
+			spec.Command = "go test ./..."
+			spec.ExpectedExitCode = 0
+		case "race_detector":
+			spec.Name = "Race Detector"
+			spec.Description = "Execute test suite with Go data race detector via go test -race ./..."
+			spec.Command = "go test -race ./..."
+			spec.ExpectedExitCode = 0
+		case "build":
+			spec.Name = "Build"
+			spec.Description = "Compile codebase via go build ./..."
+			spec.Command = "go build ./..."
+			spec.ExpectedExitCode = 0
+		case "lint":
+			spec.Name = "Code Analysis"
+			spec.Description = "Run static analysis via go vet ./..."
+			spec.Command = "go vet ./..."
+			spec.ExpectedExitCode = 0
+		case "independent_review":
+			spec.Name = "Independent Peer Review"
+			spec.Description = "Multi-finding review performed by an independent peer participant"
+			spec.RequiredCapability = "review"
+		case "security_review":
+			spec.Name = "Security Review"
+			spec.Description = "Specialized security inspection performed by a security reviewer"
+			spec.RequiredCapability = "security"
+		case "architecture_review":
+			spec.Name = "Architecture Review"
+			spec.Description = "Architectural review performed by an architecture reviewer"
+			spec.RequiredCapability = "architecture"
+		default:
+			spec.Name = strings.Title(strings.ReplaceAll(pt, "_", " "))
+			spec.Description = fmt.Sprintf("Proof obligation for %s", pt)
+		}
+		specs = append(specs, spec)
+	}
+
+	return specs
+}
+
 type SwitchyardConfig struct {
 	Enabled               bool              `json:"enabled"`
 	BaseURL               string            `json:"base_url"`
@@ -195,6 +374,15 @@ type AgentConfig struct {
 	DeniedPaths       []string                 `json:"denied_paths,omitempty"`
 	UseSwitchyard     bool                     `json:"use_switchyard"`
 	SwitchyardRouteID string                   `json:"switchyard_route_id"`
+	ExecutionMode     string                   `json:"execution_mode,omitempty"` // "managed", "external"
+}
+
+func (a AgentConfig) IsExternal() bool {
+	return strings.EqualFold(strings.TrimSpace(a.ExecutionMode), "external")
+}
+
+func (a AgentConfig) IsManaged() bool {
+	return !a.IsExternal()
 }
 
 func (a AgentConfig) HasRole(r string) bool {
@@ -313,10 +501,21 @@ func Parse(raw []byte) (*Config, error) {
 		if a.Kind == "" {
 			return nil, fmt.Errorf("agent %q: kind or adapter is required", name)
 		}
+		if a.ExecutionMode == "" {
+			a.ExecutionMode = "managed"
+		} else {
+			a.ExecutionMode = strings.ToLower(strings.TrimSpace(a.ExecutionMode))
+			if a.ExecutionMode != "managed" && a.ExecutionMode != "external" {
+				return nil, fmt.Errorf("agent %q: invalid execution_mode %q (must be 'managed' or 'external')", name, a.ExecutionMode)
+			}
+		}
+
 		switch a.Kind {
-		case "claude", "claude-code", "codex", "openai", "openai-api", "antigravity", "agy", "copilot", "copilot-cli", "github-copilot", "fake", "mock":
+		case "claude", "claude-code", "codex", "openai", "openai-api", "antigravity", "agy", "copilot", "copilot-cli", "github-copilot", "fake", "mock", "external", "mcp-remote", "chatgpt", "browser":
 		default:
-			return nil, fmt.Errorf("agent %q: unsupported kind/adapter %q", name, a.Kind)
+			if !a.IsExternal() {
+				return nil, fmt.Errorf("agent %q: unsupported kind/adapter %q", name, a.Kind)
+			}
 		}
 
 		if a.Role == "" {

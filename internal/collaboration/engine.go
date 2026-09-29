@@ -61,6 +61,7 @@ type Engine struct {
 	retryCancel context.CancelFunc
 	retryWG     sync.WaitGroup
 	operations  *operationState
+	meshCommit  *MeshCommitCoordinator
 }
 
 func NewEngine(ec EngineConfig) *Engine {
@@ -104,6 +105,11 @@ func NewEngine(ec EngineConfig) *Engine {
 		inflight:       make(map[string]chan struct{}),
 	}
 	eng.operations = newOperationState(ec.Config, ec.Store)
+	var arch *knowledge.Archive
+	if ks, ok := ec.Store.(knowledgeStore); ok {
+		arch = ks.KnowledgeArchive()
+	}
+	eng.meshCommit = NewMeshCommitCoordinator(ec.Store, ec.Config, eventBus, ec.Repo, spaceSvc, arch)
 	if _, ok := ec.Store.(retryStore); ok {
 		var retryCtx context.Context
 		retryCtx, eng.retryCancel = context.WithCancel(context.Background())
@@ -300,11 +306,12 @@ func (e *Engine) CreateSession(ctx context.Context, sessionID, task string) (*st
 			writerParticipant = name
 		}
 		participants[name] = store.ParticipantInfo{
-			AgentName: name,
-			Adapter:   a.Kind,
-			Role:      a.Role,
-			Roles:     a.Roles,
-			Writable:  a.Writable,
+			AgentName:     name,
+			Adapter:       a.Kind,
+			ExecutionMode: a.ExecutionMode,
+			Role:          a.Role,
+			Roles:         a.Roles,
+			Writable:      a.Writable,
 		}
 	}
 
@@ -853,6 +860,9 @@ func (e *Engine) ResolveParticipantContext(ctx context.Context, sessionID, capab
 
 	var candidates []economy.ParticipantCandidate
 	for name, a := range e.cfg.Agents {
+		if a.IsExternal() {
+			continue
+		}
 		roles := a.Roles
 		if len(roles) == 0 && a.Role != "" {
 			roles = []string{a.Role}
@@ -1077,6 +1087,14 @@ func (e *Engine) Ask(ctx context.Context, sessionID, caller string, req protocol
 		return nil, errors.New("neither peer nor capability specified in ask request")
 	}
 
+	if aCfg, exists := e.cfg.Agents[targetPeer]; exists && aCfg.IsExternal() {
+		e.mu.Unlock()
+		return nil, &protocol.PeerUnavailableError{
+			Peer:   targetPeer,
+			Reason: fmt.Sprintf("participant %q is external and cannot be invoked directly by HarnessMesh; conversations must be initiated by the external participant", targetPeer),
+		}
+	}
+
 	peerHarness, ok := e.harnesses[targetPeer]
 	if !ok {
 		e.mu.Unlock()
@@ -1215,6 +1233,13 @@ func (e *Engine) executeSingleReview(ctx context.Context, sessionID, caller, tar
 	if err != nil {
 		e.mu.Unlock()
 		return nil, err
+	}
+	if aCfg, exists := e.cfg.Agents[targetPeer]; exists && aCfg.IsExternal() {
+		e.mu.Unlock()
+		return nil, &protocol.PeerUnavailableError{
+			Peer:   targetPeer,
+			Reason: fmt.Sprintf("participant %q is external and cannot be invoked directly by HarnessMesh; conversations must be initiated by the external participant", targetPeer),
+		}
 	}
 	peerHarness, ok := e.harnesses[targetPeer]
 	if !ok {
@@ -1992,6 +2017,14 @@ func (e *Engine) Converse(ctx context.Context, sessionID, caller string, req pro
 		}
 	}
 
+	if aCfg, exists := e.cfg.Agents[targetPeer]; exists && aCfg.IsExternal() {
+		e.mu.Unlock()
+		return nil, &protocol.PeerUnavailableError{
+			Peer:   targetPeer,
+			Reason: fmt.Sprintf("participant %q is external and cannot be invoked directly by HarnessMesh; conversations must be initiated by the external participant", targetPeer),
+		}
+	}
+
 	peerHarness, ok := e.harnesses[targetPeer]
 	if !ok {
 		e.mu.Unlock()
@@ -2311,6 +2344,19 @@ func (e *Engine) dispatchParticipantEvent(ctx context.Context, space *protocol.C
 			ParticipantID: p.ID,
 			Status:        protocol.DeliverySkipped,
 			SkipReason:    policyReason,
+		})
+		return
+	}
+
+	isExternal := p.ExecutionMode == protocol.ExecutionModeExternal || (e.cfg != nil && e.cfg.Agents[p.ID].IsExternal())
+	if isExternal {
+		delID := fmt.Sprintf("del_%s_%s", evt.ID, p.ID)
+		_ = e.store.RecordEventDelivery(ctx, &protocol.EventDelivery{
+			ID:            delID,
+			EventID:       evt.ID,
+			SpaceID:       space.ID,
+			ParticipantID: p.ID,
+			Status:        protocol.DeliveryPending,
 		})
 		return
 	}
@@ -2721,6 +2767,23 @@ func (e *Engine) Publish(ctx context.Context, req *protocol.PublishRequest) (*pr
 				return
 			}
 
+			isExternal := p.ExecutionMode == protocol.ExecutionModeExternal || (e.cfg != nil && e.cfg.Agents[p.ID].IsExternal())
+			if isExternal {
+				if !recordDelivery(&protocol.EventDelivery{
+					ID:            delID,
+					EventID:       msgID,
+					SpaceID:       space.ID,
+					ParticipantID: p.ID,
+					Status:        protocol.DeliveryPending,
+				}) {
+					return
+				}
+				dispatchMu.Lock()
+				pendingInbox = append(pendingInbox, p.ID)
+				dispatchMu.Unlock()
+				return
+			}
+
 			harness := e.findHarness(p.ID, p.Adapter)
 			if harness == nil {
 				dispatchMu.Lock()
@@ -3124,4 +3187,82 @@ func (e *Engine) Subscribe(ctx context.Context, sub *protocol.Subscription) erro
 
 func (e *Engine) Unsubscribe(ctx context.Context, spaceID, id string) error {
 	return e.store.DeleteSubscription(ctx, spaceID, id)
+}
+
+// MeshCommit coordinator access
+func (e *Engine) MeshCommit() *MeshCommitCoordinator {
+	return e.meshCommit
+}
+
+func (e *Engine) CreateChange(ctx context.Context, req *protocol.CreateChangeRequest) (*protocol.MeshChange, error) {
+	if e.meshCommit == nil {
+		return nil, errors.New("meshcommit is not configured")
+	}
+	return e.meshCommit.CreateChange(ctx, req)
+}
+
+func (e *Engine) PrepareChange(ctx context.Context, changeID string) (*protocol.MeshChange, error) {
+	if e.meshCommit == nil {
+		return nil, errors.New("meshcommit is not configured")
+	}
+	return e.meshCommit.PrepareChange(ctx, changeID)
+}
+
+func (e *Engine) SubmitChangeEvidence(ctx context.Context, ev *protocol.ChangeEvidence) (*protocol.GateResult, error) {
+	if e.meshCommit == nil {
+		return nil, errors.New("meshcommit is not configured")
+	}
+	return e.meshCommit.SubmitEvidence(ctx, ev)
+}
+
+func (e *Engine) ExecuteProof(ctx context.Context, changeID string, obligationID string) (*protocol.ChangeEvidence, error) {
+	if e.meshCommit == nil {
+		return nil, errors.New("meshcommit is not configured")
+	}
+	return e.meshCommit.ExecuteProof(ctx, changeID, obligationID)
+}
+
+func (e *Engine) EvaluateGate(ctx context.Context, changeID string) (*protocol.GateResult, error) {
+	if e.meshCommit == nil {
+		return nil, errors.New("meshcommit is not configured")
+	}
+	return e.meshCommit.EvaluateGate(ctx, changeID)
+}
+
+func (e *Engine) CommitChange(ctx context.Context, changeID string, authorID string, commitMsg string) (*protocol.MeshChange, error) {
+	if e.meshCommit == nil {
+		return nil, errors.New("meshcommit is not configured")
+	}
+	return e.meshCommit.CommitChange(ctx, changeID, authorID, commitMsg)
+}
+
+func (e *Engine) AbortChange(ctx context.Context, changeID string, reason string) (*protocol.MeshChange, error) {
+	if e.meshCommit == nil {
+		return nil, errors.New("meshcommit is not configured")
+	}
+	return e.meshCommit.AbortChange(ctx, changeID, reason)
+}
+
+func (e *Engine) GetMeshChange(ctx context.Context, changeID string) (*protocol.MeshChange, error) {
+	return e.store.GetMeshChange(ctx, changeID)
+}
+
+func (e *Engine) ListMeshChanges(ctx context.Context, spaceID string, status protocol.MeshChangeStatus) ([]*protocol.MeshChange, error) {
+	return e.store.ListMeshChanges(ctx, spaceID, status)
+}
+
+func (e *Engine) GetChangePaths(ctx context.Context, changeID string) ([]protocol.ChangePath, error) {
+	return e.store.GetChangePaths(ctx, changeID)
+}
+
+func (e *Engine) GetProofObligations(ctx context.Context, changeID string) ([]*protocol.ProofObligation, error) {
+	return e.store.GetProofObligations(ctx, changeID)
+}
+
+func (e *Engine) GetChangeEvidence(ctx context.Context, changeID string) ([]*protocol.ChangeEvidence, error) {
+	return e.store.GetChangeEvidenceForChange(ctx, changeID)
+}
+
+func (e *Engine) GetLatestGateResult(ctx context.Context, changeID string) (*protocol.GateResult, error) {
+	return e.store.GetLatestGateResult(ctx, changeID)
 }
