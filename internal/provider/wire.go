@@ -232,6 +232,123 @@ func (c Content) MarshalJSON() ([]byte, error) {
 	return json.Marshal(c.parts)
 }
 
+// CallOutput represents the Responses API "output" field on
+// function_call_output and custom_tool_call_output input items. A real
+// Codex VS Code tool-result replay request proved this field is NOT
+// string-only: the current Codex client encodes it as either a plain
+// string or an array of content items (e.g.
+// {"type":"input_text","text":"..."}, and other content-item shapes such
+// as image/audio references) - a request HarnessMesh previously rejected
+// outright with "output must be a string". Each array element is
+// preserved as raw, untouched JSON (never decoded into a narrow struct),
+// so content-item fields this package doesn't model - including entirely
+// different content-item types like image references - are never lost.
+// CallOutput never normalizes an array into a flattened string: doing so
+// would destroy content-item semantics (e.g. collapsing a mixed text+
+// image array into text alone).
+type CallOutput struct {
+	text   string
+	items  []json.RawMessage
+	isText bool
+	set    bool
+}
+
+// NewTextCallOutput builds CallOutput in its plain-string form.
+func NewTextCallOutput(text string) CallOutput {
+	return CallOutput{text: text, isText: true, set: true}
+}
+
+// NewItemsCallOutput builds CallOutput in its content-items-array form.
+func NewItemsCallOutput(items []json.RawMessage) CallOutput {
+	return CallOutput{items: items, isText: false, set: true}
+}
+
+// IsSet reports whether this CallOutput was actually populated.
+func (c CallOutput) IsSet() bool { return c.set }
+
+// IsText reports whether this CallOutput was encoded as a plain string.
+func (c CallOutput) IsText() bool { return c.set && c.isText }
+
+// Items returns the content-items-array form's raw elements (nil if
+// IsText is true).
+func (c CallOutput) Items() []json.RawMessage { return c.items }
+
+// Text returns the plain-string form's value (empty if IsText is false).
+func (c CallOutput) Text() string { return c.text }
+
+// PlainText renders this output as flat text, for backends (Bedrock,
+// Codex CLI, OpenAI-compatible Chat Completions) that only ever accept a
+// single text string: the plain-string form verbatim, or every content
+// item's "text" field (when present) concatenated in order. Items with no
+// "text" field (e.g. an image reference) contribute nothing to this flat
+// rendering - those backends simply cannot represent them, which is a
+// pre-existing limitation of their own wire formats, not a new loss
+// introduced here (the original item is still preserved losslessly for
+// any backend, like SubscriptionBackend, that forwards it directly).
+func (c CallOutput) PlainText() string {
+	if !c.set {
+		return ""
+	}
+	if c.isText {
+		return c.text
+	}
+	var b strings.Builder
+	for _, raw := range c.items {
+		var probe struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(raw, &probe) == nil {
+			b.WriteString(probe.Text)
+		}
+	}
+	return b.String()
+}
+
+func (c *CallOutput) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "null" {
+		return fmt.Errorf("output: null is not a valid call output value")
+	}
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		*c = CallOutput{text: asString, isText: true, set: true}
+		return nil
+	}
+	var asItems []json.RawMessage
+	if err := json.Unmarshal(data, &asItems); err == nil {
+		for i, raw := range asItems {
+			var probe struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(raw, &probe); err != nil {
+				return fmt.Errorf("output[%d]: not a valid content item object: %w", i, err)
+			}
+			if probe.Type == "" {
+				return fmt.Errorf(`output[%d]: content item is missing required "type" field`, i)
+			}
+		}
+		*c = CallOutput{items: asItems, isText: false, set: true}
+		return nil
+	}
+	// Reject unsupported JSON primitives (number, boolean) with a specific
+	// message rather than silently accepting them - never accept
+	// arbitrary invalid primitive values.
+	return fmt.Errorf("output: expected a string or an array of content items")
+}
+
+func (c CallOutput) MarshalJSON() ([]byte, error) {
+	if !c.set {
+		return []byte("null"), nil
+	}
+	if c.isText {
+		return json.Marshal(c.text)
+	}
+	if c.items == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(c.items)
+}
+
 // This package distinguishes three distinct compatibility-failure modes
 // for an input item, rather than collapsing them into one generic error,
 // per an explicit real-account audit requirement: fixing one Codex-emitted
@@ -514,7 +631,9 @@ type InputItem struct {
 	Content Content
 
 	// type == "function_call": ID/CallID/Name/Arguments/Status.
-	// type == "function_call_output": ID/CallID/Output/Status.
+	// type == "function_call_output": ID/CallID/Output/Status - Output is a
+	// CallOutput union (string OR an array of content items), never a
+	// plain string; see CallOutput's doc comment.
 	// type == "reasoning": ID/Status only - its actual reasoning payload
 	// (summary, encrypted_content, ...) is intentionally NOT modeled here
 	// and lives entirely in Extra, since HarnessMesh never interprets it.
@@ -522,14 +641,15 @@ type InputItem struct {
 	// intentionally left in Extra (polymorphic: search/open_page/
 	// find_in_page shapes this package does not need to interpret).
 	// type == "custom_tool_call": ID/CallID/Name/Input/Status.
-	// type == "custom_tool_call_output": ID/CallID/Output/Status.
+	// type == "custom_tool_call_output": ID/CallID/Output/Status (same
+	// CallOutput union as function_call_output).
 	// type == "additional_tools": Role (must be "developer") and Tools.
 	ID        string
 	CallID    string
 	Name      string
 	Arguments string
 	Input     string
-	Output    string
+	Output    CallOutput
 	Status    string
 
 	// Tools holds an additional_tools item's tool definitions, each
@@ -587,6 +707,24 @@ func (it *InputItem) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	// assignOutputField decodes the required "output" field on
+	// function_call_output/custom_tool_call_output through the CallOutput
+	// union (string or an array of content items) - NOT a plain string.
+	// This is the confirmed fix for a real Codex tool-result replay
+	// request HarnessMesh previously rejected outright with "output must
+	// be a string" when Codex encoded it as a content-item array.
+	assignOutputField := func() error {
+		v, ok := raw["output"]
+		if !ok {
+			return &MalformedInputItemError{Type: typ, Reason: `missing required "output" field`}
+		}
+		if err := json.Unmarshal(v, &item.Output); err != nil {
+			return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf("invalid \"output\": %v", err)}
+		}
+		delete(item.Extra, "output")
+		return nil
+	}
+
 	switch typ {
 	case "message":
 		if err := assignStringField("role", &item.Role); err != nil {
@@ -613,10 +751,13 @@ func (it *InputItem) UnmarshalJSON(data []byte) error {
 		for _, f := range []struct {
 			key string
 			dst *string
-		}{{"call_id", &item.CallID}, {"id", &item.ID}, {"output", &item.Output}, {"status", &item.Status}} {
+		}{{"call_id", &item.CallID}, {"id", &item.ID}, {"status", &item.Status}} {
 			if err := assignStringField(f.key, f.dst); err != nil {
 				return err
 			}
+		}
+		if err := assignOutputField(); err != nil {
+			return err
 		}
 	case "reasoning":
 		for _, f := range []struct {
@@ -659,10 +800,13 @@ func (it *InputItem) UnmarshalJSON(data []byte) error {
 		for _, f := range []struct {
 			key string
 			dst *string
-		}{{"call_id", &item.CallID}, {"id", &item.ID}, {"output", &item.Output}, {"status", &item.Status}} {
+		}{{"call_id", &item.CallID}, {"id", &item.ID}, {"status", &item.Status}} {
 			if err := assignStringField(f.key, f.dst); err != nil {
 				return err
 			}
+		}
+		if err := assignOutputField(); err != nil {
+			return err
 		}
 	case "configuration_update", "compaction_trigger":
 		// developers.openai.com/api/docs/guides/reasoning.md, fetched
@@ -794,10 +938,17 @@ func (it InputItem) MarshalJSON() ([]byte, error) {
 		for _, f := range []struct {
 			key string
 			val string
-		}{{"call_id", it.CallID}, {"id", it.ID}, {"output", it.Output}, {"status", it.Status}} {
+		}{{"call_id", it.CallID}, {"id", it.ID}, {"status", it.Status}} {
 			if err := setStr(f.key, f.val); err != nil {
 				return nil, err
 			}
+		}
+		if it.Output.IsSet() {
+			b, err := it.Output.MarshalJSON()
+			if err != nil {
+				return nil, err
+			}
+			out["output"] = b
 		}
 	case "reasoning":
 		for _, f := range []struct {
@@ -830,10 +981,17 @@ func (it InputItem) MarshalJSON() ([]byte, error) {
 		for _, f := range []struct {
 			key string
 			val string
-		}{{"call_id", it.CallID}, {"id", it.ID}, {"output", it.Output}, {"status", it.Status}} {
+		}{{"call_id", it.CallID}, {"id", it.ID}, {"status", it.Status}} {
 			if err := setStr(f.key, f.val); err != nil {
 				return nil, err
 			}
+		}
+		if it.Output.IsSet() {
+			b, err := it.Output.MarshalJSON()
+			if err != nil {
+				return nil, err
+			}
+			out["output"] = b
 		}
 	case "additional_tools":
 		if err := setStr("role", it.Role); err != nil {

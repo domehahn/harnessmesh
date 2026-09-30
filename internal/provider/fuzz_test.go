@@ -120,6 +120,20 @@ func FuzzInputItemsUnmarshal(f *testing.F) {
 	f.Add(`[{"type":"agent_message"}]`)
 	f.Add(`[{"type":"configuration_update","reasoning":{"effort":"high"}}]`)
 	f.Add(`[{"type":"compaction_trigger"}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":"hello"}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"hello"}]}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"a"},{"type":"input_image","image_url":"data:x"}]}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":42}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":true}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":null}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":[1,2,3]}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":[{"text":"no type"}]}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1"}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":[]}]`)
+	f.Add(`[{"type":"function_call_output","call_id":"c1","output":"hello"}]`)
+	f.Add(`[{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"hello"}]}]`)
+	f.Add(`[{"type":"function_call_output","call_id":"c1","output":42}]`)
+	f.Add(`[{"type":"function_call_output","call_id":"c1","output":{"nested":"object"}}]`)
 
 	f.Fuzz(func(t *testing.T, data string) {
 		defer func() {
@@ -129,6 +143,35 @@ func FuzzInputItemsUnmarshal(f *testing.F) {
 		}()
 		var it InputItems
 		_ = json.Unmarshal([]byte(data), &it)
+	})
+}
+
+// FuzzCallOutputUnmarshal proves the function_call_output/
+// custom_tool_call_output "output" union decoder never panics on
+// arbitrary input.
+func FuzzCallOutputUnmarshal(f *testing.F) {
+	f.Add(`"hello"`)
+	f.Add(`[{"type":"input_text","text":"hello"}]`)
+	f.Add(`[{"type":"input_text","text":"a"},{"type":"input_image","image_url":"data:x"}]`)
+	f.Add(`42`)
+	f.Add(`true`)
+	f.Add(`null`)
+	f.Add(`[1,2,3]`)
+	f.Add(`[{"text":"no type"}]`)
+	f.Add(`[]`)
+	f.Add(`{}`)
+	f.Add(`{"nested":"object"}`)
+	f.Add(``)
+	f.Add(`not json`)
+
+	f.Fuzz(func(t *testing.T, data string) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("CallOutput unmarshal panicked on %q: %v", data, r)
+			}
+		}()
+		var c CallOutput
+		_ = json.Unmarshal([]byte(data), &c)
 	})
 }
 

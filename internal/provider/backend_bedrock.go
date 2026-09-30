@@ -280,7 +280,7 @@ func translateToBedrock(req Request) ([]brtypes.Message, []brtypes.SystemContent
 				Role: brtypes.ConversationRoleUser,
 				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberToolResult{Value: brtypes.ToolResultBlock{
 					ToolUseId: aws.String(item.CallID),
-					Content:   []brtypes.ToolResultContentBlock{&brtypes.ToolResultContentBlockMemberText{Value: item.Output}},
+					Content:   []brtypes.ToolResultContentBlock{&brtypes.ToolResultContentBlockMemberText{Value: item.Output.PlainText()}},
 				}}},
 			})
 		}

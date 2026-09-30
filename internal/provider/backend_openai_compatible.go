@@ -197,7 +197,7 @@ func translateRequest(model string, req Request) chatCompletionsRequest {
 			}
 			out.Messages = append(out.Messages, chatMessage{Role: "assistant", ToolCalls: []chatToolCall{pendingToolCalls[item.CallID]}})
 		case "function_call_output":
-			out.Messages = append(out.Messages, chatMessage{Role: "tool", ToolCallID: item.CallID, Content: item.Output})
+			out.Messages = append(out.Messages, chatMessage{Role: "tool", ToolCallID: item.CallID, Content: item.Output.PlainText()})
 		}
 	}
 	for _, t := range req.Tools {

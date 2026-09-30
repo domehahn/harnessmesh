@@ -212,7 +212,7 @@ func TestReplay_CustomToolContinuation(t *testing.T) {
 	if items[1].Type != "custom_tool_call" || items[1].Input != `print("hello world")` || items[1].Name != "code_exec" {
 		t.Fatalf("unexpected custom_tool_call item: %+v", items[1])
 	}
-	if items[2].Type != "custom_tool_call_output" || items[2].Output != "hello world\n" {
+	if items[2].Type != "custom_tool_call_output" || items[2].Output.PlainText() != "hello world\n" {
 		t.Fatalf("unexpected custom_tool_call_output item: %+v", items[2])
 	}
 

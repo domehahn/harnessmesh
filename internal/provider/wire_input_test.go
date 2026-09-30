@@ -198,7 +198,7 @@ func TestInputItem_FunctionCallOutput_PreservesTypeCallIDOutput(t *testing.T) {
 	if err := json.Unmarshal([]byte(src), &it); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if it.Type != "function_call_output" || it.CallID != "call_1" || it.Output != "72F and sunny" {
+	if it.Type != "function_call_output" || it.CallID != "call_1" || it.Output.PlainText() != "72F and sunny" {
 		t.Fatalf("unexpected parsed function_call_output item: %+v", it)
 	}
 	out, err := json.Marshal(it)

@@ -426,6 +426,19 @@ EOF
     rg -q '"type":"(function_call_output|custom_tool_call_output)"' "$SESSION" && HAS_OUTPUT=1 || true
     rg -q '"type":"task_complete"' "$SESSION" && HAS_COMPLETE=1 || true
 
+    # Codex constructs its local function_call_output/custom_tool_call_output
+    # item (recorded in the session log, so HAS_OUTPUT can be 1) BEFORE
+    # sending the replay request that carries it back to HarnessMesh - a
+    # request HarnessMesh can still reject. A rejected replay still
+    # produces a task_complete event (with last_agent_message=null and a
+    # populated "error" field), so HAS_CALL=1 + HAS_OUTPUT=1 + HAS_COMPLETE=1
+    # is NOT by itself proof of a successful loop; check for the specific
+    # replay-rejection error text directly.
+    TOOL_OUTPUT_REPLAY_SCHEMA_INVALID=0
+    if rg -q '"output"[^"]*must be a string|cannot unmarshal array into Go value of type string' "$SESSION"; then
+      TOOL_OUTPUT_REPLAY_SCHEMA_INVALID=1
+    fi
+
     # Collect Codex extension / AgentHost diagnostics BEFORE finalizing the
     # tool-loop classification, so the stream-lifecycle signal can gate it:
     # the log line "OutputTextDelta without active item" means the SSE
@@ -455,7 +468,10 @@ EOF
       warn "No VS Code log directory found"
     fi
 
-    if [[ "$HAS_CALL" == "1" && "$HAS_OUTPUT" == "1" && "$HAS_COMPLETE" == "1" ]]; then
+    if [[ "$TOOL_OUTPUT_REPLAY_SCHEMA_INVALID" == "1" ]]; then
+      fail "REAL CODEX TOOL LOOP: real tool call + local tool execution succeeded, but HarnessMesh rejected the tool-output replay request's schema"
+      CODEX_CLASS="TOOL_OUTPUT_REPLAY_SCHEMA_INVALID"
+    elif [[ "$HAS_CALL" == "1" && "$HAS_OUTPUT" == "1" && "$HAS_COMPLETE" == "1" ]]; then
       pass "REAL CODEX TOOL LOOP: function/custom call + output + task_complete observed"
       CODEX_CLASS="A_FULL_TOOL_LOOP"
     elif [[ "$HAS_CALL" == "1" && "$HAS_OUTPUT" == "0" ]]; then

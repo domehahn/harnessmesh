@@ -81,7 +81,7 @@ func TestCodexFixture_ToolLoop_ParsesAllFourItemTypes(t *testing.T) {
 	if fnCall.Type != "function_call" || fnCall.CallID != "call_1" || fnCall.Name != "get_weather" || fnCall.Arguments != `{"city":"nyc"}` {
 		t.Fatalf("unexpected function_call item: %+v", fnCall)
 	}
-	if fnOutput.Type != "function_call_output" || fnOutput.CallID != "call_1" || fnOutput.Output != "72F and sunny" {
+	if fnOutput.Type != "function_call_output" || fnOutput.CallID != "call_1" || fnOutput.Output.PlainText() != "72F and sunny" {
 		t.Fatalf("unexpected function_call_output item: %+v", fnOutput)
 	}
 

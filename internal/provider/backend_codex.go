@@ -114,7 +114,7 @@ func flattenPrompt(req Request) string {
 			b.WriteString(item.Content.PlainText())
 			b.WriteString("\n")
 		case "function_call_output":
-			fmt.Fprintf(&b, "[tool result for %s]: %s\n", item.CallID, item.Output)
+			fmt.Fprintf(&b, "[tool result for %s]: %s\n", item.CallID, item.Output.PlainText())
 		}
 	}
 	return b.String()
