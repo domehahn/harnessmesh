@@ -110,6 +110,21 @@ func TestSIWCTokenClient_ExchangeCode(t *testing.T) {
 		if r.Form.Get("code") != "test-code" || r.Form.Get("code_verifier") != "test-verifier" {
 			t.Fatalf("unexpected form: %+v", r.Form)
 		}
+		// Requirement: resource must be present on the TOKEN EXCHANGE
+		// request itself, not only on the authorize request - this was the
+		// confirmed root cause of a real-account invalid_grant failure.
+		if r.Form.Get("resource") != siwcResource {
+			t.Fatalf("expected resource=%q on the token exchange request, got %q", siwcResource, r.Form.Get("resource"))
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Fatalf("expected no Authorization header (no client_secret / HTTP Basic auth), got %q", r.Header.Get("Authorization"))
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
+			t.Fatalf("expected Content-Type application/x-www-form-urlencoded, got %q", ct)
+		}
+		if r.Form.Get("client_secret") != "" {
+			t.Fatalf("expected no client_secret field, got %q", r.Form.Get("client_secret"))
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"client_id":     "oaiapp_issued123",
@@ -122,7 +137,7 @@ func TestSIWCTokenClient_ExchangeCode(t *testing.T) {
 	defer srv.Close()
 
 	tc := &siwcTokenClient{tokenURL: srv.URL, httpClient: http.DefaultClient}
-	ts, err := tc.exchangeCode(context.Background(), "dynamic_agent_client", "test-code", "test-verifier", "http://127.0.0.1:0/auth/callback")
+	ts, err := tc.exchangeCode(context.Background(), "dynamic_agent_client", "test-code", "test-verifier", "http://127.0.0.1:0/auth/callback", tokenExchangeDiagContext{})
 	if err != nil {
 		t.Fatalf("exchangeCode: %v", err)
 	}
@@ -141,7 +156,7 @@ func TestSIWCTokenClient_ExchangeCode_HTTPErrorMapsToUnauthorized(t *testing.T) 
 	defer srv.Close()
 
 	tc := &siwcTokenClient{tokenURL: srv.URL, httpClient: http.DefaultClient}
-	_, err := tc.exchangeCode(context.Background(), "dynamic_agent_client", "bad-code", "verifier", "http://127.0.0.1:0/cb")
+	_, err := tc.exchangeCode(context.Background(), "dynamic_agent_client", "bad-code", "verifier", "http://127.0.0.1:0/cb", tokenExchangeDiagContext{})
 	if _, ok := err.(*UnauthorizedError); !ok {
 		t.Fatalf("expected UnauthorizedError, got %T: %v", err, err)
 	}

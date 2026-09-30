@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -383,20 +384,47 @@ type siwcTokenClient struct {
 	tokenURL     string
 	responsesURL string
 	httpClient   *http.Client
+	// diagnostics is nil (a complete no-op) unless explicitly opted into
+	// via HARNESSMESH_SIWC_DEBUG=1 (see diagnosticsSinkFromEnv) or injected
+	// by a test - production login never emits anything by default.
+	diagnostics DiagnosticsSink
 }
 
 func newSIWCTokenClient() *siwcTokenClient {
-	return &siwcTokenClient{tokenURL: siwcTokenURL, responsesURL: siwcResponsesURL, httpClient: &http.Client{Timeout: 30 * time.Second}}
+	return &siwcTokenClient{
+		tokenURL: siwcTokenURL, responsesURL: siwcResponsesURL,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		diagnostics: diagnosticsSinkFromEnv(),
+	}
 }
 
-func (c *siwcTokenClient) exchangeCode(ctx context.Context, clientID, code, verifier, redirectURI string) (*SIWCTokenSet, error) {
+// tokenExchangeDiagContext carries diagnostic-only context a caller has
+// that the token endpoint itself doesn't need: the PKCE code_challenge
+// this attempt's authorize request actually sent (to prove, at the
+// exchange boundary, that the verifier being redeemed still hashes to it -
+// i.e. it was never regenerated after the browser was opened) and this
+// attempt's ordinal (to help audit that a code is redeemed exactly once).
+// None of this is sent to OpenAI; it exists purely for the DiagnosticsSink.
+type tokenExchangeDiagContext struct {
+	expectedChallenge string
+	attemptNumber     int
+}
+
+// exchangeCode redeems an authorization code for tokens. Per the
+// documented SIWC OSS token-exchange contract, resource must be present on
+// this request (not only on the authorize request it corresponds to) -
+// its prior absence here was the confirmed root cause of a real-account
+// invalid_grant failure: OpenAI's token endpoint could not resolve which
+// resource-scoped grant the code belonged to without it.
+func (c *siwcTokenClient) exchangeCode(ctx context.Context, clientID, code, verifier, redirectURI string, diag tokenExchangeDiagContext) (*SIWCTokenSet, error) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("client_id", clientID)
 	form.Set("code", code)
 	form.Set("code_verifier", verifier)
 	form.Set("redirect_uri", redirectURI)
-	return c.doTokenRequest(ctx, form, clientID)
+	form.Set("resource", siwcResource)
+	return c.doTokenRequest(ctx, form, clientID, diag)
 }
 
 func (c *siwcTokenClient) refresh(ctx context.Context, clientID, refreshToken string) (*SIWCTokenSet, error) {
@@ -404,10 +432,38 @@ func (c *siwcTokenClient) refresh(ctx context.Context, clientID, refreshToken st
 	form.Set("grant_type", "refresh_token")
 	form.Set("client_id", clientID)
 	form.Set("refresh_token", refreshToken)
-	return c.doTokenRequest(ctx, form, clientID)
+	// Same resource-scoped audience as the authorization_code exchange -
+	// included for the same reason: the token endpoint needs to know which
+	// resource this grant applies to, not just the authorize request.
+	form.Set("resource", siwcResource)
+	return c.doTokenRequest(ctx, form, clientID, tokenExchangeDiagContext{})
 }
 
-func (c *siwcTokenClient) doTokenRequest(ctx context.Context, form url.Values, clientID string) (*SIWCTokenSet, error) {
+func (c *siwcTokenClient) doTokenRequest(ctx context.Context, form url.Values, clientID string, diag tokenExchangeDiagContext) (*SIWCTokenSet, error) {
+	record := TokenExchangeDiagnostic{
+		Time:           time.Now(),
+		Method:         http.MethodPost,
+		FormFieldNames: sortedFormFieldNames(form),
+		GrantType:      form.Get("grant_type"),
+		ClientIDSafe:   safeClientIDIdentifier(clientID),
+		Resource:       form.Get("resource"),
+		RedirectURI:    form.Get("redirect_uri"),
+		VerifierLength: len(form.Get("code_verifier")),
+		AttemptNumber:  diag.attemptNumber,
+	}
+	if u, err := url.Parse(c.tokenURL); err == nil {
+		record.Host, record.Path = u.Host, u.Path
+	}
+	if record.GrantType == "authorization_code" && diag.expectedChallenge != "" {
+		matches := codeChallengeS256(form.Get("code_verifier")) == diag.expectedChallenge
+		record.ChallengeMatches = &matches
+	}
+	defer func() {
+		if c.diagnostics != nil {
+			c.diagnostics.RecordTokenExchange(record)
+		}
+	}()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
@@ -418,8 +474,15 @@ func (c *siwcTokenClient) doTokenRequest(ctx context.Context, form url.Values, c
 		return nil, &BackendUnavailableError{Backend: "chatgpt-subscription", Reason: fmt.Sprintf("token endpoint unreachable: %v", err)}
 	}
 	defer resp.Body.Close()
+	record.HTTPStatus = resp.StatusCode
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
+		var errPayload struct {
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description"`
+		}
+		_ = json.Unmarshal(body, &errPayload)
+		record.OAuthError, record.OAuthErrorDesc = errPayload.Error, errPayload.ErrorDescription
 		return nil, mapTokenEndpointError(resp.StatusCode, body)
 	}
 	var payload struct {
@@ -532,9 +595,26 @@ func startLoginFlowWithVerifier(ctx context.Context, listenAddr, clientID string
 	authorizeURL := buildAuthorizeURL(clientID, redirectURI, state, nonce, challenge, hostID)
 
 	done := make(chan LoginFlowOutcome, 1)
+	var handled atomic.Bool // ensures the single-use authorization code is redeemed at most once
+	var exchangeAttempts atomic.Int32
 	mux := http.NewServeMux()
 	server := &http.Server{Handler: mux}
 	mux.HandleFunc("/auth/callback", func(w http.ResponseWriter, r *http.Request) {
+		// The loopback redirect_uri can receive more than one HTTP request
+		// for reasons entirely outside this flow's control: a browser or OS
+		// link-preview/prefetch fetching it before the real navigation, a
+		// page reload, back/forward navigation, or a second tab. Since the
+		// authorization code is single-use, only the FIRST request this
+		// listener ever receives may attempt a token exchange or write to
+		// `done` - every subsequent request is acknowledged harmlessly and
+		// otherwise ignored, so it can never redeem (and invalidate) the
+		// code a second time nor cause a duplicate/blocked send on `done`.
+		if !handled.CompareAndSwap(false, true) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte("<html><body>Already processed.</body></html>"))
+			return
+		}
+
 		q := r.URL.Query()
 		if q.Get("state") != state {
 			http.Error(w, "state mismatch", http.StatusBadRequest)
@@ -558,6 +638,17 @@ func startLoginFlowWithVerifier(ctx context.Context, listenAddr, clientID string
 		// client_id this attempt was started with (a returning-user login).
 		exchangeClientID := clientID
 		if cb := q.Get("client_id"); cb != "" {
+			if clientID != siwcBootstrapClientID && cb != clientID {
+				// This attempt already started with a real, previously
+				// issued registration (a returning login, not a first-time
+				// dynamic-registration one) - a callback claiming a
+				// DIFFERENT client_id than the one this attempt is pending
+				// against must never be trusted for a token exchange; reject
+				// it outright rather than silently switching registrations.
+				http.Error(w, "client_id mismatch", http.StatusBadRequest)
+				done <- LoginFlowOutcome{Err: fmt.Errorf("callback client_id %q does not match the pending attempt's registered client_id %q", cb, clientID)}
+				return
+			}
 			exchangeClientID = cb
 			// Persist the issued registration immediately, before even
 			// attempting the token exchange: dynamic registration already
@@ -575,7 +666,9 @@ func startLoginFlowWithVerifier(ctx context.Context, listenAddr, clientID string
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte("<html><body>Signed in with ChatGPT. You can close this tab and return to HarnessMesh.</body></html>"))
 
-		ts, err := tc.exchangeCode(r.Context(), exchangeClientID, code, verifier, redirectURI)
+		attemptNum := int(exchangeAttempts.Add(1))
+		diag := tokenExchangeDiagContext{expectedChallenge: challenge, attemptNumber: attemptNum}
+		ts, err := tc.exchangeCode(r.Context(), exchangeClientID, code, verifier, redirectURI, diag)
 		if err != nil {
 			// The authorization code itself is discarded here (it is
 			// single-use and this attempt ends); the issued client_id
