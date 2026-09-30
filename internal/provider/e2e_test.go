@@ -317,7 +317,7 @@ func TestE2E_NetworkEgress_NoRequestToOpenAIOrExternalHosts(t *testing.T) {
 	}
 
 	sink := newCollectingSink()
-	err := backend.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := backend.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	if err != nil {
 		t.Fatalf("StreamResponse: %v", err)
 	}

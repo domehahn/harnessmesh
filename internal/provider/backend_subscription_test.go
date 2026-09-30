@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -23,6 +24,7 @@ type fakeResponsesServer struct {
 
 	mu       sync.Mutex
 	lastAuth string
+	lastBody []byte
 }
 
 func newFakeResponsesServer(mode string) *fakeResponsesServer {
@@ -37,9 +39,21 @@ func (f *fakeResponsesServer) LastAuth() string {
 	return f.lastAuth
 }
 
+// LastBody returns the raw JSON body of the most recent request this
+// server received - the actual bytes HarnessMesh sent upstream, not a
+// re-parsed/re-marshaled copy, so tests can catch a defect (like a
+// serialized "type":"") that a round-trip through Go structs would mask.
+func (f *fakeResponsesServer) LastBody() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastBody
+}
+
 func (f *fakeResponsesServer) handle(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	f.lastAuth = r.Header.Get("Authorization")
+	f.lastBody = body
 	f.mu.Unlock()
 
 	if f.mode == "unauthorized" {
@@ -96,7 +110,7 @@ func TestSubscriptionBackend_NormalStream_UsesChatGPTPlanCounterOnly(t *testing.
 	b := newTestSubscriptionBackend(t, srv, nil)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "gpt-5-chatgpt", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "gpt-5-chatgpt", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	if err != nil {
 		t.Fatalf("StreamResponse: %v", err)
 	}
@@ -134,7 +148,7 @@ func TestSubscriptionBackend_Unauthorized_NoStoredToken(t *testing.T) {
 	b := NewSubscriptionBackendWithTokenPath("chatgpt-subscription", t.TempDir()+"/nonexistent.json")
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	if _, ok := err.(*UnauthorizedError); !ok {
 		t.Fatalf("expected UnauthorizedError when no token has ever been stored (no login performed), got %T: %v", err, err)
 	}
@@ -152,7 +166,7 @@ func TestSubscriptionBackend_ServerRejectsToken(t *testing.T) {
 	b := newTestSubscriptionBackend(t, srv, nil)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	if _, ok := err.(*UnauthorizedError); !ok {
 		t.Fatalf("expected UnauthorizedError when the server rejects the token, got %T: %v", err, err)
 	}
@@ -165,7 +179,7 @@ func TestSubscriptionBackend_MalformedStreamEvent(t *testing.T) {
 	b := newTestSubscriptionBackend(t, srv, nil)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	if _, ok := err.(*StreamInterruptedError); !ok {
 		t.Fatalf("expected StreamInterruptedError for a malformed backend event, got %T: %v", err, err)
 	}
@@ -196,7 +210,7 @@ func TestSubscriptionBackend_ExpiredTokenIsRefreshed(t *testing.T) {
 	b.client = &siwcTokenClient{tokenURL: tokenSrv.URL, responsesURL: responsesSrv.URL, httpClient: http.DefaultClient}
 
 	sink := newCollectingSink()
-	if err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink); err != nil {
+	if err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink); err != nil {
 		t.Fatalf("StreamResponse: %v", err)
 	}
 	if !refreshCalled {

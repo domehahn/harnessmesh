@@ -178,7 +178,7 @@ func TestInputItems_UnmarshalString_ProducesUserMessage(t *testing.T) {
 	if err := it.UnmarshalJSON([]byte(`"hello"`)); err != nil {
 		t.Fatalf("unmarshal string: %v", err)
 	}
-	if len(it) != 1 || it[0].Content[0].Text != "hello" {
+	if len(it) != 1 || it[0].Content.PlainText() != "hello" {
 		t.Fatalf("expected a single user message with text 'hello', got %+v", it)
 	}
 }

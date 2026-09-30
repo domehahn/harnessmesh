@@ -91,7 +91,7 @@ func TestMatrix_ExpiredAccessToken_RefreshedOnce(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		sink := newCollectingSink()
-		if err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink); err != nil {
+		if err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink); err != nil {
 			t.Fatalf("StreamResponse #%d: %v", i, err)
 		}
 	}
@@ -118,7 +118,7 @@ func TestMatrix_RotatingRefreshToken_ReplacementPersisted(t *testing.T) {
 	b.client = &siwcTokenClient{tokenURL: tokenSrv.URL, responsesURL: responsesSrv.URL, httpClient: http.DefaultClient}
 
 	sink := newCollectingSink()
-	if err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink); err != nil {
+	if err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink); err != nil {
 		t.Fatalf("StreamResponse: %v", err)
 	}
 	persisted, err := loadSIWCTokenSet(tokenPath)
@@ -160,7 +160,7 @@ func TestMatrix_ConcurrentRefresh_Serialized(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			sink := newCollectingSink()
-			errs[idx] = b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+			errs[idx] = b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 		}(i)
 	}
 	wg.Wait()
@@ -183,7 +183,7 @@ func TestMatrix_UsageLimitExceeded_MapsToTypedError(t *testing.T) {
 	b := newTestSubscriptionBackend(t, &fakeResponsesServer{Server: srv}, nil)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	if _, ok := err.(*SubscriptionUsageLimitExceededError); !ok {
 		t.Fatalf("expected SubscriptionUsageLimitExceededError, got %T: %v", err, err)
 	}
@@ -197,7 +197,7 @@ func TestMatrix_UsageUnavailable_MapsToTypedError(t *testing.T) {
 	b := newTestSubscriptionBackend(t, &fakeResponsesServer{Server: srv}, nil)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	if _, ok := err.(*SubscriptionUsageUnavailableError); !ok {
 		t.Fatalf("expected SubscriptionUsageUnavailableError, got %T: %v", err, err)
 	}
@@ -220,7 +220,7 @@ func TestMatrix_RevokedGrant_RequiresReauth(t *testing.T) {
 	b.client = &siwcTokenClient{tokenURL: tokenSrv.URL, responsesURL: tokenSrv.URL, httpClient: http.DefaultClient}
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	if _, ok := err.(*SubscriptionReauthRequiredError); !ok {
 		t.Fatalf("expected SubscriptionReauthRequiredError for a revoked grant, got %T: %v", err, err)
 	}
@@ -236,7 +236,7 @@ func TestMatrix_UnsupportedResponsesField_MapsToTypedErrorWithParam(t *testing.T
 	b := newTestSubscriptionBackend(t, &fakeResponsesServer{Server: srv}, nil)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	typed, ok := err.(*SubscriptionUnsupportedCapabilityError)
 	if !ok {
 		t.Fatalf("expected SubscriptionUnsupportedCapabilityError, got %T: %v", err, err)

@@ -14,7 +14,18 @@ import (
 type StreamEvent struct {
 	Type string `json:"type"`
 
-	SequenceNumber int `json:"sequence_number"`
+	// SequenceNumber is a pointer so a real, upstream-assigned value of 0
+	// (the documented first event's sequence number) can never be mistaken
+	// for "not yet assigned" - a plain int field with that meaning caused a
+	// real defect: relaying a genuine OpenAI stream (whose events already
+	// carry correct, 0-indexed sequence numbers) through sseSink.Send's old
+	// `if ev.SequenceNumber == 0` heuristic silently overwrote the true
+	// first event's sequence_number with a freshly-generated one,
+	// producing a collision with the next event's legitimate value (both
+	// observed as sequence_number=1 against a real account). Only a
+	// genuinely nil pointer means this event needs one synthesized locally
+	// - see sseSink.Send.
+	SequenceNumber *int `json:"sequence_number,omitempty"`
 
 	Response *Response `json:"response,omitempty"`
 
@@ -66,8 +77,14 @@ func newSSESink(w http.ResponseWriter, r *http.Request) (*sseSink, error) {
 }
 
 func (s *sseSink) Send(ev StreamEvent) error {
-	if ev.SequenceNumber == 0 {
-		ev.SequenceNumber = int(s.seq.Add(1))
+	if ev.SequenceNumber == nil {
+		// Documented streaming contract: sequence_number starts at 0 for a
+		// stream's first event. Only events this sink itself synthesizes
+		// (locally-generated backends that never assign one) reach this
+		// branch; a relayed real upstream event already carries its own
+		// genuine sequence_number and is left untouched above.
+		n := int(s.seq.Add(1)) - 1
+		ev.SequenceNumber = &n
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {

@@ -177,10 +177,7 @@ func translateRequest(model string, req Request) chatCompletionsRequest {
 	for _, item := range req.Input {
 		switch item.Type {
 		case "message":
-			var text strings.Builder
-			for _, part := range item.Content {
-				text.WriteString(part.Text)
-			}
+			text := item.Content.PlainText()
 			role := item.Role
 			if role == "" {
 				role = "user"
@@ -188,7 +185,7 @@ func translateRequest(model string, req Request) chatCompletionsRequest {
 			if role == "developer" {
 				role = "system"
 			}
-			out.Messages = append(out.Messages, chatMessage{Role: role, Content: text.String()})
+			out.Messages = append(out.Messages, chatMessage{Role: role, Content: text})
 		case "function_call":
 			pendingToolCalls[item.CallID] = chatToolCall{
 				ID:   item.CallID,

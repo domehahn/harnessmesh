@@ -111,9 +111,7 @@ func flattenPrompt(req Request) string {
 	for _, item := range req.Input {
 		switch item.Type {
 		case "message":
-			for _, part := range item.Content {
-				b.WriteString(part.Text)
-			}
+			b.WriteString(item.Content.PlainText())
 			b.WriteString("\n")
 		case "function_call_output":
 			fmt.Fprintf(&b, "[tool result for %s]: %s\n", item.CallID, item.Output)

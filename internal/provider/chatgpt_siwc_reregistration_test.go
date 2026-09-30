@@ -282,7 +282,7 @@ func TestSIWCRefresh_UsesIssuedClientID_NeverBootstrap(t *testing.T) {
 	b.client = &siwcTokenClient{tokenURL: tokenSrv.URL, responsesURL: responsesSrv.URL, httpClient: http.DefaultClient}
 
 	sink := newCollectingSink()
-	if err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink); err != nil {
+	if err := b.StreamResponse(context.Background(), Request{Model: "x", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink); err != nil {
 		t.Fatalf("StreamResponse: %v", err)
 	}
 	if gotClientID != issuedClientID {

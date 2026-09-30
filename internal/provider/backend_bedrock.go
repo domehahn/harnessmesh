@@ -247,17 +247,14 @@ func translateToBedrock(req Request) ([]brtypes.Message, []brtypes.SystemContent
 	for _, item := range req.Input {
 		switch item.Type {
 		case "message":
-			var text strings.Builder
-			for _, part := range item.Content {
-				text.WriteString(part.Text)
-			}
+			text := item.Content.PlainText()
 			role := brtypes.ConversationRoleUser
 			if item.Role == "assistant" {
 				role = brtypes.ConversationRoleAssistant
 			}
 			messages = append(messages, brtypes.Message{
 				Role:    role,
-				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: text.String()}},
+				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: text}},
 			})
 		case "function_call":
 			// A tool call HarnessMesh's caller (Codex) echoes back from a

@@ -183,7 +183,7 @@ func foldInstructionsIntoInput(instructions string, input InputItems) InputItems
 	if instructions == "" {
 		return input
 	}
-	msg := InputItem{Type: "message", Role: "developer", Content: []ContentPart{{Type: "input_text", Text: instructions}}}
+	msg := InputItem{Type: "message", Role: "developer", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: instructions}})}
 	out := make(InputItems, 0, len(input)+1)
 	out = append(out, msg)
 	out = append(out, input...)

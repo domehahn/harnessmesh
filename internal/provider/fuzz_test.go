@@ -80,6 +80,12 @@ func FuzzInputItemsUnmarshal(f *testing.F) {
 	f.Add(`[1,2,3]`)
 	f.Add(`[{"type":123}]`)
 	f.Add(``)
+	f.Add(`[{"role":"user","content":"hi"}]`)
+	f.Add(`[{"role":"user","content":123}]`)
+	f.Add(`[{"role":"user","content":null}]`)
+	f.Add(`[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"x"}]}]`)
+	f.Add(`[{"type":"function_call","call_id":"c1","name":"f","arguments":"{}"}]`)
+	f.Add(`[{"type":"unknown_future_type","foo":"bar"}]`)
 
 	f.Fuzz(func(t *testing.T, data string) {
 		defer func() {

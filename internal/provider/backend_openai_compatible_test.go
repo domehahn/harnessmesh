@@ -35,7 +35,7 @@ func TestOpenAICompatibleBackend_NormalStream(t *testing.T) {
 	b := newTestBackend(t, srv)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "hi"}})}}}, sink)
 	if err != nil {
 		t.Fatalf("StreamResponse: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestOpenAICompatibleBackend_ToolCallStream(t *testing.T) {
 	b := newTestBackend(t, srv)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "weather?"}}}}, Tools: []Tool{{Type: "function", Name: "get_weather"}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "weather?"}})}}, Tools: []Tool{{Type: "function", Name: "get_weather"}}}, sink)
 	if err != nil {
 		t.Fatalf("StreamResponse: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestOpenAICompatibleBackend_PartialOutputThenCancellation(t *testing.T) {
 	defer cancel()
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(ctx, Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "go"}}}}}, sink)
+	err := b.StreamResponse(ctx, Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "go"}})}}}, sink)
 	if err == nil {
 		t.Fatalf("expected an error when the request is cancelled mid-stream")
 	}
@@ -142,7 +142,7 @@ func TestOpenAICompatibleBackend_ClientDisconnect(t *testing.T) {
 	sink := newCollectingSink()
 	close(sink.done) // simulate an already-disconnected client
 
-	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "go"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "go"}})}}}, sink)
 	if err == nil {
 		t.Fatalf("expected an error when the sink reports the client is gone")
 	}
@@ -154,7 +154,7 @@ func TestOpenAICompatibleBackend_MalformedStreamEvent(t *testing.T) {
 	b := newTestBackend(t, srv)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "go"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "go"}})}}}, sink)
 	if err == nil {
 		t.Fatalf("expected an error for a malformed backend stream event")
 	}
@@ -184,7 +184,7 @@ func TestOpenAICompatibleBackend_ToolOnlyResponse_OutputIndexMatchesFinalPositio
 	b := newTestBackend(t, srv)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "weather?"}}}}, Tools: []Tool{{Type: "function", Name: "get_weather"}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "weather?"}})}}, Tools: []Tool{{Type: "function", Name: "get_weather"}}}, sink)
 	if err != nil {
 		t.Fatalf("StreamResponse: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestOpenAICompatibleBackend_Backend500(t *testing.T) {
 	b := newTestBackend(t, srv)
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "go"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "go"}})}}}, sink)
 	if err == nil {
 		t.Fatalf("expected an error for backend HTTP 500")
 	}
@@ -238,7 +238,7 @@ func TestOpenAICompatibleBackend_Timeout(t *testing.T) {
 	b.client.Timeout = 100 * time.Millisecond
 
 	sink := newCollectingSink()
-	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "go"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "go"}})}}}, sink)
 	if err == nil {
 		t.Fatalf("expected a timeout error")
 	}
@@ -251,7 +251,7 @@ func TestOpenAICompatibleBackend_SlowStreamStillDeliversIncrementally(t *testing
 
 	sink := newCollectingSink()
 	start := time.Now()
-	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "go"}}}}}, sink)
+	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: "go"}})}}}, sink)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("StreamResponse: %v", err)
