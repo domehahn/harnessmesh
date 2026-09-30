@@ -72,7 +72,7 @@ Because product documentation for a fast-moving CLI can change, re-verify agains
    # any of: vLLM, Ollama (--api openai-compatible mode), LM Studio, llama.cpp server
    ```
 
-2. Configure HarnessMesh's provider gateway in `harnessmesh.json`:
+2. Configure HarnessMesh's provider gateway in `harnessmesh.json` (a full example, including a fallback backend and an explicit `denied_backend_types`, is at [`configs/codex-provider.example.json`](../configs/codex-provider.example.json)):
 
    ```json
    {

@@ -1,0 +1,32 @@
+{
+  "version": 2,
+
+  "provider": {
+    "enabled": true,
+    "listen": "127.0.0.1:8789",
+    "zero_credit_mode": true,
+    "default_backend": "local",
+
+    "backends": {
+      "local": {
+        "type": "openai-compatible",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "model": "your-local-model-id",
+        "timeout_sec": 120
+      },
+      "local-fallback": {
+        "type": "openai-compatible",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "your-ollama-model-id",
+        "timeout_sec": 120
+      }
+    },
+
+    "fallback": {
+      "enabled": true,
+      "order": ["local-fallback"]
+    },
+
+    "denied_backend_types": ["openai-api", "codex"]
+  }
+}
