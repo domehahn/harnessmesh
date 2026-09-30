@@ -154,22 +154,6 @@ func (b *SubscriptionBackend) Health(ctx context.Context) error {
 	return err
 }
 
-// foldInstructionsIntoInput prepends instructions as a developer-role input
-// message, since the documented ChatGPT-plan-usage Responses request shape
-// has no top-level "instructions" field (unlike the general Responses API).
-// Sending it as an undocumented top-level field risks a
-// subscription_sharing_unsupported_capability rejection.
-func foldInstructionsIntoInput(instructions string, input InputItems) InputItems {
-	if instructions == "" {
-		return input
-	}
-	msg := InputItem{Type: "message", Role: "developer", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: instructions}})}
-	out := make(InputItems, 0, len(input)+1)
-	out = append(out, msg)
-	out = append(out, input...)
-	return out
-}
-
 // StreamResponse sends req to https://api.openai.com/v1/responses,
 // authenticated with the user's ChatGPT-plan-scoped OAuth access token
 // (never an API key), and re-emits the server's own Responses-API SSE

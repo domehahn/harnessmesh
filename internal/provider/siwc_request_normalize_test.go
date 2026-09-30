@@ -169,6 +169,43 @@ func TestSIWCNormalize_StreamTrue_Accepted(t *testing.T) {
 	}
 }
 
+// TestSIWCNormalize_Instructions_ForwardedAsTopLevelField reproduces and
+// proves the fix for a real semantic-loss bug: `instructions` was being
+// folded into `input` as a synthesized developer-role message rather than
+// forwarded as its own top-level field. SIWC's preview-limitations page
+// (developers.openai.com/siwc/token-sharing-open-source/preview-limitations,
+// fetched 2026-09-30) explicitly documents instructions as its own
+// supported mechanism: "Use `instructions` or developer messages; explicit
+// {type: "message", role: "system"} items are rejected." - it is NOT on
+// the forbidden-field list, so it must be forwarded, not stripped, and not
+// silently transformed into a different field.
+func TestSIWCNormalize_Instructions_ForwardedAsTopLevelField(t *testing.T) {
+	req := mustRequestFromJSON(t, `{"model":"x","input":"hi","instructions":"you are a coding agent"}`)
+	normalized, err := normalizeForSIWC(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if normalized.Instructions != "you are a coding agent" {
+		t.Fatalf("expected instructions forwarded as its own top-level field, got %q", normalized.Instructions)
+	}
+	// input must be unchanged - NOT have a synthesized developer message
+	// prepended.
+	if len(normalized.Input) != 1 || normalized.Input[0].Type != "message" || normalized.Input[0].Content.PlainText() != "hi" {
+		t.Fatalf("expected input unchanged by instructions folding, got %+v", normalized.Input)
+	}
+	out, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatalf("unmarshal round-trip: %v", err)
+	}
+	if back["instructions"] != "you are a coding agent" {
+		t.Fatalf(`expected serialized "instructions", got %v`, back["instructions"])
+	}
+}
+
 // reasoning is not on the SIWC-forbidden list and must be forwarded, not
 // silently dropped merely because siwcNormalizedRequest is a strict subset
 // of Request.

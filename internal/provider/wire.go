@@ -548,10 +548,20 @@ func (it *InputItem) UnmarshalJSON(data []byte) error {
 		// input array" to change reasoning effort mid-conversation.
 		// compaction_trigger is confirmed to exist ("explicitly compact
 		// history by including a compaction_trigger item in a /responses
-		// request") but no full field shape was shown. Neither is named
-		// on SIWC's preview-limitations "Unsupported" list, and neither
-		// requires hosted/specialized execution, so both are treated as
-		// recognized and forwarded - their entire payload (e.g.
+		// request") but no full field shape was shown.
+		//
+		// SIWC STATUS: UNVERIFIED, not confirmed SUPPORTED. Absence from
+		// SIWC's preview-limitations "Unsupported" list is not, by itself,
+		// sufficient evidence of support - that page only enumerates known
+		// exclusions, it does not claim to be an exhaustive allowlist. No
+		// SIWC documentation or real successful SIWC request has confirmed
+		// either item is accepted on this route. They are forwarded
+		// optimistically (not rejected) since there is also no evidence of
+		// exclusion and rejecting on mere suspicion would block a
+		// legitimate feature if one exists; if OpenAI's real endpoint
+		// rejects either, that structured rejection surfaces via the
+		// existing mapResponsesAPIError path exactly like any other
+		// upstream-rejected request. Their entire payload (e.g.
 		// "reasoning") is preserved via Extra rather than modeled
 		// field-by-field, since this package does not interpret it.
 	case "additional_tools":

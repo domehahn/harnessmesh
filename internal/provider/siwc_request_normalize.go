@@ -101,8 +101,17 @@ func (e *SIWCStatefulRequestError) Error() string {
 // both Request and any other backend's request type so a change to one
 // can never accidentally widen or narrow another.
 type siwcNormalizedRequest struct {
-	Model             string          `json:"model"`
-	Input             InputItems      `json:"input"`
+	Model string     `json:"model"`
+	Input InputItems `json:"input"`
+	// Instructions is forwarded as its own top-level field - never folded
+	// into `input` as a synthesized message. SIWC's preview-limitations
+	// page confirms this is the documented mechanism: "Use `instructions`
+	// or developer messages; explicit {type: "message", role: "system"}
+	// items are rejected." Folding it into input would both duplicate the
+	// documented `instructions` mechanism and risk colliding with that
+	// same page's rejection of explicit system-role items if a caller
+	// later added one.
+	Instructions      string          `json:"instructions,omitempty"`
 	Stream            bool            `json:"stream"`
 	Store             bool            `json:"store"`
 	Tools             []Tool          `json:"tools,omitempty"`
@@ -152,7 +161,8 @@ func normalizeForSIWC(req Request) (*siwcNormalizedRequest, error) {
 
 	return &siwcNormalizedRequest{
 		Model:             req.Model,
-		Input:             foldInstructionsIntoInput(req.Instructions, req.Input),
+		Input:             req.Input,
+		Instructions:      req.Instructions,
 		Stream:            true,
 		Store:             false,
 		Tools:             req.Tools,

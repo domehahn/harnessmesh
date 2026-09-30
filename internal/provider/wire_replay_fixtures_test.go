@@ -335,9 +335,10 @@ func TestReplay_ShellCallContinuation_Rejected(t *testing.T) {
 // (developers.openai.com/api/docs/guides/reasoning.md, fetched
 // 2026-09-30: {"type":"configuration_update","reasoning":{"effort":"high"}},
 // added before the next user message to change reasoning effort
-// mid-conversation) is recognized and forwarded losslessly - it is not
-// named on SIWC's "Unsupported" list and requires no hosted/specialized
-// execution.
+// mid-conversation) is recognized and forwarded losslessly. SIWC status is
+// UNVERIFIED (absence from the "Unsupported" list is not proof of
+// support) - this test proves HarnessMesh's own parser/forwarder behavior,
+// not that OpenAI's real endpoint accepts it.
 func TestReplay_ConfigurationUpdate_Accepted(t *testing.T) {
 	src := `{"type":"configuration_update","reasoning":{"effort":"high"}}`
 	var it InputItem
@@ -368,7 +369,9 @@ func TestReplay_ConfigurationUpdate_Accepted(t *testing.T) {
 // (developers.openai.com/api/docs/guides/reasoning.md, fetched
 // 2026-09-30: "You can still explicitly compact history by including a
 // compaction_trigger item in a /responses request") is recognized and
-// forwarded - not named on SIWC's "Unsupported" list.
+// forwarded. SIWC status is UNVERIFIED (absence from the "Unsupported"
+// list is not proof of support) - this test proves HarnessMesh's own
+// parser/forwarder behavior, not that OpenAI's real endpoint accepts it.
 func TestReplay_CompactionTrigger_Accepted(t *testing.T) {
 	src := `{"type":"compaction_trigger"}`
 	var it InputItem
