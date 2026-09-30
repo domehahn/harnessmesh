@@ -104,6 +104,12 @@ func DefaultSIWCTokenPath() string {
 	return filepath.Join(home, ".harnessmesh", "chatgpt-siwc-auth.json")
 }
 
+// SaveSIWCTokenSetTo persists ts to path (0700 dir, 0600 file), for use by
+// the CLI's `provider auth chatgpt` login flow.
+func SaveSIWCTokenSetTo(path string, ts *SIWCTokenSet) error {
+	return saveSIWCTokenSet(path, ts)
+}
+
 func loadSIWCTokenSet(path string) (*SIWCTokenSet, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

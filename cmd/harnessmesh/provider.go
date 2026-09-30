@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -24,17 +26,83 @@ func providerCmd(args []string) error {
 		fmt.Fprintf(os.Stderr, `Usage:
   harnessmesh provider serve [--config <path>] [--listen <addr>] [--token <token>]
   harnessmesh provider doctor [--config <path>]
+  harnessmesh provider auth chatgpt [--token-path <path>]
 `)
-		return errors.New("subcommand required: serve or doctor")
+		return errors.New("subcommand required: serve, doctor, or auth")
 	}
 	switch args[0] {
 	case "serve":
 		return providerServe(args[1:])
 	case "doctor":
 		return providerDoctorCmd(args[1:])
+	case "auth":
+		return providerAuthCmd(args[1:])
 	default:
 		return fmt.Errorf("unknown provider subcommand %q", args[0])
 	}
+}
+
+func providerAuthCmd(args []string) error {
+	if len(args) == 0 || strings.ToLower(args[0]) != "chatgpt" {
+		return errors.New("usage: harnessmesh provider auth chatgpt [--token-path <path>]")
+	}
+	fs := flag.NewFlagSet("provider auth chatgpt", flag.ContinueOnError)
+	tokenPath := fs.String("token-path", provider.DefaultSIWCTokenPath(), "where to store the signed-in credential")
+	timeout := fs.Duration("timeout", 5*time.Minute, "how long to wait for the browser sign-in to complete")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	fmt.Println("HarnessMesh: Sign in with ChatGPT")
+	fmt.Println("This authorizes HarnessMesh's provider gateway to make Responses API")
+	fmt.Println("requests billed against your ChatGPT plan usage allowance - never your")
+	fmt.Println("separate OpenAI API billing, and never Codex CLI invocation.")
+	fmt.Println("On plans where Codex usage is bundled with general ChatGPT plan usage,")
+	fmt.Println("this DOES draw from the same shared allowance Codex itself draws from -")
+	fmt.Println("see docs/codex-provider.md before relying on this as a free/unlimited lane.")
+	fmt.Println()
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	result, err := provider.StartLoginFlow(ctx, "127.0.0.1:0", "")
+	if err != nil {
+		return fmt.Errorf("start sign-in flow: %w", err)
+	}
+
+	fmt.Println("Open this URL in your browser to sign in with ChatGPT:")
+	fmt.Println()
+	fmt.Println("  " + result.AuthorizeURL)
+	fmt.Println()
+	_ = tryOpenBrowser(result.AuthorizeURL)
+	fmt.Printf("Waiting up to %s for sign-in to complete...\n", timeout.String())
+
+	outcome := <-result.Done
+	if outcome.Err != nil {
+		return fmt.Errorf("sign-in failed: %w", outcome.Err)
+	}
+	if err := provider.SaveSIWCTokenSetTo(*tokenPath, outcome.Tokens); err != nil {
+		return fmt.Errorf("save credential: %w", err)
+	}
+	fmt.Printf("Signed in. Credential stored at %s.\n", *tokenPath)
+	fmt.Println(`Configure a backend with {"type": "chatgpt-subscription"} in provider.backends to use it.`)
+	return nil
+}
+
+// tryOpenBrowser best-effort opens url in the default browser; failure is
+// non-fatal since the URL is always printed for manual use too.
+func tryOpenBrowser(target string) error {
+	var cmd string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		cmd, args = "open", []string{target}
+	case "windows":
+		cmd, args = "rundll32", []string{"url.dll,FileProtocolHandler", target}
+	default:
+		cmd, args = "xdg-open", []string{target}
+	}
+	return exec.Command(cmd, args...).Start()
 }
 
 // providerServe starts the Codex-compatible model-provider gateway. It is
@@ -196,6 +264,15 @@ func doctorProvider(cfg *config.Config) bool {
 			} else {
 				fmt.Printf("INFO backend %q (type=%q) is metered and reachable (zero-credit mode is off)\n", name, bCfg.Type)
 			}
+		}
+		if strings.ToLower(bCfg.Type) == "chatgpt-subscription" {
+			tokenPath := provider.DefaultSIWCTokenPath()
+			if _, err := os.Stat(tokenPath); err != nil {
+				fmt.Printf("INFO backend %q (type=chatgpt-subscription) has no stored credential yet - run 'harnessmesh provider auth chatgpt'\n", name)
+			} else {
+				fmt.Printf("INFO backend %q (type=chatgpt-subscription) has a stored credential at %s\n", name, tokenPath)
+			}
+			fmt.Println("INFO chatgpt-subscription is NOT metered OpenAI API billing and NEVER invokes the Codex CLI, but on plans where Codex is bundled it draws the SAME ChatGPT plan usage allowance Codex itself draws from - see docs/codex-provider.md")
 		}
 	}
 
