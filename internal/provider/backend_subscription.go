@@ -33,19 +33,22 @@ type SubscriptionBackend struct {
 	name      string
 	tokenPath string
 	client    *siwcTokenClient
+	// requestDiagnostics is nil (a complete no-op) unless explicitly opted
+	// into via HARNESSMESH_SIWC_DEBUG=1 or injected by a test.
+	requestDiagnostics RequestShapeDiagnosticsSink
 
 	mu     sync.Mutex
 	tokens *SIWCTokenSet
 }
 
 func NewSubscriptionBackend(name string) *SubscriptionBackend {
-	return &SubscriptionBackend{name: name, tokenPath: DefaultSIWCTokenPath(), client: newSIWCTokenClient()}
+	return &SubscriptionBackend{name: name, tokenPath: DefaultSIWCTokenPath(), client: newSIWCTokenClient(), requestDiagnostics: requestShapeDiagnosticsSinkFromEnv()}
 }
 
 // NewSubscriptionBackendWithTokenPath is used by tests (and can be used by
 // operators via config) to point at a non-default credential file.
 func NewSubscriptionBackendWithTokenPath(name, tokenPath string) *SubscriptionBackend {
-	return &SubscriptionBackend{name: name, tokenPath: tokenPath, client: newSIWCTokenClient()}
+	return &SubscriptionBackend{name: name, tokenPath: tokenPath, client: newSIWCTokenClient(), requestDiagnostics: requestShapeDiagnosticsSinkFromEnv()}
 }
 
 func (b *SubscriptionBackend) Name() string { return b.name }
@@ -151,29 +154,6 @@ func (b *SubscriptionBackend) Health(ctx context.Context) error {
 	return err
 }
 
-// siwcResponsesRequest mirrors exactly the fields
-// developers.openai.com/siwc/token-sharing-open-source/models-and-inference
-// documents as supported for ChatGPT-plan-usage Responses requests: model,
-// input, temperature, max_output_tokens, tools, tool_choice,
-// parallel_tool_calls - plus the two fields that page states are REQUIRED
-// to specific values (store=false, stream=true). It deliberately has no
-// "instructions" or "previous_response_id" field: neither is documented as
-// supported for this flow (instructions is folded into `input` as a
-// developer-role message instead - see foldInstructionsIntoInput below;
-// previous_response_id is never sent at all, since HarnessMesh's own
-// Request always carries full turn history in `input`).
-type siwcResponsesRequest struct {
-	Model             string          `json:"model"`
-	Input             InputItems      `json:"input"`
-	Stream            bool            `json:"stream"`
-	Store             bool            `json:"store"`
-	Tools             []Tool          `json:"tools,omitempty"`
-	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
-	Temperature       *float64        `json:"temperature,omitempty"`
-	MaxOutputTokens   *int            `json:"max_output_tokens,omitempty"`
-	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
-}
-
 // foldInstructionsIntoInput prepends instructions as a developer-role input
 // message, since the documented ChatGPT-plan-usage Responses request shape
 // has no top-level "instructions" field (unlike the general Responses API).
@@ -207,11 +187,14 @@ func (b *SubscriptionBackend) StreamResponse(ctx context.Context, req Request, s
 		return err
 	}
 
-	body, err := json.Marshal(siwcResponsesRequest{
-		Model: req.Model, Input: foldInstructionsIntoInput(req.Instructions, req.Input),
-		Stream: true, Store: false, Tools: req.Tools, ToolChoice: req.ToolChoice,
-		Temperature: req.Temperature, MaxOutputTokens: req.MaxOutputTokens, ParallelToolCalls: req.ParallelToolCalls,
-	})
+	normalized, err := normalizeForSIWC(req)
+	if b.requestDiagnostics != nil {
+		b.requestDiagnostics.RecordRequestShape(buildRequestShapeDiagnostic(req, normalized, err))
+	}
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(normalized)
 	if err != nil {
 		return err
 	}

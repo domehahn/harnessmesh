@@ -32,17 +32,51 @@ import (
 // accepts. Fields Codex is not known to require are intentionally omitted
 // rather than guessed.
 type Request struct {
-	Model              string          `json:"model"`
-	Input              InputItems      `json:"input"`
-	Instructions       string          `json:"instructions,omitempty"`
-	Stream             bool            `json:"stream,omitempty"`
-	Tools              []Tool          `json:"tools,omitempty"`
-	ToolChoice         json.RawMessage `json:"tool_choice,omitempty"`
+	Model        string          `json:"model"`
+	Input        InputItems      `json:"input"`
+	Instructions string          `json:"instructions,omitempty"`
+	Stream       bool            `json:"stream,omitempty"`
+	Tools        []Tool          `json:"tools,omitempty"`
+	ToolChoice   json.RawMessage `json:"tool_choice,omitempty"`
+	// Reasoning carries the documented top-level reasoning-effort object
+	// (e.g. {"effort":"medium"}) opaquely - HarnessMesh does not interpret
+	// it, only passes it through to backends that support it.
+	Reasoning          json.RawMessage `json:"reasoning,omitempty"`
 	Temperature        *float64        `json:"temperature,omitempty"`
 	MaxOutputTokens    *int            `json:"max_output_tokens,omitempty"`
 	ParallelToolCalls  *bool           `json:"parallel_tool_calls,omitempty"`
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
 	Metadata           map[string]any  `json:"metadata,omitempty"`
+
+	// RawKeys captures every top-level JSON key actually present in the
+	// original request body (regardless of whether a typed field above
+	// models it), so a route-specific validator - see
+	// siwc_request_normalize.go's normalizeForSIWC - can detect the
+	// presence of a field it must reject even when this general-purpose
+	// struct has no dedicated Go field for it (e.g. "background",
+	// "conversation", "multi_agent"), and can distinguish an EXPLICITLY
+	// sent zero value (e.g. "store":false) from a field that was never
+	// sent at all, which a plain bool/omitempty field cannot.
+	RawKeys map[string]json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes into the typed fields exactly as a plain struct
+// would (via a type-aliased pass, which carries no methods and so cannot
+// recurse into this method), and additionally captures every top-level key
+// into RawKeys for callers that need raw presence/value detection.
+func (r *Request) UnmarshalJSON(data []byte) error {
+	type requestAlias Request
+	var a requestAlias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = Request(a)
+	r.RawKeys = raw
+	return nil
 }
 
 // InputItems accepts either a plain string (shorthand for a single user
@@ -257,10 +291,17 @@ var siwcUnsupportedResponsesItemTypes = map[string]bool{
 	"tool_search_output": true,
 	// "Apply patch, local shell, and other specialized execution tools" -
 	// confirmed unsupported, even though they execute client-side.
+	// shell_call/shell_call_output (developers.openai.com/api/docs/guides/
+	// tools-shell.md, fetched 2026-09-30, confirmed real and distinct from
+	// local_shell_call: "Hosted shell and local shell use the same output
+	// item types") fall under this same "and other specialized execution
+	// tools" text.
 	"apply_patch_call":        true,
 	"apply_patch_call_output": true,
 	"local_shell_call":        true,
 	"local_shell_call_output": true,
+	"shell_call":              true,
+	"shell_call_output":       true,
 	// "Image generation" / "Code Interpreter" - confirmed unsupported.
 	"image_generation_call": true,
 	"code_interpreter_call": true,
@@ -269,6 +310,28 @@ var siwcUnsupportedResponsesItemTypes = map[string]bool{
 	"mcp_list_tools":        true,
 	"mcp_approval_request":  true,
 	"mcp_approval_response": true,
+	// "programmatic_tool_calling at the top level" - confirmed unsupported
+	// (developers.openai.com/api/docs/guides/tools-programmatic-tool-calling.md,
+	// fetched 2026-09-30, confirms program/program_output are the item
+	// types this feature produces).
+	"program":        true,
+	"program_output": true,
+	// Multi-agent orchestration: SIWC's preview-limitations page states
+	// "the multi_agent parameter must be omitted from requests" - the
+	// top-level parameter that enables this feature at all - so its item
+	// types (developers.openai.com/api/docs/guides/agents-api/multi-agent.md,
+	// fetched 2026-09-30: "create_subagent_call, send_subagent_input_call,
+	// wait_for_subagents_call, and interrupt_subagent_call"; "An
+	// agent_message item contains inter-agent text when available") are
+	// unreachable/unsupported on this route. Note these are NOT named
+	// "multi_agent_call"/"multi_agent_call_output" - that was an incorrect
+	// guess from an earlier pass of this audit; these are the real,
+	// confirmed type strings.
+	"create_subagent_call":     true,
+	"send_subagent_input_call": true,
+	"wait_for_subagents_call":  true,
+	"interrupt_subagent_call":  true,
+	"agent_message":            true,
 }
 
 // web_search_call, custom_tool_call, and custom_tool_call_output are real,
@@ -477,6 +540,20 @@ func (it *InputItem) UnmarshalJSON(data []byte) error {
 				return err
 			}
 		}
+	case "configuration_update", "compaction_trigger":
+		// developers.openai.com/api/docs/guides/reasoning.md, fetched
+		// 2026-09-30: configuration_update's confirmed shape is
+		// {"type":"configuration_update","reasoning":{"effort":"high"}} -
+		// "Add the following item before the next user message in the
+		// input array" to change reasoning effort mid-conversation.
+		// compaction_trigger is confirmed to exist ("explicitly compact
+		// history by including a compaction_trigger item in a /responses
+		// request") but no full field shape was shown. Neither is named
+		// on SIWC's preview-limitations "Unsupported" list, and neither
+		// requires hosted/specialized execution, so both are treated as
+		// recognized and forwarded - their entire payload (e.g.
+		// "reasoning") is preserved via Extra rather than modeled
+		// field-by-field, since this package does not interpret it.
 	case "additional_tools":
 		if err := assignStringField("role", &item.Role); err != nil {
 			return err

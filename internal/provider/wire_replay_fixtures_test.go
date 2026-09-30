@@ -235,54 +235,68 @@ func TestReplay_CustomToolContinuation(t *testing.T) {
 	}
 }
 
-// TestReplay_ProgramItems_NotImplemented documents that "program"/
-// "program_output" could not be confirmed as real Responses item types in
-// the fetched official documentation, and are therefore NOT implemented -
-// they remain rejected as a genuinely unknown type, per "do not invent
-// unsupported types."
-func TestReplay_ProgramItems_NotImplemented(t *testing.T) {
+// TestReplay_ProgramItems_RejectedAsUnsupportedSIWCCapability corrects an
+// earlier pass of this audit, which wrongly claimed "program"/
+// "program_output" were not confirmed in official documentation. A
+// targeted fetch of developers.openai.com/api/docs/guides/
+// tools-programmatic-tool-calling.md (2026-09-30) confirmed both are real,
+// documented item types (program: {type, id, call_id, code, fingerprint};
+// program_output: {type, id, call_id, result, status}) produced by the
+// "programmatic tool calling" feature - which SIWC's preview-limitations
+// page explicitly lists as unsupported ("programmatic_tool_calling at the
+// top level"). They are therefore recognized (not genuinely unknown) but
+// rejected as UnsupportedSIWCCapability, not UnsupportedResponsesInputItemType.
+func TestReplay_ProgramItems_RejectedAsUnsupportedSIWCCapability(t *testing.T) {
 	for _, typ := range []string{"program", "program_output"} {
 		t.Run(typ, func(t *testing.T) {
 			var it InputItem
 			err := json.Unmarshal([]byte(`{"type":"`+typ+`"}`), &it)
 			if err == nil {
-				t.Fatalf("expected %q to be rejected (not confirmed in official docs), parsed successfully: %+v", typ, it)
+				t.Fatalf("expected %q to be rejected under SIWC, parsed successfully: %+v", typ, it)
 			}
-			if _, ok := err.(*UnsupportedResponsesInputItemTypeError); !ok {
-				t.Fatalf("expected *UnsupportedResponsesInputItemTypeError for unconfirmed type %q, got %T: %v", typ, err, err)
+			if _, ok := err.(*UnsupportedSIWCCapabilityError); !ok {
+				t.Fatalf("expected *UnsupportedSIWCCapabilityError for %q, got %T: %v", typ, err, err)
 			}
 		})
 	}
 }
 
-// TestReplay_MultiAgentCallItems_NotImplemented documents that
-// "multi_agent_call"/"multi_agent_call_output"/"agent_message" could not
-// be confirmed as distinct Responses item types. The Codex config
-// reference documents "multi-agent collaboration tools" (spawn_agent,
-// send_input, resume_agent, wait_agent, close_agent) as ordinary named
-// tools, which are expected to surface through the already-supported
-// function_call/function_call_output item types - not a bespoke item type
-// this package must separately implement. They remain rejected as
-// genuinely unknown item types if ever sent literally.
-func TestReplay_MultiAgentCallItems_NotImplemented(t *testing.T) {
-	for _, typ := range []string{"multi_agent_call", "multi_agent_call_output", "agent_message"} {
+// TestReplay_MultiAgentItems_RejectedAsUnsupportedSIWCCapability also
+// corrects an earlier pass: a targeted fetch of developers.openai.com/api/
+// docs/guides/agents-api/multi-agent.md (2026-09-30) confirmed real
+// multi-agent item types exist - but NOT named "multi_agent_call"/
+// "multi_agent_call_output" (an incorrect guess from that earlier pass).
+// The real, confirmed type strings are create_subagent_call,
+// send_subagent_input_call, wait_for_subagents_call,
+// interrupt_subagent_call, and agent_message. SIWC's preview-limitations
+// page states "the multi_agent parameter must be omitted from requests" -
+// the top-level parameter that enables this feature at all - so these
+// item types are recognized but rejected as UnsupportedSIWCCapability.
+func TestReplay_MultiAgentItems_RejectedAsUnsupportedSIWCCapability(t *testing.T) {
+	for _, typ := range []string{
+		"create_subagent_call", "send_subagent_input_call",
+		"wait_for_subagents_call", "interrupt_subagent_call", "agent_message",
+	} {
 		t.Run(typ, func(t *testing.T) {
 			var it InputItem
 			err := json.Unmarshal([]byte(`{"type":"`+typ+`"}`), &it)
 			if err == nil {
-				t.Fatalf("expected %q to be rejected (not confirmed in official docs as a distinct item type), parsed successfully: %+v", typ, it)
+				t.Fatalf("expected %q to be rejected under SIWC, parsed successfully: %+v", typ, it)
 			}
-			if _, ok := err.(*UnsupportedResponsesInputItemTypeError); !ok {
-				t.Fatalf("expected *UnsupportedResponsesInputItemTypeError for unconfirmed type %q, got %T: %v", typ, err, err)
+			if _, ok := err.(*UnsupportedSIWCCapabilityError); !ok {
+				t.Fatalf("expected *UnsupportedSIWCCapabilityError for %q, got %T: %v", typ, err, err)
 			}
 		})
 	}
 }
 
-// TestReplay_MultiAgentTools_ViaFunctionCall proves the actual, confirmed
-// mechanism: multi-agent collaboration tools (spawn_agent, etc.) work
-// through the ordinary, already-supported function_call/
-// function_call_output items - no special-casing needed.
+// TestReplay_MultiAgentTools_ViaFunctionCall proves the OTHER, confirmed
+// mechanism the Codex config reference documents: "multi-agent
+// collaboration tools" (spawn_agent, send_input, resume_agent, wait_agent,
+// close_agent) work through the ordinary, already-supported function_call/
+// function_call_output items - a separate path from the native
+// create_subagent_call/etc. item types above, and one SIWC does support
+// (function/custom tools are explicitly permitted).
 func TestReplay_MultiAgentTools_ViaFunctionCall(t *testing.T) {
 	src := `{"type":"function_call","call_id":"call_1","name":"spawn_agent","arguments":"{\"task\":\"review the diff\"}"}`
 	var it InputItem
@@ -292,4 +306,81 @@ func TestReplay_MultiAgentTools_ViaFunctionCall(t *testing.T) {
 	if it.Name != "spawn_agent" {
 		t.Fatalf("expected Name=spawn_agent, got %q", it.Name)
 	}
+}
+
+// TestReplay_ShellCallContinuation_Rejected proves shell_call/
+// shell_call_output (developers.openai.com/api/docs/guides/tools-shell.md,
+// fetched 2026-09-30: distinct from local_shell_call, but documented as
+// sharing output item types - "Hosted shell and local shell use the same
+// output item types") are recognized but refused under SIWC's "Apply
+// patch, local shell, and other specialized execution tools" text.
+func TestReplay_ShellCallContinuation_Rejected(t *testing.T) {
+	cases := []string{
+		`{"type":"shell_call","call_id":"call_sh1","action":{"commands":["ls -l"],"timeout_ms":120000},"status":"in_progress"}`,
+		`{"type":"shell_call_output","call_id":"call_sh1","output":[{"stdout":"...","stderr":"","outcome":{"type":"exit","exit_code":0}}]}`,
+	}
+	for _, src := range cases {
+		var it InputItem
+		err := json.Unmarshal([]byte(src), &it)
+		if err == nil {
+			t.Fatalf("expected shell item to be rejected under SIWC, parsed successfully: %+v", it)
+		}
+		if _, ok := err.(*UnsupportedSIWCCapabilityError); !ok {
+			t.Fatalf("expected *UnsupportedSIWCCapabilityError, got %T: %v", err, err)
+		}
+	}
+}
+
+// TestReplay_ConfigurationUpdate_Accepted proves configuration_update
+// (developers.openai.com/api/docs/guides/reasoning.md, fetched
+// 2026-09-30: {"type":"configuration_update","reasoning":{"effort":"high"}},
+// added before the next user message to change reasoning effort
+// mid-conversation) is recognized and forwarded losslessly - it is not
+// named on SIWC's "Unsupported" list and requires no hosted/specialized
+// execution.
+func TestReplay_ConfigurationUpdate_Accepted(t *testing.T) {
+	src := `{"type":"configuration_update","reasoning":{"effort":"high"}}`
+	var it InputItem
+	if err := json.Unmarshal([]byte(src), &it); err != nil {
+		t.Fatalf("expected configuration_update to be accepted, got: %v", err)
+	}
+	if it.Type != "configuration_update" {
+		t.Fatalf("expected type=configuration_update, got %q", it.Type)
+	}
+	if _, ok := it.Extra["reasoning"]; !ok {
+		t.Fatalf("expected the reasoning payload preserved via Extra, got %+v", it.Extra)
+	}
+	out, err := json.Marshal(it)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatalf("unmarshal round-trip: %v", err)
+	}
+	reasoning, ok := back["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "high" {
+		t.Fatalf("expected reasoning.effort=high preserved on round-trip, got %v", back["reasoning"])
+	}
+}
+
+// TestReplay_CompactionTrigger_Accepted proves compaction_trigger
+// (developers.openai.com/api/docs/guides/reasoning.md, fetched
+// 2026-09-30: "You can still explicitly compact history by including a
+// compaction_trigger item in a /responses request") is recognized and
+// forwarded - not named on SIWC's "Unsupported" list.
+func TestReplay_CompactionTrigger_Accepted(t *testing.T) {
+	src := `{"type":"compaction_trigger"}`
+	var it InputItem
+	if err := json.Unmarshal([]byte(src), &it); err != nil {
+		t.Fatalf("expected compaction_trigger to be accepted, got: %v", err)
+	}
+	if it.Type != "compaction_trigger" {
+		t.Fatalf("expected type=compaction_trigger, got %q", it.Type)
+	}
+	out, err := json.Marshal(it)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	assertNoEmptyType(t, out)
 }

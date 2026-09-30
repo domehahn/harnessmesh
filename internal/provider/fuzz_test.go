@@ -102,8 +102,16 @@ func FuzzInputItemsUnmarshal(f *testing.F) {
 	f.Add(`[{"type":"custom_tool_call","call_id":"c1","name":"code_exec","input":"print(1)"}]`)
 	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":"1\n"}]`)
 	f.Add(`[{"type":"web_search_call","id":"w1","status":"completed"}]`)
-	f.Add(`[{"type":"multi_agent_call"}]`)
 	f.Add(`[{"type":"program"}]`)
+	f.Add(`[{"type":"program_output"}]`)
+	f.Add(`[{"type":"shell_call","call_id":"c1","action":{"commands":["ls"]}}]`)
+	f.Add(`[{"type":"shell_call_output","call_id":"c1","output":[]}]`)
+	f.Add(`[{"type":"create_subagent_call"}]`)
+	f.Add(`[{"type":"send_subagent_input_call"}]`)
+	f.Add(`[{"type":"wait_for_subagents_call"}]`)
+	f.Add(`[{"type":"interrupt_subagent_call"}]`)
+	f.Add(`[{"type":"agent_message"}]`)
+	f.Add(`[{"type":"configuration_update","reasoning":{"effort":"high"}}]`)
 	f.Add(`[{"type":"compaction_trigger"}]`)
 
 	f.Fuzz(func(t *testing.T, data string) {
@@ -114,6 +122,36 @@ func FuzzInputItemsUnmarshal(f *testing.F) {
 		}()
 		var it InputItems
 		_ = json.Unmarshal([]byte(data), &it)
+	})
+}
+
+// FuzzSIWCNormalize proves normalizeForSIWC never panics on arbitrary
+// request bodies, including every documented forbidden-field shape.
+func FuzzSIWCNormalize(f *testing.F) {
+	f.Add(`{"model":"x","input":"hi"}`)
+	f.Add(`{"model":"x","input":"hi","store":true}`)
+	f.Add(`{"model":"x","input":"hi","stream":false}`)
+	f.Add(`{"model":"x","input":"hi","store":"not-a-bool"}`)
+	f.Add(`{"model":"x","input":"hi","stream":123}`)
+	f.Add(`{"model":"x","input":"hi","temperature":0.7}`)
+	f.Add(`{"model":"x","input":"hi","previous_response_id":"resp_1"}`)
+	f.Add(`{"model":"x","input":"hi","metadata":null}`)
+	f.Add(`{"model":"x","input":"hi","reasoning":{"effort":"high"}}`)
+	f.Add(`not json`)
+	f.Add(`{}`)
+	f.Add(`null`)
+
+	f.Fuzz(func(t *testing.T, body string) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("normalizeForSIWC panicked on body %q: %v", body, r)
+			}
+		}()
+		var req Request
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			return
+		}
+		_, _ = normalizeForSIWC(req)
 	})
 }
 
