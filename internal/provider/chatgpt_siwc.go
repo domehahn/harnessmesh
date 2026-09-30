@@ -156,6 +156,50 @@ func defaultSIWCHostIDPath() string {
 	return filepath.Join(home, ".harnessmesh", "chatgpt-siwc-host-id")
 }
 
+// defaultSIWCClientIDPath returns the default path where a dynamically
+// issued client_id is persisted, independent of full credentials. Per the
+// documented dynamic-registration behavior, a successful registration
+// callback's issued client_id ("oaiapp_...") must be retained and reused
+// for every subsequent authorization and refresh attempt - even if the
+// authorization-code exchange that accompanied it fails (e.g.
+// invalid_grant). Persisting it separately from SIWCTokenSet means that
+// failure never loses the registration, since the token file is only ever
+// written on a successful exchange.
+func defaultSIWCClientIDPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".harnessmesh", "chatgpt-siwc-client-id")
+	}
+	return filepath.Join(home, ".harnessmesh", "chatgpt-siwc-client-id")
+}
+
+// loadRegisteredClientID returns a previously persisted issued client_id,
+// or "" if this host has never completed dynamic registration (a true
+// first attempt, which must use siwcBootstrapClientID).
+func loadRegisteredClientID(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// persistRegisteredClientID atomically persists an issued client_id,
+// deliberately independent of whether the authorization-code exchange that
+// accompanied it succeeded - the dynamic registration itself already
+// happened server-side once OpenAI issued this client_id, so it must
+// survive a subsequent invalid_grant and be reused (never re-bootstrapped)
+// on the next authorization attempt.
+func persistRegisteredClientID(path, clientID string) error {
+	if clientID == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return atomicWriteFile(path, []byte(clientID), 0600)
+}
+
 // loadOrCreateExtAgentHostID returns this host's persisted
 // ext_agent_host_id, generating and persisting a new one on first use.
 func loadOrCreateExtAgentHostID(path string) (string, error) {
@@ -310,7 +354,14 @@ func generateRandomURLSafeToken(numBytes int) (string, error) {
 func buildAuthorizeURL(clientID, redirectURI, state, nonce, codeChallenge, extAgentHostID string) string {
 	v := url.Values{}
 	v.Set("client_id", clientID)
-	v.Set("agent_name_hint", siwcAgentNameHint)
+	if clientID == siwcBootstrapClientID {
+		// agent_name_hint is documented for the initial dynamic-registration
+		// attempt (identifying this agent to the consent screen before it
+		// has an issued client_id of its own); once a client_id has been
+		// issued and persisted, every subsequent authorization attempt must
+		// omit it.
+		v.Set("agent_name_hint", siwcAgentNameHint)
+	}
 	v.Set("ext_agent_host_id", extAgentHostID)
 	v.Set("redirect_uri", redirectURI)
 	v.Set("response_type", "code")
@@ -432,17 +483,28 @@ type LoginFlowOutcome struct {
 // in a browser (or printing it for the user to open manually) - this
 // function never does browser automation itself.
 func StartLoginFlow(ctx context.Context, listenAddr, clientID string) (*LoginFlowResult, error) {
-	return startLoginFlowWithVerifier(ctx, listenAddr, clientID, newSIWCTokenClient(), newIDTokenVerifier(), defaultSIWCHostIDPath())
+	return startLoginFlowWithVerifier(ctx, listenAddr, clientID, newSIWCTokenClient(), newIDTokenVerifier(), defaultSIWCHostIDPath(), defaultSIWCClientIDPath())
 }
 
 // startLoginFlowWithVerifier is StartLoginFlow with every network
 // dependency (token endpoint, ID-token/JWKS verifier, host-ID storage
-// path) injected, so tests can exercise the full flow - including ID
-// token validation - against fake local servers instead of OpenAI's real
+// path, issued-client_id storage path) injected, so tests can exercise the
+// full flow - including ID token validation and the dynamic-registration
+// retry lifecycle - against fake local servers instead of OpenAI's real
 // infrastructure.
-func startLoginFlowWithVerifier(ctx context.Context, listenAddr, clientID string, tc *siwcTokenClient, idv *idTokenVerifier, hostIDPath string) (*LoginFlowResult, error) {
+func startLoginFlowWithVerifier(ctx context.Context, listenAddr, clientID string, tc *siwcTokenClient, idv *idTokenVerifier, hostIDPath, clientIDPath string) (*LoginFlowResult, error) {
 	if clientID == "" {
-		clientID = siwcBootstrapClientID
+		// A truly fresh caller (no explicit client_id requested) must reuse
+		// this host's previously issued client_id if dynamic registration
+		// already happened here, per the documented requirement that
+		// "dynamic_agent_client" is only ever used for a genuine first
+		// attempt - never again once a real client_id has been issued, even
+		// if every exchange attempt so far has failed.
+		if registered := loadRegisteredClientID(clientIDPath); registered != "" {
+			clientID = registered
+		} else {
+			clientID = siwcBootstrapClientID
+		}
 	}
 	verifier, err := generateCodeVerifier()
 	if err != nil {
@@ -497,6 +559,17 @@ func startLoginFlowWithVerifier(ctx context.Context, listenAddr, clientID string
 		exchangeClientID := clientID
 		if cb := q.Get("client_id"); cb != "" {
 			exchangeClientID = cb
+			// Persist the issued registration immediately, before even
+			// attempting the token exchange: dynamic registration already
+			// happened server-side the moment OpenAI issued this client_id,
+			// and it must be retained - and reused on the very next
+			// authorization attempt, never re-bootstrapped as
+			// dynamic_agent_client - even if this exchange goes on to fail
+			// (e.g. invalid_grant).
+			if err := persistRegisteredClientID(clientIDPath, exchangeClientID); err != nil {
+				done <- LoginFlowOutcome{Err: fmt.Errorf("persist issued client_id: %w", err)}
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -504,8 +577,22 @@ func startLoginFlowWithVerifier(ctx context.Context, listenAddr, clientID string
 
 		ts, err := tc.exchangeCode(r.Context(), exchangeClientID, code, verifier, redirectURI)
 		if err != nil {
+			// The authorization code itself is discarded here (it is
+			// single-use and this attempt ends); the issued client_id
+			// registration persisted above is deliberately NOT rolled back,
+			// and no access/refresh tokens are persisted, since they were
+			// never obtained.
 			done <- LoginFlowOutcome{Err: err}
 			return
+		}
+		if ts.ClientID != "" {
+			// Re-persist defensively in case the token endpoint's response
+			// body is the authoritative source of the issued client_id
+			// (rather than, or in addition to, the callback query param).
+			if err := persistRegisteredClientID(clientIDPath, ts.ClientID); err != nil {
+				done <- LoginFlowOutcome{Err: fmt.Errorf("persist issued client_id: %w", err)}
+				return
+			}
 		}
 		ts.ExtAgentHostID = hostID
 		if ts.IDToken != "" {
