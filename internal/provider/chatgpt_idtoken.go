@@ -52,10 +52,62 @@ type jwkSet struct {
 	Keys []jwkKey `json:"keys"`
 }
 
+// ClaimStrings represents the OIDC/JWT "aud" claim, which per RFC 7519
+// §4.1.3 and the OIDC Core 1.0 ID Token spec may be encoded as EITHER a
+// single JSON string or a JSON array of strings - both are valid, and a
+// real OpenAI ID token has been observed using the array form
+// (`"aud": ["oaiapp_..."]`). This mirrors the shape golang-jwt/jwt/v5's
+// own ClaimStrings type uses; this package does not currently depend on
+// that library (or any JWT library - see this file's verification below,
+// which is deliberately stdlib-only crypto), so this is a small,
+// standards-compliant equivalent rather than pulling in a new dependency
+// for one field.
+type ClaimStrings []string
+
+// UnmarshalJSON accepts either encoding. Any other JSON shape (a number, an
+// object, a bool, an array of non-strings, ...) is a malformed claim and
+// fails closed with a clear error - it never panics and never silently
+// produces an empty/zero audience that could accidentally satisfy a
+// later mismatched check.
+func (c *ClaimStrings) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		*c = ClaimStrings{single}
+		return nil
+	}
+	var multi []string
+	if err := json.Unmarshal(data, &multi); err == nil {
+		*c = ClaimStrings(multi)
+		return nil
+	}
+	return fmt.Errorf("aud claim must be a JSON string or an array of strings")
+}
+
+// Contains reports whether v is one of the encoded audience values.
+func (c ClaimStrings) Contains(v string) bool {
+	for _, s := range c {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
 // idTokenClaims is the subset of ID token claims this validator checks.
+// This struct is deliberately used ONLY for ID tokens: OpenAI documents a
+// structurally different audience for access tokens (the fixed resource
+// https://api.openai.com/v1, validated server-side, never decoded or
+// audience-checked by this client) versus ID tokens (audience is the
+// issued OAuth client_id, validated here) - these are different validation
+// domains and must never share a claims type or a validation code path.
 type idTokenClaims struct {
-	Iss   string `json:"iss"`
-	Aud   string `json:"aud"`
+	Iss string       `json:"iss"`
+	Aud ClaimStrings `json:"aud"`
+	// Azp ("authorized party") is OPTIONAL per OIDC Core 1.0 §3.1.3.7: when
+	// an ID token's aud contains more than one value, the client SHOULD
+	// verify azp (if present) equals its own client_id. It is never
+	// required to be present, and its absence is not itself an error.
+	Azp   string `json:"azp,omitempty"`
 	Sub   string `json:"sub"`
 	Nonce string `json:"nonce"`
 	Exp   int64  `json:"exp"`
@@ -183,8 +235,22 @@ func (v *idTokenVerifier) Verify(ctx context.Context, idToken, expectedAudience,
 	if claims.Iss != siwcIssuer {
 		return "", fmt.Errorf("ID token issuer %q does not match expected %q", claims.Iss, siwcIssuer)
 	}
-	if claims.Aud != expectedAudience {
-		return "", fmt.Errorf("ID token audience %q does not match the issued client_id %q", claims.Aud, expectedAudience)
+	// Per RFC 7519 §4.1.3 / OIDC Core 1.0, aud may be a single string or an
+	// array of strings - ClaimStrings.UnmarshalJSON already normalized
+	// either encoding; the validation invariant itself is unchanged and
+	// unweakened: the issued client_id MUST be one of the encoded
+	// audiences.
+	if !claims.Aud.Contains(expectedAudience) {
+		return "", fmt.Errorf("ID token audience %v does not contain the issued client_id %q", []string(claims.Aud), expectedAudience)
+	}
+	// OIDC Core 1.0 §3.1.3.7: when aud contains multiple values, the
+	// client SHOULD verify azp (if present) identifies it - azp is
+	// optional, so its absence is not itself an error, but a PRESENT and
+	// mismatched azp is a legitimate rejection (it signals the token was
+	// authorized for a different party even though this client_id is also
+	// a listed audience).
+	if len(claims.Aud) > 1 && claims.Azp != "" && claims.Azp != expectedAudience {
+		return "", fmt.Errorf("ID token authorized party (azp) %q does not match the issued client_id %q", claims.Azp, expectedAudience)
 	}
 	if claims.Exp != 0 && time.Now().Unix() > claims.Exp {
 		return "", fmt.Errorf("ID token has expired")

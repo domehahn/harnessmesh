@@ -58,7 +58,7 @@ func TestIDTokenVerifier_ValidToken(t *testing.T) {
 	srv := newFakeOIDCServer(t, priv, "kid-1")
 	defer srv.Close()
 
-	claims := idTokenClaims{Iss: siwcIssuer, Aud: "oaiapp_test123", Sub: "user-abc", Nonce: "nonce-xyz", Exp: time.Now().Add(time.Hour).Unix(), Iat: time.Now().Unix()}
+	claims := idTokenClaims{Iss: siwcIssuer, Aud: ClaimStrings{"oaiapp_test123"}, Sub: "user-abc", Nonce: "nonce-xyz", Exp: time.Now().Add(time.Hour).Unix(), Iat: time.Now().Unix()}
 	tok := signTestIDToken(t, priv, "kid-1", claims)
 
 	v := &idTokenVerifier{discoveryURL: srv.URL + "/.well-known/openid-configuration", httpClient: http.DefaultClient}
@@ -77,7 +77,7 @@ func TestIDTokenVerifier_WrongSignature(t *testing.T) {
 	srv := newFakeOIDCServer(t, priv, "kid-1") // JWKS advertises priv's public key
 	defer srv.Close()
 
-	claims := idTokenClaims{Iss: siwcIssuer, Aud: "oaiapp_x", Sub: "u", Nonce: "n", Exp: time.Now().Add(time.Hour).Unix()}
+	claims := idTokenClaims{Iss: siwcIssuer, Aud: ClaimStrings{"oaiapp_x"}, Sub: "u", Nonce: "n", Exp: time.Now().Add(time.Hour).Unix()}
 	tok := signTestIDToken(t, otherPriv, "kid-1", claims) // signed with a DIFFERENT key
 
 	v := &idTokenVerifier{discoveryURL: srv.URL + "/.well-known/openid-configuration", httpClient: http.DefaultClient}
@@ -90,7 +90,7 @@ func TestIDTokenVerifier_WrongAudience(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	srv := newFakeOIDCServer(t, priv, "kid-1")
 	defer srv.Close()
-	claims := idTokenClaims{Iss: siwcIssuer, Aud: "oaiapp_actual", Sub: "u", Nonce: "n", Exp: time.Now().Add(time.Hour).Unix()}
+	claims := idTokenClaims{Iss: siwcIssuer, Aud: ClaimStrings{"oaiapp_actual"}, Sub: "u", Nonce: "n", Exp: time.Now().Add(time.Hour).Unix()}
 	tok := signTestIDToken(t, priv, "kid-1", claims)
 
 	v := &idTokenVerifier{discoveryURL: srv.URL + "/.well-known/openid-configuration", httpClient: http.DefaultClient}
@@ -103,7 +103,7 @@ func TestIDTokenVerifier_WrongNonce(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	srv := newFakeOIDCServer(t, priv, "kid-1")
 	defer srv.Close()
-	claims := idTokenClaims{Iss: siwcIssuer, Aud: "oaiapp_x", Sub: "u", Nonce: "actual-nonce", Exp: time.Now().Add(time.Hour).Unix()}
+	claims := idTokenClaims{Iss: siwcIssuer, Aud: ClaimStrings{"oaiapp_x"}, Sub: "u", Nonce: "actual-nonce", Exp: time.Now().Add(time.Hour).Unix()}
 	tok := signTestIDToken(t, priv, "kid-1", claims)
 
 	v := &idTokenVerifier{discoveryURL: srv.URL + "/.well-known/openid-configuration", httpClient: http.DefaultClient}
@@ -116,7 +116,7 @@ func TestIDTokenVerifier_ExpiredToken(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	srv := newFakeOIDCServer(t, priv, "kid-1")
 	defer srv.Close()
-	claims := idTokenClaims{Iss: siwcIssuer, Aud: "oaiapp_x", Sub: "u", Nonce: "n", Exp: time.Now().Add(-time.Hour).Unix()}
+	claims := idTokenClaims{Iss: siwcIssuer, Aud: ClaimStrings{"oaiapp_x"}, Sub: "u", Nonce: "n", Exp: time.Now().Add(-time.Hour).Unix()}
 	tok := signTestIDToken(t, priv, "kid-1", claims)
 
 	v := &idTokenVerifier{discoveryURL: srv.URL + "/.well-known/openid-configuration", httpClient: http.DefaultClient}
@@ -129,7 +129,7 @@ func TestIDTokenVerifier_WrongIssuer(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	srv := newFakeOIDCServer(t, priv, "kid-1")
 	defer srv.Close()
-	claims := idTokenClaims{Iss: "https://evil.example.com", Aud: "oaiapp_x", Sub: "u", Nonce: "n", Exp: time.Now().Add(time.Hour).Unix()}
+	claims := idTokenClaims{Iss: "https://evil.example.com", Aud: ClaimStrings{"oaiapp_x"}, Sub: "u", Nonce: "n", Exp: time.Now().Add(time.Hour).Unix()}
 	tok := signTestIDToken(t, priv, "kid-1", claims)
 
 	v := &idTokenVerifier{discoveryURL: srv.URL + "/.well-known/openid-configuration", httpClient: http.DefaultClient}
@@ -156,7 +156,7 @@ func TestIDTokenVerifier_JWKSCached(t *testing.T) {
 	defer srv.Close()
 
 	v := &idTokenVerifier{discoveryURL: srv.URL + "/.well-known/openid-configuration", httpClient: http.DefaultClient}
-	claims := idTokenClaims{Iss: siwcIssuer, Aud: "oaiapp_x", Sub: "u", Nonce: "n", Exp: time.Now().Add(time.Hour).Unix()}
+	claims := idTokenClaims{Iss: siwcIssuer, Aud: ClaimStrings{"oaiapp_x"}, Sub: "u", Nonce: "n", Exp: time.Now().Add(time.Hour).Unix()}
 	tok := signTestIDToken(t, priv, "kid-1", claims)
 
 	for i := 0; i < 3; i++ {
