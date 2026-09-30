@@ -23,9 +23,16 @@ import (
 // against a local fake backend, with OPENAI_API_KEY set and a tripwire
 // "codex" binary on PATH, and proves:
 //
-//	OpenAI API calls  = 0
-//	Codex invocations = 0
+//	OpenAI API-key-billed calls (creditguard.BackendOpenAIAPI) = 0
+//	Codex process/backend invocations (creditguard.BackendCodex, and the
+//	  tripwire file) = 0
 //
+// This test never touches the chatgpt-subscription backend, so it says
+// nothing about ChatGPT-plan Responses usage either way - see
+// TestE2E_ChatGPTSubscriptionBackend_ZeroAPIKeyBilling_ZeroCodex below for
+// that backend's own, differently-worded proof (that one *does* expect a
+// nonzero ChatGPT-plan-usage counter - it is a real, billed-to-your-plan
+// call, just never an API-key-metered one and never a Codex invocation).
 // This is the mission's central acceptance criterion (sections 26-30, 50).
 func TestE2E_ZeroCreditMode_FullLifecycleProof(t *testing.T) {
 	tripwireDir := t.TempDir()
@@ -171,40 +178,44 @@ func TestE2E_ZeroCreditMode_FullLifecycleProof(t *testing.T) {
 
 	// --- The critical proof ---
 	if got := creditguard.Calls(creditguard.BackendOpenAIAPI); got != 0 {
-		t.Fatalf("expected 0 OpenAI API calls during zero-credit provider E2E, got %d", got)
+		t.Fatalf("expected 0 API-key-billed OpenAI API calls during zero-credit provider E2E, got %d", got)
 	}
 	if got := creditguard.Calls(creditguard.BackendCodex); got != 0 {
-		t.Fatalf("expected 0 Codex invocations during zero-credit provider E2E, got %d", got)
+		t.Fatalf("expected 0 Codex backend invocations (CodexInferenceBackend.StreamResponse never called) during zero-credit provider E2E, got %d", got)
 	}
 	if _, err := os.Stat(tripwireFile); err == nil {
-		t.Fatalf("codex tripwire file exists: the codex binary was executed during the zero-credit provider E2E")
+		t.Fatalf("codex tripwire file exists: 0 Codex process invocations violated - the codex binary was executed during the zero-credit provider E2E")
 	}
 	if len(audit.records) < 2 {
 		t.Fatalf("expected at least 2 audit records for the completed requests, got %d", len(audit.records))
 	}
 }
 
-// TestE2E_ChatGPTSubscriptionBackend_ZeroOpenAIAPIAndZeroCodex drives a full
-// Codex-shaped request lifecycle through the real stack
+// TestE2E_ChatGPTSubscriptionBackend_ZeroAPIKeyBilling_ZeroCodex drives a
+// full Codex-shaped request lifecycle through the real stack
 // (config.Parse -> NewRegistry -> NewServer -> Handler) with the
 // chatgpt-subscription backend selected as default, against a fake local
 // server standing in for https://api.openai.com/v1/responses (never the
 // real endpoint - no real ChatGPT account or OAuth consent is available in
 // this environment). With OPENAI_API_KEY set and a tripwire "codex" binary
-// on PATH, it proves:
+// on PATH, it proves all four distinct usage classes are correctly counted:
 //
-//	metered OpenAI API calls (creditguard.BackendOpenAIAPI) = 0
-//	Codex invocations (creditguard.BackendCodex, and the tripwire)  = 0
+//	OpenAI API-key-billed calls (creditguard.BackendOpenAIAPI)     = 0
+//	Codex process invocations (the tripwire file)                  = 0
+//	Codex backend invocations (creditguard.BackendCodex)            = 0
+//	ChatGPT-plan Responses calls (creditguard.BackendChatGPTPlanUsage) > 0
 //
-// while explicitly showing creditguard.BackendChatGPTPlanUsage DOES
-// increment - that is expected and correct (see backend_subscription.go's
-// doc comment): this backend genuinely calls a Responses-API-shaped
-// endpoint, just never api.openai.com with an API key and never the Codex
-// CLI. This test cannot and does not prove anything about real-world
-// OpenAI-side billing/quota routing, which is outside HarnessMesh's
-// visibility - only that HarnessMesh's own call path is exactly what it
-// claims to be.
-func TestE2E_ChatGPTSubscriptionBackend_ZeroOpenAIAPIAndZeroCodex(t *testing.T) {
+// The nonzero ChatGPT-plan-usage count is *expected and correct* (see
+// backend_subscription.go's doc comment): this backend genuinely sends a
+// POST https://api.openai.com/v1/responses request - it is real inference
+// usage, consumed against the user's ChatGPT plan (and, on plans where
+// that's bundled, the same shared allowance Codex draws from) - it is
+// simply never billed via an OpenAI API key and never routed through the
+// Codex CLI/backend. This test cannot and does not prove anything about
+// real-world OpenAI-side billing/quota routing, which is outside
+// HarnessMesh's visibility - only that HarnessMesh's own call path is
+// exactly what it claims to be.
+func TestE2E_ChatGPTSubscriptionBackend_ZeroAPIKeyBilling_ZeroCodex(t *testing.T) {
 	tripwireDir := t.TempDir()
 	tripwireFile := tripwireDir + "/codex-was-invoked"
 	fakeCodex := tripwireDir + "/codex"
@@ -270,20 +281,21 @@ func TestE2E_ChatGPTSubscriptionBackend_ZeroOpenAIAPIAndZeroCodex(t *testing.T) 
 		t.Fatalf("expected the fake ChatGPT-plan backend's output, got %q", resp.Output[0].Content[0].Text)
 	}
 
-	// --- The critical proof ---
+	// --- The critical proof: all four usage classes, correctly counted ---
 	if got := creditguard.Calls(creditguard.BackendOpenAIAPI); got != 0 {
-		t.Fatalf("expected 0 metered OpenAI API calls, got %d", got)
+		t.Fatalf("expected 0 API-key-billed OpenAI API calls, got %d", got)
 	}
 	if got := creditguard.Calls(creditguard.BackendCodex); got != 0 {
-		t.Fatalf("expected 0 Codex invocations, got %d", got)
+		t.Fatalf("expected 0 Codex backend invocations, got %d", got)
 	}
 	if _, err := os.Stat(tripwireFile); err == nil {
-		t.Fatalf("codex tripwire file exists: the codex binary was executed")
+		t.Fatalf("codex tripwire file exists: 0 Codex process invocations violated - the codex binary was executed")
 	}
 	// This one is *expected* to be nonzero - it is what actually served
-	// the request, via the documented, non-API-billed ChatGPT-plan path.
+	// the request: a real ChatGPT-plan Responses call, via the documented,
+	// non-API-key-billed path.
 	if got := creditguard.Calls(creditguard.BackendChatGPTPlanUsage); got != 1 {
-		t.Fatalf("expected exactly 1 chatgpt-plan-usage call (the request that was actually served), got %d", got)
+		t.Fatalf("expected exactly 1 ChatGPT-plan Responses call (the request that was actually served), got %d", got)
 	}
 }
 

@@ -76,7 +76,11 @@ const (
 	// the server returns a real, persistent client_id (format
 	// "oaiapp_...") to store and reuse thereafter.
 	siwcBootstrapClientID = "dynamic_agent_client"
-	siwcScopes            = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
+	siwcPlanUsageScope    = "chatgpt.tokens.use.direct"
+	siwcScopes            = "openid profile email offline_access resource.invoke " + siwcPlanUsageScope
+	// siwcAgentNameHint identifies HarnessMesh to the consent screen, per
+	// the documented agent_name_hint authorize parameter.
+	siwcAgentNameHint = "HarnessMesh"
 )
 
 // SIWCTokenSet is the persisted OAuth credential set for one signed-in
@@ -88,6 +92,42 @@ type SIWCTokenSet struct {
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	IDToken      string    `json:"id_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	// ExtAgentHostID is this host's stable, persistent identifier, sent as
+	// the documented ext_agent_host_id authorize-request parameter. It is
+	// generated once and reused for every sign-in from this machine - see
+	// developers.openai.com/siwc/token-sharing-open-source/sign-in:
+	// "Choose and persist this host's ext_agent_host_id before its first
+	// sign-in, or reuse its existing value for the same host."
+	ExtAgentHostID string `json:"ext_agent_host_id,omitempty"`
+	// Subject is the validated ID token "sub" claim - the account identity
+	// - populated only after successful ID token verification.
+	Subject string `json:"subject,omitempty"`
+	Email   string `json:"email,omitempty"`
+	// Scopes actually granted, per the token response, so callers can
+	// detect a partial-consent case (e.g. the user signed in for identity
+	// but declined ChatGPT-plan-usage permission specifically).
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// HasScope reports whether scope was actually granted (present in the
+// token response's scopes list), not merely requested.
+func (t *SIWCTokenSet) HasScope(scope string) bool {
+	if t == nil {
+		return false
+	}
+	for _, s := range t.Scopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// HasChatGPTPlanUsageGrant reports whether the user actually approved
+// ChatGPT-plan-usage permission during consent (as opposed to signing in
+// for identity only and declining that specific permission).
+func (t *SIWCTokenSet) HasChatGPTPlanUsageGrant() bool {
+	return t.HasScope(siwcPlanUsageScope)
 }
 
 func (t *SIWCTokenSet) expired() bool {
@@ -102,6 +142,76 @@ func DefaultSIWCTokenPath() string {
 		return filepath.Join(".harnessmesh", "chatgpt-siwc-auth.json")
 	}
 	return filepath.Join(home, ".harnessmesh", "chatgpt-siwc-auth.json")
+}
+
+// defaultSIWCHostIDPath returns the default path for this host's stable
+// ext_agent_host_id, stored separately from any one account's credentials
+// so it survives sign-out/sign-in-as-a-different-account and is shared
+// across every SIWCTokenSet this host ever obtains.
+func defaultSIWCHostIDPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".harnessmesh", "chatgpt-siwc-host-id")
+	}
+	return filepath.Join(home, ".harnessmesh", "chatgpt-siwc-host-id")
+}
+
+// loadOrCreateExtAgentHostID returns this host's persisted
+// ext_agent_host_id, generating and persisting a new one on first use.
+func loadOrCreateExtAgentHostID(path string) (string, error) {
+	if data, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id, nil
+		}
+	}
+	id, err := generateHostID()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return "", err
+	}
+	if err := atomicWriteFile(path, []byte(id), 0600); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func generateHostID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	// urn:uuid:-style formatting, matching the example in OpenAI's own
+	// documentation ("ext_agent_host_id": "urn:uuid:...").
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("urn:uuid:%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
+// atomicWriteFile writes data to a temp file in the same directory as path
+// and renames it into place, so a crash mid-write never leaves a
+// truncated/corrupt credential file - required for the token-lifecycle
+// "replacement refresh token persisted atomically" property.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".siwc-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below succeeds
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // SaveSIWCTokenSetTo persists ts to path (0700 dir, 0600 file), for use by
@@ -130,7 +240,7 @@ func saveSIWCTokenSet(path string, ts *SIWCTokenSet) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return atomicWriteFile(path, data, 0600)
 }
 
 // newSIWCResponsesRequest builds the HTTP request for a Responses API call
@@ -171,21 +281,42 @@ func codeChallengeS256(verifier string) string {
 }
 
 func generateState() (string, error) {
-	b := make([]byte, 16)
+	return generateRandomURLSafeToken(16)
+}
+
+// generateNonce produces a fresh random OIDC nonce, per the documented
+// requirement to "generate a fresh random state, OIDC nonce, and PKCE
+// verifier for each attempt" and later verify it against the ID token's
+// nonce claim (see chatgpt_idtoken.go).
+func generateNonce() (string, error) {
+	return generateRandomURLSafeToken(16)
+}
+
+func generateRandomURLSafeToken(numBytes int) (string, error) {
+	b := make([]byte, numBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// buildAuthorizeURL constructs the documented authorization request.
-func buildAuthorizeURL(clientID, redirectURI, state, codeChallenge string) string {
+// buildAuthorizeURL constructs the documented authorization request,
+// including the host-identity and replay-protection parameters
+// (ext_agent_host_id, agent_name_hint, nonce) alongside PKCE/state/scope/
+// resource - the full documented parameter set:
+// client_id, agent_name_hint, ext_agent_host_id, response_type,
+// redirect_uri, scope, resource, state, nonce, code_challenge_method,
+// code_challenge.
+func buildAuthorizeURL(clientID, redirectURI, state, nonce, codeChallenge, extAgentHostID string) string {
 	v := url.Values{}
 	v.Set("client_id", clientID)
+	v.Set("agent_name_hint", siwcAgentNameHint)
+	v.Set("ext_agent_host_id", extAgentHostID)
 	v.Set("redirect_uri", redirectURI)
 	v.Set("response_type", "code")
 	v.Set("scope", siwcScopes)
 	v.Set("state", state)
+	v.Set("nonce", nonce)
 	v.Set("code_challenge", codeChallenge)
 	v.Set("code_challenge_method", "S256")
 	v.Set("resource", siwcResource)
@@ -238,14 +369,17 @@ func (c *siwcTokenClient) doTokenRequest(ctx context.Context, form url.Values, c
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, &UnauthorizedError{}
+		return nil, mapTokenEndpointError(resp.StatusCode, body)
 	}
 	var payload struct {
-		ClientID     string `json:"client_id,omitempty"`
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		IDToken      string `json:"id_token"`
-		ExpiresIn    int    `json:"expires_in"`
+		ClientID     string   `json:"client_id,omitempty"`
+		AccessToken  string   `json:"access_token"`
+		RefreshToken string   `json:"refresh_token"`
+		IDToken      string   `json:"id_token"`
+		ExpiresIn    int      `json:"expires_in"`
+		Scope        string   `json:"scope,omitempty"`  // standard OAuth: space-delimited
+		Scopes       []string `json:"scopes,omitempty"` // documented persisted-credential shape: array
+		Email        string   `json:"email,omitempty"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("parse token response: %w", err)
@@ -254,12 +388,18 @@ func (c *siwcTokenClient) doTokenRequest(ctx context.Context, form url.Values, c
 	if issuedClientID == "" {
 		issuedClientID = clientID
 	}
+	scopes := payload.Scopes
+	if len(scopes) == 0 && payload.Scope != "" {
+		scopes = strings.Fields(payload.Scope)
+	}
 	ts := &SIWCTokenSet{
 		ClientID:     issuedClientID,
 		AccessToken:  payload.AccessToken,
 		RefreshToken: payload.RefreshToken,
 		IDToken:      payload.IDToken,
 		ExpiresAt:    time.Now().Add(time.Duration(payload.ExpiresIn) * time.Second),
+		Scopes:       scopes,
+		Email:        payload.Email,
 	}
 	if ts.AccessToken == "" {
 		return nil, fmt.Errorf("token response contained no access_token")
@@ -292,6 +432,15 @@ type LoginFlowOutcome struct {
 // in a browser (or printing it for the user to open manually) - this
 // function never does browser automation itself.
 func StartLoginFlow(ctx context.Context, listenAddr, clientID string) (*LoginFlowResult, error) {
+	return startLoginFlowWithVerifier(ctx, listenAddr, clientID, newSIWCTokenClient(), newIDTokenVerifier(), defaultSIWCHostIDPath())
+}
+
+// startLoginFlowWithVerifier is StartLoginFlow with every network
+// dependency (token endpoint, ID-token/JWKS verifier, host-ID storage
+// path) injected, so tests can exercise the full flow - including ID
+// token validation - against fake local servers instead of OpenAI's real
+// infrastructure.
+func startLoginFlowWithVerifier(ctx context.Context, listenAddr, clientID string, tc *siwcTokenClient, idv *idTokenVerifier, hostIDPath string) (*LoginFlowResult, error) {
 	if clientID == "" {
 		clientID = siwcBootstrapClientID
 	}
@@ -303,6 +452,14 @@ func StartLoginFlow(ctx context.Context, listenAddr, clientID string) (*LoginFlo
 	if err != nil {
 		return nil, err
 	}
+	nonce, err := generateNonce()
+	if err != nil {
+		return nil, err
+	}
+	hostID, err := loadOrCreateExtAgentHostID(hostIDPath)
+	if err != nil {
+		return nil, fmt.Errorf("load/create ext_agent_host_id: %w", err)
+	}
 	challenge := codeChallengeS256(verifier)
 
 	listener, err := newLoopbackListener(listenAddr)
@@ -310,7 +467,7 @@ func StartLoginFlow(ctx context.Context, listenAddr, clientID string) (*LoginFlo
 		return nil, fmt.Errorf("start loopback callback listener: %w", err)
 	}
 	redirectURI := fmt.Sprintf("http://%s/auth/callback", listener.Addr().String())
-	authorizeURL := buildAuthorizeURL(clientID, redirectURI, state, challenge)
+	authorizeURL := buildAuthorizeURL(clientID, redirectURI, state, nonce, challenge, hostID)
 
 	done := make(chan LoginFlowOutcome, 1)
 	mux := http.NewServeMux()
@@ -333,12 +490,37 @@ func StartLoginFlow(ctx context.Context, listenAddr, clientID string) (*LoginFlo
 			done <- LoginFlowOutcome{Err: fmt.Errorf("callback missing authorization code")}
 			return
 		}
+		// New registration echoes the issued client_id in the callback
+		// itself; use it for the token exchange and as the ID token's
+		// expected audience if present, otherwise fall back to whatever
+		// client_id this attempt was started with (a returning-user login).
+		exchangeClientID := clientID
+		if cb := q.Get("client_id"); cb != "" {
+			exchangeClientID = cb
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte("<html><body>Signed in with ChatGPT. You can close this tab and return to HarnessMesh.</body></html>"))
 
-		tc := newSIWCTokenClient()
-		ts, err := tc.exchangeCode(r.Context(), clientID, code, verifier, redirectURI)
-		done <- LoginFlowOutcome{Tokens: ts, Err: err}
+		ts, err := tc.exchangeCode(r.Context(), exchangeClientID, code, verifier, redirectURI)
+		if err != nil {
+			done <- LoginFlowOutcome{Err: err}
+			return
+		}
+		ts.ExtAgentHostID = hostID
+		if ts.IDToken != "" {
+			sub, verr := idv.Verify(r.Context(), ts.IDToken, ts.ClientID, nonce)
+			if verr != nil {
+				done <- LoginFlowOutcome{Err: fmt.Errorf("ID token validation failed: %w", verr)}
+				return
+			}
+			ts.Subject = sub
+		}
+		if !ts.HasChatGPTPlanUsageGrant() {
+			done <- LoginFlowOutcome{Err: fmt.Errorf("signed in, but ChatGPT plan usage permission was declined or not granted (granted scopes: %v) - re-run and approve it on the consent screen", ts.Scopes)}
+			return
+		}
+		done <- LoginFlowOutcome{Tokens: ts}
 	})
 
 	go func() { _ = server.Serve(listener) }()

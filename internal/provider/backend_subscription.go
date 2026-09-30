@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 
@@ -87,6 +88,57 @@ func (b *SubscriptionBackend) ensureValidToken(ctx context.Context) (*SIWCTokenS
 	return b.tokens, nil
 }
 
+// SIWCModel is one entry from the documented model-discovery endpoint
+// (developers.openai.com/siwc/token-sharing-open-source/models-and-inference:
+// "Show display_name in your UI and pass the selected slug as model in the
+// next step").
+type SIWCModel struct {
+	Slug        string `json:"slug"`
+	DisplayName string `json:"display_name"`
+	Visibility  string `json:"visibility"`
+}
+
+// ListModels queries the authenticated account's actual model catalog via
+// the documented GET https://api.openai.com/v1/models endpoint, filtered
+// to visibility:"list" entries - so callers (CLI, doctor, a future picker
+// UI) verify model availability against the real, signed-in account
+// instead of hardcoding a model id that may not be entitled or may not
+// exist under this name for this account.
+func (b *SubscriptionBackend) ListModels(ctx context.Context) ([]SIWCModel, error) {
+	tokens, err := b.ensureValidToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	modelsURL := strings.TrimSuffix(b.client.responsesURL, "/responses") + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	resp, err := b.client.httpClient.Do(req)
+	if err != nil {
+		return nil, &BackendUnavailableError{Backend: b.name, Reason: err.Error()}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, mapResponsesAPIError(resp.StatusCode, body)
+	}
+	var payload struct {
+		Models []SIWCModel `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("parse models response: %w", err)
+	}
+	out := make([]SIWCModel, 0, len(payload.Models))
+	for _, m := range payload.Models {
+		if m.Visibility == "list" {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
 func (b *SubscriptionBackend) Health(ctx context.Context) error {
 	// A network round trip against the Responses endpoint isn't
 	// documented as safe to do "for free" as a bare health probe (unlike
@@ -99,15 +151,20 @@ func (b *SubscriptionBackend) Health(ctx context.Context) error {
 	return err
 }
 
-// siwcResponsesRequest mirrors the subset of Request fields the Responses
-// API itself accepts - since HarnessMesh's own Request/Response wire types
-// (wire.go) were modeled directly on the Responses API, this is a
-// near-pass-through, unlike OpenAICompatibleBackend's translation to Chat
-// Completions.
+// siwcResponsesRequest mirrors exactly the fields
+// developers.openai.com/siwc/token-sharing-open-source/models-and-inference
+// documents as supported for ChatGPT-plan-usage Responses requests: model,
+// input, temperature, max_output_tokens, tools, tool_choice,
+// parallel_tool_calls - plus the two fields that page states are REQUIRED
+// to specific values (store=false, stream=true). It deliberately has no
+// "instructions" or "previous_response_id" field: neither is documented as
+// supported for this flow (instructions is folded into `input` as a
+// developer-role message instead - see foldInstructionsIntoInput below;
+// previous_response_id is never sent at all, since HarnessMesh's own
+// Request always carries full turn history in `input`).
 type siwcResponsesRequest struct {
 	Model             string          `json:"model"`
 	Input             InputItems      `json:"input"`
-	Instructions      string          `json:"instructions,omitempty"`
 	Stream            bool            `json:"stream"`
 	Store             bool            `json:"store"`
 	Tools             []Tool          `json:"tools,omitempty"`
@@ -115,6 +172,22 @@ type siwcResponsesRequest struct {
 	Temperature       *float64        `json:"temperature,omitempty"`
 	MaxOutputTokens   *int            `json:"max_output_tokens,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+}
+
+// foldInstructionsIntoInput prepends instructions as a developer-role input
+// message, since the documented ChatGPT-plan-usage Responses request shape
+// has no top-level "instructions" field (unlike the general Responses API).
+// Sending it as an undocumented top-level field risks a
+// subscription_sharing_unsupported_capability rejection.
+func foldInstructionsIntoInput(instructions string, input InputItems) InputItems {
+	if instructions == "" {
+		return input
+	}
+	msg := InputItem{Type: "message", Role: "developer", Content: []ContentPart{{Type: "input_text", Text: instructions}}}
+	out := make(InputItems, 0, len(input)+1)
+	out = append(out, msg)
+	out = append(out, input...)
+	return out
 }
 
 // StreamResponse sends req to https://api.openai.com/v1/responses,
@@ -135,7 +208,7 @@ func (b *SubscriptionBackend) StreamResponse(ctx context.Context, req Request, s
 	}
 
 	body, err := json.Marshal(siwcResponsesRequest{
-		Model: req.Model, Input: req.Input, Instructions: req.Instructions,
+		Model: req.Model, Input: foldInstructionsIntoInput(req.Instructions, req.Input),
 		Stream: true, Store: false, Tools: req.Tools, ToolChoice: req.ToolChoice,
 		Temperature: req.Temperature, MaxOutputTokens: req.MaxOutputTokens, ParallelToolCalls: req.ParallelToolCalls,
 	})
@@ -154,17 +227,14 @@ func (b *SubscriptionBackend) StreamResponse(ctx context.Context, req Request, s
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return &UnauthorizedError{}
-	}
-	if resp.StatusCode == 429 {
-		return &RateLimitedError{}
-	}
-	if resp.StatusCode >= 500 {
-		return &BackendUnavailableError{Backend: b.name, Reason: fmt.Sprintf("HTTP %d", resp.StatusCode)}
-	}
-	if resp.StatusCode >= 400 {
-		return &BackendUnavailableError{Backend: b.name, Reason: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Errors (including the documented subscription_sharing_* and
+		// chatpass_v2_scope_not_authorized codes) arrive as an ordinary
+		// JSON body, not a stream, on a non-2xx response - read it whole
+		// and map it per errors-and-recovery.md's documented table
+		// (chatgpt_errors.go), rather than treating every 4xx/5xx alike.
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return mapResponsesAPIError(resp.StatusCode, errBody)
 	}
 
 	return relaySIWCStream(ctx, resp.Body, sink)

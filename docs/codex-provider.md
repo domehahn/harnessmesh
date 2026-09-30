@@ -143,11 +143,13 @@ Because product documentation for a fast-moving CLI can change, re-verify agains
 
 | Type | What it is | Metered under zero-credit mode? |
 | :--- | :--- | :--- |
-| `openai-compatible` | A local/self-hosted server speaking OpenAI's Chat Completions wire (vLLM, Ollama, LM Studio, llama.cpp) | No |
-| `bedrock` | AWS Bedrock via the official AWS SDK v2 `ConverseStream` API, using the standard AWS credential chain | No (add to `denied_backend_types` if you want it forbidden too) |
-| `openai-api` | The real, metered OpenAI API | **Yes - denied by default** |
-| `codex` | The Codex CLI itself, invoked as an inference engine (reuses the existing, tested `internal/agent` Codex adapter) | **Yes - denied by default** |
-| `chatgpt-subscription` | The user's ChatGPT plan entitlement, via OpenAI's official "Sign in with ChatGPT" mechanism - see below | No (metered API/Codex-exec); **yes**, shares the ChatGPT-plan usage allowance with Codex on bundled plans - read the caveat below |
+| `openai-compatible` | A local/self-hosted server speaking OpenAI's Chat Completions wire (vLLM, Ollama, LM Studio, llama.cpp) | Not applicable - no OpenAI account involved |
+| `bedrock` | AWS Bedrock via the official AWS SDK v2 `ConverseStream` API, using the standard AWS credential chain | Not applicable - no OpenAI account involved |
+| `openai-api` | The real, **API-key-billed** OpenAI API | **Yes - API-key-billed usage; denied by default** |
+| `codex` | The Codex CLI itself, invoked as an inference engine (reuses the existing, tested `internal/agent` Codex adapter) | **Yes - Codex process/backend invocation; denied by default** |
+| `chatgpt-subscription` | The user's ChatGPT plan entitlement, via OpenAI's official "Sign in with ChatGPT" mechanism - see below | **No API-key billing, no Codex invocation** - but **yes**, consumes ChatGPT-plan Responses usage, which shares an allowance with Codex on bundled plans - read the caveat below |
+
+**Precise terminology, used consistently below:** "API-key-billed OpenAI usage" means a request authenticated with an `OPENAI_API_KEY` against the metered API (the `openai-api` backend). "ChatGPT-plan Responses usage" means a request authenticated with a ChatGPT-plan-scoped OAuth token against `POST https://api.openai.com/v1/responses` (the `chatgpt-subscription` backend) - this is a real call to that same endpoint, so it is never correct to say this backend makes "zero OpenAI API calls"; what is true, and tested, is that it makes zero *API-key-billed* calls. "Codex process invocation" means the `codex` binary was actually exec'd. "Codex backend invocation" means the `codex` `InferenceBackend` type (`CodexInferenceBackend.StreamResponse`) was called at all - for that backend type these two happen to coincide today, but they are tracked as conceptually distinct counters.
 
 No backend is ever selected merely because credentials happen to exist in the environment (`OPENAI_API_KEY` present does not make the `openai-api` backend reachable) - selection is always explicit, via `default_backend` or an operator-set `X-HarnessMesh-Backend` header, and always re-checked against policy at request time.
 
@@ -161,7 +163,9 @@ As of research conducted 2026-09-30, OpenAI officially and publicly documents a 
 - [developers.openai.com/siwc/token-sharing-open-source/sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) - the concrete OAuth/OIDC flow (PKCE, endpoints, scopes) HarnessMesh's `internal/provider/chatgpt_siwc.go` implements.
 - [github.com/openai/sign-in-with-chatgpt-devkit](https://github.com/openai/sign-in-with-chatgpt-devkit) - the official devkit, targeting *"developers building open-source apps that run on a user's own machine"*.
 
-**How it works:** an OAuth 2.0 + OIDC flow with PKCE against `auth.openai.com` grants an access token scoped `chatgpt.tokens.use.direct` (among others) for `resource=https://api.openai.com/v1`. That token authenticates a normal `POST https://api.openai.com/v1/responses` request - the exact wire protocol this gateway already speaks - but billed against the signed-in user's ChatGPT plan usage allowance, not their separate metered OpenAI API balance.
+**How it works:** an OAuth 2.0 + OIDC flow with PKCE against `auth.openai.com` grants an access token scoped `chatgpt.tokens.use.direct` (among others) for `resource=https://api.openai.com/v1`. That token authenticates a normal `POST https://api.openai.com/v1/responses` request - **this is a real HTTP request to `api.openai.com`, the same host the metered API uses** - the difference is entirely in *how* it's authenticated and billed: an OAuth token scoped to the user's ChatGPT plan, not an `OPENAI_API_KEY`, and it is billed against the signed-in user's ChatGPT plan usage allowance, not their separate, metered, pay-per-token OpenAI API balance.
+
+**What this is not:** Sign in with ChatGPT grants inference access to eligible Responses API requests using the ChatGPT plan. It does **not** expose, read, continue, or otherwise interact with the user's existing ChatGPT conversations, chat history, memory, custom instructions, or any other account context. Each request HarnessMesh sends via this backend is a fresh, stateless Responses API call (`store: false`) containing only the `input` HarnessMesh itself constructs from the current Codex turn - never anything from a browser tab, another device, or a prior ChatGPT session the user may have open. If you want ChatGPT (as a product, with its own conversational context) to participate in a task, that is what the separate MCP collaboration-peer role is for - see [docs/chatgpt-integration.md](chatgpt-integration.md) - not this backend.
 
 **Setup:**
 
@@ -182,9 +186,11 @@ Then configure it as a backend:
 }
 ```
 
-**The caveat - read this before relying on it:** [help.openai.com's "ChatGPT Work and Codex" article](https://help.openai.com/en/articles/20001275-chatgpt-work-and-codex) states that on plans where these features are bundled, *"Codex, ChatGPT Work, ChatGPT for Excel, and Workspace Agents use a shared allowance and credit pool."* This backend never invokes the Codex CLI (`internal/creditguard.BackendCodex` stays at zero, proven by `internal/provider/e2e_test.go`'s `TestE2E_ChatGPTSubscriptionBackend_ZeroOpenAIAPIAndZeroCodex`) and never touches metered OpenAI API billing (`BackendOpenAIAPI` also stays at zero, same test) - both are real, tested guarantees. But it is **not** a usage-free, Codex-independent lane: on Plus/Pro, using it draws from the same allowance your Codex usage draws from. HarnessMesh has no visibility into OpenAI's server-side billing routing beyond what these documents state - this is not something HarnessMesh's own tests can independently verify end-to-end, since doing so would require a real ChatGPT account exercising a real browser consent flow, which no CI environment (or this implementation's own test environment) has.
+**The caveat - read this before relying on it:** [help.openai.com's "ChatGPT Work and Codex" article](https://help.openai.com/en/articles/20001275-chatgpt-work-and-codex) states that on plans where these features are bundled, *"Codex, ChatGPT Work, ChatGPT for Excel, and Workspace Agents use a shared allowance and credit pool."* This backend never invokes the Codex process/backend (`internal/creditguard.BackendCodex` and the process-exec tripwire both stay at zero, proven by `internal/provider/e2e_test.go`'s `TestE2E_ChatGPTSubscriptionBackend_ZeroAPIKeyBilling_ZeroCodex`) and never makes an API-key-billed call (`BackendOpenAIAPI` also stays at zero, same test) - both are real, tested guarantees, tracked by a dedicated `internal/creditguard.BackendChatGPTPlanUsage` counter that is *expected* to be nonzero whenever this backend actually serves a request. But it is **not** a usage-free, Codex-independent lane: on Plus/Pro, using it draws from the same allowance your Codex usage draws from. HarnessMesh has no visibility into OpenAI's server-side billing routing beyond what these documents state - this is not something HarnessMesh's own tests can independently verify end-to-end, since doing so would require a real ChatGPT account exercising a real browser consent flow, which no CI environment (or this implementation's own test environment) has.
 
-**What was not, and could not be, exercised:** the real `auth.openai.com` browser consent screen, with a real ChatGPT account, approving ChatGPT-plan-usage scope, followed by a real `api.openai.com/v1/responses` call billed to that account. Every piece up to that point (PKCE generation, the authorize URL's exact parameters, the loopback callback server, the token-exchange HTTP contract, the Responses-API request/stream-parsing logic) is implemented against the documented spec and tested against fake local servers - see `internal/provider/chatgpt_siwc_test.go` and `backend_subscription_test.go`. Running `harnessmesh provider auth chatgpt` and completing the browser flow yourself is the only way to close that last gap; this documentation will not claim it was done here.
+**The precise, load-bearing claim of this whole feature:** ChatGPT-plan inference through Sign in with ChatGPT works without an OpenAI API key and without invoking the Codex backend. Requests are still sent to the OpenAI Responses API (`https://api.openai.com/v1/responses`) and consume ChatGPT-plan usage according to the user's applicable plan limits/shared allowance.
+
+**What was not, and could not be, exercised:** the real `auth.openai.com` browser consent screen, with a real ChatGPT account, approving ChatGPT-plan-usage scope, followed by a real `api.openai.com/v1/responses` call billed to that account. Every piece up to that point (PKCE generation, the authorize URL's exact parameters, the loopback callback server, the token-exchange HTTP contract, ID-token validation against OpenAI's JWKS, the Responses-API request/stream-parsing logic, and the documented structured error codes) is implemented against the documented spec and tested against fake local servers - see `internal/provider/chatgpt_siwc_test.go` and `backend_subscription_test.go`. Running `harnessmesh provider auth chatgpt` and completing the browser flow yourself is the only way to close that last gap; this documentation will not claim it was done here.
 
 ## Zero-credit mode
 
@@ -292,11 +298,17 @@ Automated tests exercise the full request lifecycle against a fake local backend
 ## Usage accounting
 
 ```text
-OpenAI API:  NOT USED by the zero-credit provider path.
-Codex:       NOT USED by the zero-credit provider path.
+API-key-billed OpenAI API usage:  NOT USED by any zero-credit-mode backend, including chatgpt-subscription.
+Codex process/backend usage:      NOT USED by any zero-credit-mode backend, including chatgpt-subscription.
+ChatGPT-plan Responses usage:     USED if and only if the chatgpt-subscription backend is selected -
+                                   this is real inference usage against the user's ChatGPT plan,
+                                   not a "zero usage" path, even though it is zero-credit-mode-compatible
+                                   (it is not an API-key-billed or Codex call).
 ```
 
-If you explicitly set `zero_credit_mode: false` and configure an `openai-api` or `codex` backend, normal OpenAI API billing / Codex CLI usage applies to those requests - exactly as if you'd called them directly. HarnessMesh does not change OpenAI's or Codex's own billing model; it only guarantees that the zero-credit path never reaches them.
+If you explicitly set `zero_credit_mode: false` and configure an `openai-api` or `codex` backend, normal API-key-billed OpenAI usage / Codex process usage applies to those requests - exactly as if you'd called them directly. HarnessMesh does not change OpenAI's or Codex's own billing model; it only guarantees that requests never reach a backend type not explicitly selected, and that `openai-api`/`codex` specifically are unreachable while `zero_credit_mode` is on.
+
+The `chatgpt-subscription` backend is **not** forbidden by zero-credit mode (it is neither `openai-api` nor `codex`), and using it is **not free**: it consumes the signed-in user's ChatGPT plan usage allowance for every request, per the caveat above. Add `"chatgpt-subscription"` to `denied_backend_types` if you want a deployment where it is unreachable too.
 
 ## The two modes, explicitly
 

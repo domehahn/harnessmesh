@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +38,7 @@ func TestPKCE_VerifierAndChallengeAreWellFormed(t *testing.T) {
 }
 
 func TestBuildAuthorizeURL_ContainsDocumentedParameters(t *testing.T) {
-	u := buildAuthorizeURL("dynamic_agent_client", "http://127.0.0.1:12345/auth/callback", "state123", "challenge123")
+	u := buildAuthorizeURL("dynamic_agent_client", "http://127.0.0.1:12345/auth/callback", "state123", "nonce123", "challenge123", "urn:uuid:host-1")
 	if !strings.HasPrefix(u, siwcAuthorizeURL+"?") {
 		t.Fatalf("expected URL to start with the documented authorize endpoint, got %q", u)
 	}
@@ -47,7 +48,10 @@ func TestBuildAuthorizeURL_ContainsDocumentedParameters(t *testing.T) {
 		"code_challenge_method=S256",
 		"code_challenge=challenge123",
 		"state=state123",
+		"nonce=nonce123",
 		"resource=https%3A%2F%2Fapi.openai.com%2Fv1",
+		"agent_name_hint=HarnessMesh",
+		"ext_agent_host_id=urn%3Auuid%3Ahost-1",
 	} {
 		if !strings.Contains(u, want) {
 			t.Fatalf("expected authorize URL to contain %q, got %s", want, u)
@@ -55,6 +59,43 @@ func TestBuildAuthorizeURL_ContainsDocumentedParameters(t *testing.T) {
 	}
 	if !strings.Contains(u, "chatgpt.tokens.use.direct") {
 		t.Fatalf("expected the documented chatgpt.tokens.use.direct scope in the URL, got %s", u)
+	}
+}
+
+func TestGenerateHostID_StableAcrossLoads(t *testing.T) {
+	path := t.TempDir() + "/host-id"
+	id1, err := loadOrCreateExtAgentHostID(path)
+	if err != nil {
+		t.Fatalf("loadOrCreateExtAgentHostID: %v", err)
+	}
+	if !strings.HasPrefix(id1, "urn:uuid:") {
+		t.Fatalf("expected a urn:uuid: formatted host ID, got %q", id1)
+	}
+	id2, err := loadOrCreateExtAgentHostID(path)
+	if err != nil {
+		t.Fatalf("loadOrCreateExtAgentHostID (2nd load): %v", err)
+	}
+	if id1 != id2 {
+		t.Fatalf("expected the host ID to be stable across loads, got %q then %q", id1, id2)
+	}
+}
+
+func TestAtomicWriteFile_NeverLeavesTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/cred.json"
+	if err := atomicWriteFile(path, []byte(`{"a":1}`), 0600); err != nil {
+		t.Fatalf("atomicWriteFile: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "cred.json" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Fatalf("expected exactly one file (cred.json, no leftover temp file), got %v", names)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,8 +19,10 @@ import (
 // OpenAI's infrastructure or any real ChatGPT account.
 type fakeResponsesServer struct {
 	*httptest.Server
+	mode string // "normal", "unauthorized", "malformed"
+
+	mu       sync.Mutex
 	lastAuth string
-	mode     string // "normal", "unauthorized", "malformed"
 }
 
 func newFakeResponsesServer(mode string) *fakeResponsesServer {
@@ -28,8 +31,16 @@ func newFakeResponsesServer(mode string) *fakeResponsesServer {
 	return f
 }
 
+func (f *fakeResponsesServer) LastAuth() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastAuth
+}
+
 func (f *fakeResponsesServer) handle(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
 	f.lastAuth = r.Header.Get("Authorization")
+	f.mu.Unlock()
 
 	if f.mode == "unauthorized" {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -100,8 +111,8 @@ func TestSubscriptionBackend_NormalStream_UsesChatGPTPlanCounterOnly(t *testing.
 		t.Fatalf("expected 0 Codex invocations, got %d", got)
 	}
 
-	if srv.lastAuth != "Bearer test-access-token" {
-		t.Fatalf("expected the OAuth access token as a bearer token, got %q", srv.lastAuth)
+	if srv.LastAuth() != "Bearer test-access-token" {
+		t.Fatalf("expected the OAuth access token as a bearer token, got %q", srv.LastAuth())
 	}
 
 	var sawText, sawCompleted bool
@@ -191,8 +202,8 @@ func TestSubscriptionBackend_ExpiredTokenIsRefreshed(t *testing.T) {
 	if !refreshCalled {
 		t.Fatalf("expected an expired token to trigger a refresh_token grant")
 	}
-	if responsesSrv.lastAuth != "Bearer refreshed-access" {
-		t.Fatalf("expected the request to use the refreshed access token, got %q", responsesSrv.lastAuth)
+	if responsesSrv.LastAuth() != "Bearer refreshed-access" {
+		t.Fatalf("expected the request to use the refreshed access token, got %q", responsesSrv.LastAuth())
 	}
 
 	persisted, err := loadSIWCTokenSet(tokenPath)
