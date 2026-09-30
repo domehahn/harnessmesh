@@ -289,37 +289,86 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.effectiveTimeout())
 	defer cancel()
 
+	// Build the fallback attempt order: the resolved backend first, then
+	// any policy-allowed fallback.order entries not already tried. This is
+	// the only place fallback is consulted - explicit backend selection
+	// (X-HarnessMesh-Backend) that Resolve itself denies is never silently
+	// retried against a different backend; fallback only engages for a
+	// backend that resolved successfully but then failed to *execute*.
+	attempts := []InferenceBackend{backend}
+	if s.registry.Policy().FallbackEnabled {
+		tried := map[string]bool{backend.Name(): true}
+		for _, fbName := range s.registry.FallbackChain() {
+			if tried[fbName] {
+				continue
+			}
+			tried[fbName] = true
+			if fb, err := s.registry.Resolve(fbName); err == nil {
+				attempts = append(attempts, fb)
+			}
+		}
+	}
+
 	if req.Stream {
-		s.streamHTTP(ctx, w, r, backend, req, requestID, correlationID, start)
+		s.streamHTTP(ctx, w, r, attempts, req, requestID, correlationID, start)
 		return
 	}
-	s.bufferedHTTP(ctx, w, backend, req, requestID, correlationID, start)
+	s.bufferedHTTP(ctx, w, attempts, req, requestID, correlationID, start)
 }
 
-func (s *Server) streamHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, backend InferenceBackend, req Request, requestID, correlationID string, start time.Time) {
+// streamHTTP serves a streaming request. With no fallback configured (the
+// default, and every case this package's non-fallback tests cover), the
+// sole attempt's events are forwarded to the client in real time as they
+// arrive - streaming is never buffered. When fallback.enabled is true and
+// more than one backend is available, each attempt is buffered internally
+// first (so a client never sees a partial stream from a backend that then
+// fails) and only a fully successful attempt's events are replayed to the
+// client; this is a deliberate streaming-latency tradeoff documented in
+// docs/codex-provider.md, scoped to the advanced fallback configuration.
+func (s *Server) streamHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, attempts []InferenceBackend, req Request, requestID, correlationID string, start time.Time) {
 	sink, err := newSSESink(w, r)
 	if err != nil {
 		s.errors.Add(1)
 		writeProviderError(w, http.StatusInternalServerError, err)
 		return
 	}
-	err = s.runBackend(ctx, backend, req, sink)
+
+	var usedBackend InferenceBackend
+	if len(attempts) == 1 {
+		usedBackend = attempts[0]
+		err = s.runBackend(ctx, attempts[0], req, sink)
+	} else {
+		usedBackend, err = s.runWithFallback(ctx, attempts, req, sink)
+	}
+
 	status := "ok"
 	if err != nil {
 		status = "error"
 		s.errors.Add(1)
 		_ = sink.Send(StreamEvent{Type: "error", Error: errorToResponseError(err)})
 	}
-	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Model: req.Model, Backend: backend.Name(), Result: status, LatencyMS: time.Since(start).Milliseconds(), StreamStatus: status})
+	backendName := ""
+	if usedBackend != nil {
+		backendName = usedBackend.Name()
+	}
+	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Model: req.Model, Backend: backendName, Result: status, LatencyMS: time.Since(start).Milliseconds(), StreamStatus: status})
 }
 
-func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, backend InferenceBackend, req Request, requestID, correlationID string, start time.Time) {
+func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, attempts []InferenceBackend, req Request, requestID, correlationID string, start time.Time) {
 	sink := newBufferingSink()
 	var final *Response
+	var usedBackend InferenceBackend
 	errCh := make(chan error, 1)
 	go func() {
 		defer sink.Close()
-		errCh <- s.runBackend(ctx, backend, req, sink)
+		if len(attempts) == 1 {
+			usedBackend = attempts[0]
+			errCh <- s.runBackend(ctx, attempts[0], req, sink)
+		} else {
+			var err error
+			usedBackend, err = s.runWithFallback(ctx, attempts, req, sink)
+			errCh <- err
+		}
 	}()
 
 	for ev := range sink.events {
@@ -328,6 +377,10 @@ func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, backen
 		}
 	}
 	err := <-errCh
+	backend := usedBackend
+	if backend == nil && len(attempts) > 0 {
+		backend = attempts[0]
+	}
 
 	status := "ok"
 	if err != nil {
@@ -345,6 +398,47 @@ func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, backen
 	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Model: req.Model, Backend: backend.Name(), Result: status, LatencyMS: time.Since(start).Milliseconds()})
 	w.Header().Set("X-Request-Id", requestID)
 	writeJSON(w, http.StatusOK, final)
+}
+
+// runWithFallback tries each backend in attempts, in order. Each attempt is
+// buffered internally first; only a fully successful attempt's events are
+// replayed to the real sink, so a client is never shown a partial stream
+// from a backend that ultimately fails. Returns the backend that succeeded
+// (or the last one tried, if all failed) and the last error, if any.
+func (s *Server) runWithFallback(ctx context.Context, attempts []InferenceBackend, req Request, sink Sink) (InferenceBackend, error) {
+	var lastErr error
+	var lastBackend InferenceBackend
+	for _, backend := range attempts {
+		lastBackend = backend
+		attemptSink := newBufferingSink()
+		attemptErrCh := make(chan error, 1)
+		go func() {
+			defer attemptSink.Close()
+			attemptErrCh <- s.runBackend(ctx, backend, req, attemptSink)
+		}()
+
+		var events []StreamEvent
+		for ev := range attemptSink.events {
+			events = append(events, ev)
+		}
+		err := <-attemptErrCh
+		if err != nil {
+			lastErr = err
+			select {
+			case <-ctx.Done():
+				return backend, ctx.Err()
+			default:
+			}
+			continue
+		}
+		for _, ev := range events {
+			if sErr := sink.Send(ev); sErr != nil {
+				return backend, sErr
+			}
+		}
+		return backend, nil
+	}
+	return lastBackend, lastErr
 }
 
 func (s *Server) runBackend(ctx context.Context, backend InferenceBackend, req Request, sink Sink) error {

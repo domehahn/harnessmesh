@@ -245,6 +245,81 @@ func TestServer_BackendFailure_NoSilentFallbackToForbidden(t *testing.T) {
 	}
 }
 
+func TestServer_FallbackToAllowedBackendOnFailure(t *testing.T) {
+	failingPrimary := &fakeInferenceBackend{name: "primary", typ: "openai-compatible", streamErr: &BackendUnavailableError{Backend: "primary", Reason: "connection refused"}}
+	healthyFallback := &fakeInferenceBackend{name: "secondary", typ: "openai-compatible", events: simpleTextEvents("resp_fb", "from fallback")}
+
+	reg := newTestRegistry(t, map[string]InferenceBackend{"primary": failingPrimary, "secondary": healthyFallback}, Policy{
+		ZeroCreditMode: true, DefaultBackend: "primary", FallbackEnabled: true, FallbackOrder: []string{"secondary"},
+	})
+	s := NewServer(testProviderConfig("secret"), reg)
+	h := s.Handler()
+
+	rec := doProviderReq(t, h, "secret", map[string]any{"model": "test", "input": "hi"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after falling back to the healthy allowed backend, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Output[0].Content[0].Text != "from fallback" {
+		t.Fatalf("expected the fallback backend's output, got %q", resp.Output[0].Content[0].Text)
+	}
+	if failingPrimary.invocations != 1 {
+		t.Fatalf("expected the primary backend to be tried exactly once, got %d", failingPrimary.invocations)
+	}
+	if healthyFallback.invocations != 1 {
+		t.Fatalf("expected the fallback backend to be tried exactly once, got %d", healthyFallback.invocations)
+	}
+}
+
+func TestServer_FallbackToAllowedBackendOnFailure_Streaming(t *testing.T) {
+	failingPrimary := &fakeInferenceBackend{name: "primary", typ: "openai-compatible", streamErr: &BackendUnavailableError{Backend: "primary", Reason: "connection refused"}}
+	healthyFallback := &fakeInferenceBackend{name: "secondary", typ: "openai-compatible", events: simpleTextEvents("resp_fb", "from fallback")}
+
+	reg := newTestRegistry(t, map[string]InferenceBackend{"primary": failingPrimary, "secondary": healthyFallback}, Policy{
+		ZeroCreditMode: true, DefaultBackend: "primary", FallbackEnabled: true, FallbackOrder: []string{"secondary"},
+	})
+	s := NewServer(testProviderConfig("secret"), reg)
+	h := s.Handler()
+
+	b, _ := json.Marshal(map[string]any{"model": "test", "input": "hi", "stream": true})
+	r := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(b))
+	r.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "from fallback") {
+		t.Fatalf("expected the fallback backend's output in the SSE stream, got: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"type":"error"`) {
+		t.Fatalf("expected no error event once fallback succeeded, got: %s", rec.Body.String())
+	}
+}
+
+func TestServer_AllBackendsFailReturnsError(t *testing.T) {
+	primary := &fakeInferenceBackend{name: "primary", typ: "openai-compatible", streamErr: &BackendUnavailableError{Backend: "primary", Reason: "down"}}
+	secondary := &fakeInferenceBackend{name: "secondary", typ: "openai-compatible", streamErr: &BackendUnavailableError{Backend: "secondary", Reason: "also down"}}
+
+	reg := newTestRegistry(t, map[string]InferenceBackend{"primary": primary, "secondary": secondary}, Policy{
+		ZeroCreditMode: true, DefaultBackend: "primary", FallbackEnabled: true, FallbackOrder: []string{"secondary"},
+	})
+	s := NewServer(testProviderConfig("secret"), reg)
+	h := s.Handler()
+
+	rec := doProviderReq(t, h, "secret", map[string]any{"model": "test", "input": "hi"}, nil)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected an error when every allowed backend fails, got 200")
+	}
+	if primary.invocations != 1 || secondary.invocations != 1 {
+		t.Fatalf("expected both backends to be tried exactly once, got primary=%d secondary=%d", primary.invocations, secondary.invocations)
+	}
+}
+
 func TestServer_Readyz_NotReadyWithOnlyForbiddenBackend(t *testing.T) {
 	openaiBackend := &fakeInferenceBackend{name: "openai", typ: "openai-api"}
 	reg := newTestRegistry(t, map[string]InferenceBackend{"openai": openaiBackend}, Policy{ZeroCreditMode: true, DefaultBackend: "openai"})
