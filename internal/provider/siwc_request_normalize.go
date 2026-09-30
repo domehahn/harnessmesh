@@ -118,6 +118,15 @@ type siwcNormalizedRequest struct {
 	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
 	Reasoning         json.RawMessage `json:"reasoning,omitempty"`
+	// Include/PromptCacheKey/Text/ClientMetadata: real fields the current
+	// Codex VS Code extension sends, none of which are on SIWC's
+	// forbidden-field list - forwarded verbatim rather than silently
+	// dropped (see Request's own field docs in wire.go for per-field
+	// verification status).
+	Include        []string        `json:"include,omitempty"`
+	PromptCacheKey string          `json:"prompt_cache_key,omitempty"`
+	Text           json.RawMessage `json:"text,omitempty"`
+	ClientMetadata json.RawMessage `json:"client_metadata,omitempty"`
 }
 
 // normalizeForSIWC derives a SIWC-contract-compliant request from the
@@ -169,5 +178,9 @@ func normalizeForSIWC(req Request) (*siwcNormalizedRequest, error) {
 		ToolChoice:        req.ToolChoice,
 		ParallelToolCalls: req.ParallelToolCalls,
 		Reasoning:         req.Reasoning,
+		Include:           req.Include,
+		PromptCacheKey:    req.PromptCacheKey,
+		Text:              req.Text,
+		ClientMetadata:    req.ClientMetadata,
 	}, nil
 }

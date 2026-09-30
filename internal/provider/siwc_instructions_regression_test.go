@@ -118,6 +118,10 @@ var siwcTopLevelFieldDispositions = []siwcTopLevelFieldDisposition{
 	{"metadata", "rejected"},
 	{"reasoning", "forwarded"},
 	{"store", "normalized"},
+	{"include", "forwarded"},
+	{"prompt_cache_key", "forwarded"},
+	{"text", "forwarded"},
+	{"client_metadata", "forwarded"},
 }
 
 // TestSIWCNormalize_NoFieldSilentlyDiscarded proves, for every currently
@@ -142,6 +146,10 @@ func TestSIWCNormalize_NoFieldSilentlyDiscarded(t *testing.T) {
 		"metadata":             `{"k":"v"}`,
 		"reasoning":            `{"effort":"low"}`,
 		"store":                `false`,
+		"include":              `["reasoning.encrypted_content"]`,
+		"prompt_cache_key":     `"cache-key-1"`,
+		"text":                 `{"format":{"type":"text"}}`,
+		"client_metadata":      `{"session_id":"abc"}`,
 	}
 
 	for _, d := range siwcTopLevelFieldDispositions {

@@ -179,10 +179,25 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleModels implements GET /v1/models using the documented OpenAI Model
+// object shape (developers.openai.com/api/reference/resources/models,
+// fetched 2026-09-30: id, object:"model", created, owned_by - the latter
+// two REQUIRED fields this endpoint previously omitted). That omission is
+// the confirmed root cause of a real Codex app-server decode failure
+// ("failed to decode models response: Data at line 1 column 98") - "valid
+// JSON" was not sufficient; Codex's model-catalog deserializer expects
+// the standard, complete Model object, not a minimal custom shape.
+// backend_type is kept as an additional, non-standard field for
+// HarnessMesh's own diagnostic use; extra fields are standard-permitted
+// and ignored by conforming JSON deserializers.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	created := time.Now().Unix()
 	var models []map[string]any
 	for name, b := range s.registry.Backends() {
-		models = append(models, map[string]any{"id": name, "object": "model", "backend_type": b.Type()})
+		models = append(models, map[string]any{
+			"id": name, "object": "model", "created": created, "owned_by": "harnessmesh",
+			"backend_type": b.Type(),
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
 }

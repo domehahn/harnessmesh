@@ -33,22 +33,24 @@ type SubscriptionBackend struct {
 	name      string
 	tokenPath string
 	client    *siwcTokenClient
-	// requestDiagnostics is nil (a complete no-op) unless explicitly opted
-	// into via HARNESSMESH_SIWC_DEBUG=1 or injected by a test.
+	// requestDiagnostics and streamDiagnostics are nil (complete no-ops)
+	// unless explicitly opted into via HARNESSMESH_SIWC_DEBUG=1 or
+	// injected by a test.
 	requestDiagnostics RequestShapeDiagnosticsSink
+	streamDiagnostics  StreamEventDiagnosticsSink
 
 	mu     sync.Mutex
 	tokens *SIWCTokenSet
 }
 
 func NewSubscriptionBackend(name string) *SubscriptionBackend {
-	return &SubscriptionBackend{name: name, tokenPath: DefaultSIWCTokenPath(), client: newSIWCTokenClient(), requestDiagnostics: requestShapeDiagnosticsSinkFromEnv()}
+	return &SubscriptionBackend{name: name, tokenPath: DefaultSIWCTokenPath(), client: newSIWCTokenClient(), requestDiagnostics: requestShapeDiagnosticsSinkFromEnv(), streamDiagnostics: streamEventDiagnosticsSinkFromEnv()}
 }
 
 // NewSubscriptionBackendWithTokenPath is used by tests (and can be used by
 // operators via config) to point at a non-default credential file.
 func NewSubscriptionBackendWithTokenPath(name, tokenPath string) *SubscriptionBackend {
-	return &SubscriptionBackend{name: name, tokenPath: tokenPath, client: newSIWCTokenClient(), requestDiagnostics: requestShapeDiagnosticsSinkFromEnv()}
+	return &SubscriptionBackend{name: name, tokenPath: tokenPath, client: newSIWCTokenClient(), requestDiagnostics: requestShapeDiagnosticsSinkFromEnv(), streamDiagnostics: streamEventDiagnosticsSinkFromEnv()}
 }
 
 func (b *SubscriptionBackend) Name() string { return b.name }
@@ -204,13 +206,30 @@ func (b *SubscriptionBackend) StreamResponse(ctx context.Context, req Request, s
 		return mapResponsesAPIError(resp.StatusCode, errBody)
 	}
 
-	return relaySIWCStream(ctx, resp.Body, sink)
+	return relaySIWCStream(ctx, resp.Body, sink, newStreamCorrelationID(), b.streamDiagnostics)
 }
 
 // relaySIWCStream reads the server's own Responses-API SSE stream and
 // forwards each event to sink, dropping only truly malformed lines (with a
 // stream error) rather than silently swallowing them.
-func relaySIWCStream(ctx context.Context, body io.Reader, sink Sink) error {
+// relaySIWCStream reads the server's own Responses-API SSE stream and
+// forwards each event to sink byte-for-byte via RawEventSink when the sink
+// supports it (always true for the real HTTP path - sseSink implements
+// it), falling back to the typed StreamEvent Send path only for sinks that
+// don't (test doubles, and the bufferingSink path - which SIWC's
+// normalizer makes unreachable in practice since it always forces
+// stream=true). The raw path is what makes relaying real upstream events
+// lossless: StreamEvent/Response/OutputItem/ContentPart only model a
+// curated field subset, and round-tripping an event through them (parse,
+// reconstruct, re-marshal) was a confirmed real defect - an upstream
+// response.completed containing a non-empty "output" array was observed
+// reaching the client as "output": [] after that round trip, and a real
+// Codex app-server logged repeated "OutputTextDelta without active item"
+// against the reconstructed stream. Diagnostics (correlationID,
+// diagnostics) are opt-in and log only safe, redacted fields - see
+// siwc_stream_diagnostics.go.
+func relaySIWCStream(ctx context.Context, body io.Reader, sink Sink, correlationID string, diagnostics StreamEventDiagnosticsSink) error {
+	raw, rawCapable := sink.(RawEventSink)
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	var pendingType string
@@ -231,18 +250,47 @@ func relaySIWCStream(ctx context.Context, body io.Reader, sink Sink) error {
 			if data == "" {
 				continue
 			}
-			var ev StreamEvent
-			if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			var probe streamEventProbe
+			if err := json.Unmarshal([]byte(data), &probe); err != nil {
 				_ = sink.Send(StreamEvent{Type: "error", Error: &ResponseError{Code: "malformed_backend_event", Message: "backend produced a malformed stream event", Type: "backend_error"}})
 				return &StreamInterruptedError{Reason: "malformed backend event"}
 			}
-			if ev.Type == "" {
-				ev.Type = pendingType
+			evType := probe.Type
+			if evType == "" {
+				evType = pendingType
 			}
-			if err := sink.Send(ev); err != nil {
-				return err
+
+			if diagnostics != nil {
+				d := probe.toDiagnostic(correlationID, "upstream")
+				d.EventType = evType
+				diagnostics.RecordStreamEvent(d)
 			}
-			if ev.Type == "response.completed" || ev.Type == "response.failed" {
+
+			if rawCapable {
+				if err := raw.SendRaw(evType, json.RawMessage(data)); err != nil {
+					return err
+				}
+			} else {
+				var ev StreamEvent
+				if err := json.Unmarshal([]byte(data), &ev); err != nil {
+					_ = sink.Send(StreamEvent{Type: "error", Error: &ResponseError{Code: "malformed_backend_event", Message: "backend produced a malformed stream event", Type: "backend_error"}})
+					return &StreamInterruptedError{Reason: "malformed backend event"}
+				}
+				if ev.Type == "" {
+					ev.Type = pendingType
+				}
+				if err := sink.Send(ev); err != nil {
+					return err
+				}
+			}
+
+			if diagnostics != nil {
+				d := probe.toDiagnostic(correlationID, "downstream")
+				d.EventType = evType
+				diagnostics.RecordStreamEvent(d)
+			}
+
+			if evType == "response.completed" || evType == "response.failed" {
 				return nil
 			}
 		}

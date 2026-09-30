@@ -51,6 +51,26 @@ type Sink interface {
 	Done() <-chan struct{}
 }
 
+// RawEventSink is implemented by sinks that can forward an upstream
+// Responses API SSE event's data payload as raw, untouched bytes -
+// preserving every field verbatim, including ones the typed StreamEvent
+// struct doesn't model - rather than round-tripping the event through
+// StreamEvent (parse into the typed struct, then re-marshal it), which
+// silently drops any JSON field StreamEvent/Response/OutputItem don't
+// explicitly capture. A backend that already has real upstream SSE bytes
+// to relay (SubscriptionBackend's relaySIWCStream) must prefer this over
+// Sink.Send whenever the sink supports it; Sink.Send remains the fallback
+// for sinks that don't (and for backends, like the local/OpenAI-compatible
+// ones, that synthesize StreamEvents themselves rather than relaying real
+// upstream bytes - they have no raw payload to preserve in the first
+// place).
+type RawEventSink interface {
+	// SendRaw writes one SSE event using data verbatim as the "data:"
+	// payload - data is never re-marshaled, re-parsed, or otherwise
+	// modified. eventType is the SSE "event:" line's value.
+	SendRaw(eventType string, data json.RawMessage) error
+}
+
 // sseSink writes StreamEvents as Server-Sent Events to an http.ResponseWriter,
 // flushing after every event so partial output reaches the client
 // immediately rather than being buffered - streaming must never be faked by
@@ -99,6 +119,17 @@ func (s *sseSink) Send(ev StreamEvent) error {
 
 func (s *sseSink) Done() <-chan struct{} {
 	return s.done
+}
+
+// SendRaw implements RawEventSink: data is written verbatim, never
+// re-marshaled - this is the mechanism that makes relaying a real SIWC
+// upstream event lossless (see relaySIWCStream in backend_subscription.go).
+func (s *sseSink) SendRaw(eventType string, data json.RawMessage) error {
+	if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", eventType, data); err != nil {
+		return err
+	}
+	s.flusher.Flush()
+	return nil
 }
 
 // bufferingSink accumulates events for a non-streaming request: the server

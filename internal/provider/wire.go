@@ -48,6 +48,38 @@ type Request struct {
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
 	Metadata           map[string]any  `json:"metadata,omitempty"`
 
+	// Include is the documented Responses API "include" parameter - an
+	// array of ResponseIncludable enum values (developers.openai.com/api/
+	// reference/resources/responses/methods/create.md, fetched
+	// 2026-09-30: "Specify additional output data to include in the model
+	// response... reasoning.encrypted_content" among others). Forwarded
+	// verbatim; it is not on SIWC's forbidden-field list, and is how a
+	// caller requests reasoning.encrypted_content for stateless
+	// (store:false) reasoning continuation.
+	Include []string `json:"include,omitempty"`
+	// PromptCacheKey is the real current Codex VS Code extension's
+	// "prompt_cache_key" field - distinct from the forbidden
+	// "prompt_cache_retention" (a different, unrelated field name; this
+	// one is not on SIWC's forbidden-field list). Its precise documented
+	// semantics could not be confirmed in the pages this package could
+	// fetch; forwarded verbatim as UNVERIFIED-but-not-excluded, consistent
+	// with this package's policy of not rejecting on mere suspicion.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// Text is the real current Codex VS Code extension's "text" top-level
+	// field. Its precise documented shape could not be confirmed with
+	// confidence in the pages this package could fetch (conflicting
+	// signals from a large, paginated reference page); kept fully opaque
+	// (json.RawMessage) so it is forwarded verbatim regardless of its
+	// actual shape, rather than guessing a type. UNVERIFIED-but-not-
+	// excluded - not on SIWC's forbidden-field list.
+	Text json.RawMessage `json:"text,omitempty"`
+	// ClientMetadata is the real current Codex VS Code extension's
+	// "client_metadata" top-level field. Not found in the official
+	// Responses reference pages this package could fetch, and not on
+	// SIWC's forbidden-field list; forwarded verbatim as opaque,
+	// UNVERIFIED-but-not-excluded client-supplied metadata.
+	ClientMetadata json.RawMessage `json:"client_metadata,omitempty"`
+
 	// RawKeys captures every top-level JSON key actually present in the
 	// original request body (regardless of whether a typed field above
 	// models it), so a route-specific validator - see
