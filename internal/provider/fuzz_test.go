@@ -86,6 +86,15 @@ func FuzzInputItemsUnmarshal(f *testing.F) {
 	f.Add(`[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"x"}]}]`)
 	f.Add(`[{"type":"function_call","call_id":"c1","name":"f","arguments":"{}"}]`)
 	f.Add(`[{"type":"unknown_future_type","foo":"bar"}]`)
+	f.Add(`[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"f","parameters":{"type":"object","properties":{}}}]}]`)
+	f.Add(`[{"type":"additional_tools","role":"developer","tools":[]}]`)
+	f.Add(`[{"type":"additional_tools","role":"developer"}]`)
+	f.Add(`[{"type":"additional_tools","tools":[{"type":"function","name":"f"}]}]`)
+	f.Add(`[{"type":"additional_tools","role":"user","tools":[{"type":"function","name":"f"}]}]`)
+	f.Add(`[{"type":"additional_tools","role":"developer","tools":"not-an-array"}]`)
+	f.Add(`[{"type":"additional_tools","role":"developer","tools":[123]}]`)
+	f.Add(`[{"type":"additional_tools","role":"developer","tools":[{"type":"web_search"}]}]`)
+	f.Add(`[{"type":"computer_call","call_id":"c1"}]`)
 
 	f.Fuzz(func(t *testing.T, data string) {
 		defer func() {

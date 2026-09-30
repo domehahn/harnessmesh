@@ -63,12 +63,14 @@ func (it *InputItems) UnmarshalJSON(data []byte) error {
 	}
 	var asArray []InputItem
 	if err := json.Unmarshal(data, &asArray); err != nil {
-		var unsupported *UnsupportedInputItemTypeError
-		if errors.As(err, &unsupported) {
-			// A specific, already-typed per-item error is more useful than
-			// the generic "expected string or array" wrapper below - the
-			// top-level shape WAS a valid array, only one item's type was
-			// unrecognized.
+		// A specific, already-typed per-item compatibility error is more
+		// useful than the generic "expected string or array" wrapper below
+		// - the top-level shape WAS a valid array, only one item failed a
+		// specific, named compatibility check.
+		var unsupportedType *UnsupportedResponsesInputItemTypeError
+		var unsupportedCapability *UnsupportedSIWCCapabilityError
+		var malformed *MalformedInputItemError
+		if errors.As(err, &unsupportedType) || errors.As(err, &unsupportedCapability) || errors.As(err, &malformed) {
 			return err
 		}
 		return fmt.Errorf("input: expected string or array of input items: %w", err)
@@ -164,29 +166,104 @@ func (c Content) MarshalJSON() ([]byte, error) {
 	return json.Marshal(c.parts)
 }
 
-// UnsupportedInputItemTypeError is returned when an input item's "type" is
-// not one of the Responses item types HarnessMesh actively models
-// ("message", "function_call", "function_call_output", "reasoning"). An
-// unrecognized type is rejected outright with this specific, typed error -
-// never silently passed through unexamined (which risks forwarding an item
-// HarnessMesh has subtly mis-serialized) and never silently stripped
-// (which would lose data without telling the caller).
-type UnsupportedInputItemTypeError struct {
+// This package distinguishes three distinct compatibility-failure modes
+// for an input item, rather than collapsing them into one generic error,
+// per an explicit real-account audit requirement: fixing one Codex-emitted
+// item type per real failure is not sustainable, so each failure mode must
+// say precisely which kind of gap it is.
+//
+//   - UnsupportedResponsesInputItemTypeError: the item's "type" is not
+//     found anywhere in the current official Responses API input-item
+//     schema this package could verify (developers.openai.com/api/reference/
+//     resources/responses, fetched 2026-09-30) - a genuinely unknown or
+//     non-schema type.
+//   - UnsupportedSIWCCapabilityError: the item's "type" (or, for
+//     additional_tools, a tool definition's "type") IS a real, documented
+//     Responses item/tool type, but ChatGPT-plan-usage / SIWC's documented
+//     preview scope does not cover it - principally hosted tools
+//     (computer_call, file_search_call, web_search_call, tool_search_call/
+//     tool_search_output) that require OpenAI-hosted execution, which the
+//     SIWC docs this package could fetch never describe as available to
+//     open-source/locally-hosted apps. additional_tools support is NOT
+//     blanket permission to enable every hosted Responses tool.
+//   - MalformedInputItemError: the item's "type" is both known AND
+//     SIWC-supported, but its shape doesn't satisfy that type's documented
+//     structural requirements (e.g. additional_tools with a missing/empty
+//     tools array, or a non-"developer" role).
+type UnsupportedResponsesInputItemTypeError struct {
 	Type string
 }
 
-func (e *UnsupportedInputItemTypeError) Error() string {
+func (e *UnsupportedResponsesInputItemTypeError) Error() string {
 	return fmt.Sprintf("unsupported input item type %q", e.Type)
+}
+
+// UnsupportedSIWCCapabilityError is returned for a real, documented
+// Responses API capability (an item type or a tool type) that is outside
+// SIWC/ChatGPT-plan-usage's documented preview scope - most commonly a
+// hosted tool that requires OpenAI-side execution this locally-hosted
+// gateway cannot and does not claim to support.
+type UnsupportedSIWCCapabilityError struct {
+	Capability string
+}
+
+func (e *UnsupportedSIWCCapabilityError) Error() string {
+	return fmt.Sprintf("capability %q is not supported under SIWC/ChatGPT-plan usage", e.Capability)
+}
+
+// MalformedInputItemError is returned for a known, SIWC-supported item
+// type whose shape violates that type's documented structural
+// requirements.
+type MalformedInputItemError struct {
+	Type   string
+	Reason string
+}
+
+func (e *MalformedInputItemError) Error() string {
+	return fmt.Sprintf("malformed %s input item: %s", e.Type, e.Reason)
+}
+
+// siwcHostedResponsesItemTypes are real, documented Responses API input
+// item types (developers.openai.com/api/reference/resources/responses)
+// that represent OpenAI-hosted tool execution - outside what SIWC's
+// documented preview scope covers for a locally-hosted open-source app.
+// Recognizing them (rather than falling through to "unknown type") lets
+// HarnessMesh give a precise UnsupportedSIWCCapabilityError instead of a
+// generic unsupported-type error.
+var siwcHostedResponsesItemTypes = map[string]bool{
+	"computer_call":        true,
+	"computer_call_output": true,
+	"file_search_call":     true,
+	"web_search_call":      true,
+	"tool_search_call":     true,
+	"tool_search_output":   true,
+}
+
+// siwcSupportedToolTypes are the tool "type" values SIWC's documentation
+// describes as supported inside an additional_tools item: plain function
+// tools and custom tools. Any other tool type embedded in
+// additional_tools.tools (e.g. a hosted "web_search"/"computer_use_preview"/
+// "file_search"/"code_interpreter"/"mcp" tool) is rejected as an
+// unsupported SIWC capability - additional_tools support is not blanket
+// permission to enable every hosted Responses tool.
+var siwcSupportedToolTypes = map[string]bool{
+	"function": true,
+	"custom":   true,
 }
 
 // InputItem is a discriminated union over the Responses API input item
 // "type" field. HarnessMesh models exactly the item types Codex is known
-// to send: "message", "function_call", "function_call_output", and
-// "reasoning" (required so a prior turn's reasoning item can be echoed
-// back as input on the next stateless request - SIWC requires store:false,
-// so nothing is retained server-side between turns). Any JSON field
-// present on a recognized item that isn't one of the named fields below -
-// including fields this package doesn't interpret, like a reasoning item's
+// to send AND that SIWC's documented preview scope supports: "message",
+// "function_call", "function_call_output", "reasoning" (required so a
+// prior turn's reasoning item can be echoed back as input on the next
+// stateless request - SIWC requires store:false, so nothing is retained
+// server-side between turns), and "additional_tools" (function/custom
+// tools made available starting at this item's position in input - see
+// developers.openai.com/api/reference/resources/responses, fetched
+// 2026-09-30: "A list of additional tools made available at this item"
+// with role:"developer" and a tools array). Any JSON field present on a
+// recognized item that isn't one of the named fields below - including
+// fields this package doesn't interpret, like a reasoning item's
 // "summary"/"encrypted_content" payload - is preserved losslessly in Extra
 // and re-emitted verbatim, rather than silently dropped.
 type InputItem struct {
@@ -206,12 +283,20 @@ type InputItem struct {
 	// type == "reasoning": ID/Status only - its actual reasoning payload
 	// (summary, encrypted_content, ...) is intentionally NOT modeled here
 	// and lives entirely in Extra, since HarnessMesh never interprets it.
+	// type == "additional_tools": Role (must be "developer") and Tools.
 	ID        string
 	CallID    string
 	Name      string
 	Arguments string
 	Output    string
 	Status    string
+
+	// Tools holds an additional_tools item's tool definitions, each
+	// preserved as raw JSON exactly as received - including nested JSON
+	// Schema "parameters" - rather than decoded into a lossy shape. A
+	// []json.RawMessage marshals back to a JSON array element-wise, so the
+	// original array round-trips byte-for-byte.
+	Tools []json.RawMessage
 
 	// Extra preserves every JSON field on this item not already modeled
 	// above.
@@ -301,8 +386,53 @@ func (it *InputItem) UnmarshalJSON(data []byte) error {
 				return err
 			}
 		}
+	case "additional_tools":
+		if err := assignStringField("role", &item.Role); err != nil {
+			return err
+		}
+		// The documented shape's role is a fixed "developer" - no other
+		// value is described anywhere this package could verify, so
+		// anything else (including a missing role) is malformed rather
+		// than silently accepted or silently defaulted.
+		if item.Role == "" {
+			return &MalformedInputItemError{Type: typ, Reason: `missing required "role" field (must be "developer")`}
+		}
+		if item.Role != "developer" {
+			return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf(`"role" must be "developer", got %q`, item.Role)}
+		}
+
+		toolsRaw, ok := raw["tools"]
+		if !ok {
+			return &MalformedInputItemError{Type: typ, Reason: `missing required "tools" field`}
+		}
+		var tools []json.RawMessage
+		if err := json.Unmarshal(toolsRaw, &tools); err != nil {
+			return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf(`"tools" must be a JSON array: %v`, err)}
+		}
+		if len(tools) == 0 {
+			return &MalformedInputItemError{Type: typ, Reason: `"tools" must be non-empty`}
+		}
+		for i, rawTool := range tools {
+			var probe struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(rawTool, &probe); err != nil {
+				return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf("tools[%d] is not a valid tool definition object: %v", i, err)}
+			}
+			if probe.Type == "" {
+				return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf(`tools[%d] is missing required "type" field`, i)}
+			}
+			if !siwcSupportedToolTypes[probe.Type] {
+				return &UnsupportedSIWCCapabilityError{Capability: fmt.Sprintf("additional_tools tool type %q", probe.Type)}
+			}
+		}
+		item.Tools = tools
+		delete(item.Extra, "tools")
 	default:
-		return &UnsupportedInputItemTypeError{Type: typ}
+		if siwcHostedResponsesItemTypes[typ] {
+			return &UnsupportedSIWCCapabilityError{Capability: fmt.Sprintf("input item type %q", typ)}
+		}
+		return &UnsupportedResponsesInputItemTypeError{Type: typ}
 	}
 
 	*it = item
@@ -385,6 +515,15 @@ func (it InputItem) MarshalJSON() ([]byte, error) {
 				return nil, err
 			}
 		}
+	case "additional_tools":
+		if err := setStr("role", it.Role); err != nil {
+			return nil, err
+		}
+		toolsJSON, err := json.Marshal(it.Tools)
+		if err != nil {
+			return nil, err
+		}
+		out["tools"] = toolsJSON
 	}
 
 	return json.Marshal(out)

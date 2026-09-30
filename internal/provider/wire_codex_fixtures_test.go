@@ -147,15 +147,32 @@ func TestCodexFixture_ToolLoop_FullSuccessfulContinuation(t *testing.T) {
 // silently accept an item type the current Codex contract is not known to
 // send and this package does not claim to support.
 func TestCodexFixture_UnknownItemType_Rejected(t *testing.T) {
-	body := `{"model":"x","input":[{"type":"computer_call","action":{"type":"click","x":1,"y":2}}]}`
+	body := `{"model":"x","input":[{"type":"multi_agent_call","agents":["a","b"]}]}`
 	var req Request
 	err := json.Unmarshal([]byte(body), &req)
 	if err == nil {
 		t.Fatalf("expected an unsupported item type to be rejected, not silently accepted")
 	}
-	if _, ok := err.(*UnsupportedInputItemTypeError); !ok {
+	if _, ok := err.(*UnsupportedResponsesInputItemTypeError); !ok {
 		// UnmarshalJSON on InputItems may wrap other errors, but an
 		// unsupported-type error must always surface as this exact type.
-		t.Fatalf("expected *UnsupportedInputItemTypeError, got %T: %v", err, err)
+		t.Fatalf("expected *UnsupportedResponsesInputItemTypeError, got %T: %v", err, err)
+	}
+}
+
+// TestCodexFixture_HostedItemType_RejectedAsUnsupportedSIWCCapability
+// proves a real, documented Responses item type requiring OpenAI-hosted
+// execution (outside SIWC's documented preview scope) is rejected with
+// the specific UnsupportedSIWCCapabilityError, not conflated with a
+// genuinely unknown/non-schema type.
+func TestCodexFixture_HostedItemType_RejectedAsUnsupportedSIWCCapability(t *testing.T) {
+	body := `{"model":"x","input":[{"type":"web_search_call","status":"completed"}]}`
+	var req Request
+	err := json.Unmarshal([]byte(body), &req)
+	if err == nil {
+		t.Fatalf("expected a hosted web_search_call item to be rejected, not silently accepted")
+	}
+	if _, ok := err.(*UnsupportedSIWCCapabilityError); !ok {
+		t.Fatalf("expected *UnsupportedSIWCCapabilityError, got %T: %v", err, err)
 	}
 }

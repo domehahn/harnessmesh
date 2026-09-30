@@ -214,20 +214,35 @@ func TestInputItem_FunctionCallOutput_PreservesTypeCallIDOutput(t *testing.T) {
 	}
 }
 
-// F) an unknown/unsupported item type fails with a typed compatibility
-// error, not silent field loss.
+// F) a genuinely unknown/non-schema item type fails with
+// UnsupportedResponsesInputItemTypeError, not silent field loss.
 func TestInputItem_UnknownType_RejectedWithTypedError(t *testing.T) {
 	var it InputItem
-	err := json.Unmarshal([]byte(`{"type":"computer_call","action":{"type":"click"}}`), &it)
+	err := json.Unmarshal([]byte(`{"type":"multi_agent_call","agents":["a","b"]}`), &it)
 	if err == nil {
 		t.Fatalf("expected an unknown input item type to be rejected")
 	}
-	unsupported, ok := err.(*UnsupportedInputItemTypeError)
+	unsupported, ok := err.(*UnsupportedResponsesInputItemTypeError)
 	if !ok {
-		t.Fatalf("expected *UnsupportedInputItemTypeError, got %T: %v", err, err)
+		t.Fatalf("expected *UnsupportedResponsesInputItemTypeError, got %T: %v", err, err)
 	}
-	if unsupported.Type != "computer_call" {
+	if unsupported.Type != "multi_agent_call" {
 		t.Fatalf("expected the error to name the unsupported type, got %q", unsupported.Type)
+	}
+}
+
+// A known, documented Responses item type representing OpenAI-hosted tool
+// execution (outside SIWC's documented preview scope) must be rejected
+// with the more specific UnsupportedSIWCCapabilityError, not the generic
+// unknown-type error - these are different compatibility-failure modes.
+func TestInputItem_HostedType_RejectedAsUnsupportedSIWCCapability(t *testing.T) {
+	var it InputItem
+	err := json.Unmarshal([]byte(`{"type":"computer_call","call_id":"c1","action":{"type":"click"}}`), &it)
+	if err == nil {
+		t.Fatalf("expected a hosted computer_call item to be rejected")
+	}
+	if _, ok := err.(*UnsupportedSIWCCapabilityError); !ok {
+		t.Fatalf("expected *UnsupportedSIWCCapabilityError, got %T: %v", err, err)
 	}
 }
 
