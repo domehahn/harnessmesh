@@ -350,16 +350,108 @@ var siwcUnsupportedResponsesItemTypes = map[string]bool{
 // preview-limitations page describes as supported: plain function tools,
 // custom tools ("Supported: ... function/custom tools"), and web search
 // ("Supported: Web search, subject to model and account/workspace
-// policy"). Any other tool type embedded in additional_tools.tools (e.g. a
-// hosted "file_search"/"computer_use_preview"/"code_interpreter"/"mcp"/
-// "image_generation" tool, or the specifically-named-unsupported
-// "apply_patch"/"local_shell" tool types) is rejected as an unsupported
-// SIWC capability - additional_tools support is not blanket permission to
-// enable every hosted or specialized-execution Responses tool.
+// policy"). "namespace" is handled separately by validateAdditionalTool,
+// since acceptance of a namespace tool depends on its nested tools, not on
+// "namespace" itself being an allowlisted leaf type.
 var siwcSupportedToolTypes = map[string]bool{
 	"function":   true,
 	"custom":     true,
 	"web_search": true,
+}
+
+// siwcUnsupportedToolTypes are tool "type" values that are real, known
+// Responses tool types but represent OpenAI-hosted or specialized-
+// execution capabilities SIWC's preview-limitations page documents as
+// unsupported - file search, native computer use, Code Interpreter,
+// hosted MCP/connectors, image generation, apply_patch, and local_shell.
+// Recognizing them by name (rather than falling through to "unknown tool
+// type") gives a precise UnsupportedSIWCCapabilityError instead of
+// UnsupportedResponsesToolTypeError, mirroring
+// siwcUnsupportedResponsesItemTypes' item-level reasoning but for tool
+// definitions - including ones nested inside a namespace tool.
+var siwcUnsupportedToolTypes = map[string]bool{
+	"file_search":          true,
+	"computer_use_preview": true,
+	"code_interpreter":     true,
+	"mcp":                  true,
+	"image_generation":     true,
+	"apply_patch":          true,
+	"local_shell":          true,
+}
+
+// UnsupportedResponsesToolTypeError is returned when a tool definition's
+// "type" (inside additional_tools.tools, including nested inside a
+// namespace tool) is not found anywhere in the current official Responses
+// API tool-type schema this package could verify - a genuinely unknown or
+// non-schema tool type. Distinct from UnsupportedSIWCCapabilityError,
+// which names a REAL, documented tool type that SIWC specifically does
+// not support.
+type UnsupportedResponsesToolTypeError struct {
+	Type string
+}
+
+func (e *UnsupportedResponsesToolTypeError) Error() string {
+	return fmt.Sprintf("unsupported tool type %q", e.Type)
+}
+
+// validateAdditionalTool recursively validates one tool definition from an
+// additional_tools item.
+//
+// "namespace" is a REAL, SIWC-supported tool type, confirmed by a real
+// request sent directly to the production SIWC /v1/responses endpoint: a
+// namespace tool wrapping one nested function tool was accepted, echoed
+// back in the response's tools, and the model completed the turn normally
+// (terminal response.completed, monotonic sequence numbers 0..13). It is
+// NOT a hosted capability itself - acceptance depends entirely on whether
+// every tool nested inside it is itself SIWC-supported, checked here
+// recursively (a namespace nested inside another namespace is permitted:
+// the real evidence confirms namespace/function nesting, and deeper
+// nesting follows the identical documented shape).
+//
+// This function only validates; it never mutates, flattens, hoists,
+// reorders, or discards anything - the caller stores each tool definition
+// as raw, untouched JSON (InputItem.Tools is []json.RawMessage), so a
+// namespace tool's exact bytes - type, name, description, nested tools,
+// nested JSON Schemas, and any unrecognized forward-compatible field -
+// survive unchanged all the way to the upstream request.
+func validateAdditionalTool(rawTool json.RawMessage) error {
+	var probe struct {
+		Type  string            `json:"type"`
+		Name  string            `json:"name"`
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(rawTool, &probe); err != nil {
+		return &MalformedInputItemError{Type: "additional_tools", Reason: fmt.Sprintf("tool definition is not a valid object: %v", err)}
+	}
+	if probe.Type == "" {
+		return &MalformedInputItemError{Type: "additional_tools", Reason: `tool definition is missing required "type" field`}
+	}
+
+	if probe.Type == "namespace" {
+		if probe.Name == "" {
+			return &MalformedInputItemError{Type: "additional_tools", Reason: `namespace tool is missing required "name" field`}
+		}
+		if len(probe.Tools) == 0 {
+			return &MalformedInputItemError{Type: "additional_tools", Reason: `namespace tool is missing required non-empty "tools" field`}
+		}
+		for _, nested := range probe.Tools {
+			// Returned as-is (not wrapped) so callers can type-assert the
+			// exact underlying error (UnsupportedSIWCCapabilityError,
+			// UnsupportedResponsesToolTypeError, MalformedInputItemError),
+			// matching every other typed-error path in this package.
+			if err := validateAdditionalTool(nested); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if siwcSupportedToolTypes[probe.Type] {
+		return nil
+	}
+	if siwcUnsupportedToolTypes[probe.Type] {
+		return &UnsupportedSIWCCapabilityError{Capability: fmt.Sprintf("additional_tools tool type %q", probe.Type)}
+	}
+	return &UnsupportedResponsesToolTypeError{Type: probe.Type}
 }
 
 // InputItem is a discriminated union over the Responses API input item
@@ -590,18 +682,9 @@ func (it *InputItem) UnmarshalJSON(data []byte) error {
 		if len(tools) == 0 {
 			return &MalformedInputItemError{Type: typ, Reason: `"tools" must be non-empty`}
 		}
-		for i, rawTool := range tools {
-			var probe struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal(rawTool, &probe); err != nil {
-				return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf("tools[%d] is not a valid tool definition object: %v", i, err)}
-			}
-			if probe.Type == "" {
-				return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf(`tools[%d] is missing required "type" field`, i)}
-			}
-			if !siwcSupportedToolTypes[probe.Type] {
-				return &UnsupportedSIWCCapabilityError{Capability: fmt.Sprintf("additional_tools tool type %q", probe.Type)}
+		for _, rawTool := range tools {
+			if err := validateAdditionalTool(rawTool); err != nil {
+				return err
 			}
 		}
 		item.Tools = tools
