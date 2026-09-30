@@ -1,6 +1,15 @@
 {
   "version": 2,
 
+  "_comment": "A placeholder agent is required even for a provider-only deployment - see internal/config's 'at least one agent must be configured' invariant, which is deliberately not relaxed for provider.enabled configs (a zero-agent config would fail open in MeshCommit's single-writer checks if this file were ever reused for `mcp serve`/`bridge serve`). `provider serve` itself never reads this section.",
+  "agents": {
+    "placeholder": {
+      "kind": "fake",
+      "role": "executor",
+      "writable": true
+    }
+  },
+
   "provider": {
     "enabled": true,
     "listen": "127.0.0.1:8789",

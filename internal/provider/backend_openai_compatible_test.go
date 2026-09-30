@@ -172,6 +172,50 @@ func TestOpenAICompatibleBackend_MalformedStreamEvent(t *testing.T) {
 	}
 }
 
+// TestOpenAICompatibleBackend_ToolOnlyResponse_OutputIndexMatchesFinalPosition
+// proves a response with a function call and no preceding assistant text
+// gets output_index 0 in its streamed events (nothing else claims index 0
+// first), and that the final response.completed Output array places that
+// item at output[0] to match - a client that correlates streamed
+// output_index with the final array's positions must see them agree.
+func TestOpenAICompatibleBackend_ToolOnlyResponse_OutputIndexMatchesFinalPosition(t *testing.T) {
+	srv := newFakeChatServer(modeToolCall)
+	defer srv.Close()
+	b := newTestBackend(t, srv)
+
+	sink := newCollectingSink()
+	err := b.StreamResponse(context.Background(), Request{Model: "test", Input: InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "weather?"}}}}, Tools: []Tool{{Type: "function", Name: "get_weather"}}}, sink)
+	if err != nil {
+		t.Fatalf("StreamResponse: %v", err)
+	}
+
+	var streamedIndex *int
+	for _, ev := range sink.events {
+		if ev.Type == "response.output_item.added" {
+			streamedIndex = ev.OutputIndex
+		}
+	}
+	if streamedIndex == nil {
+		t.Fatalf("expected a response.output_item.added event")
+	}
+	if *streamedIndex != 0 {
+		t.Fatalf("expected the tool call's streamed output_index to be 0 (no message opened first), got %d", *streamedIndex)
+	}
+
+	var final *Response
+	for _, ev := range sink.events {
+		if ev.Type == "response.completed" {
+			final = ev.Response
+		}
+	}
+	if final == nil {
+		t.Fatalf("expected a response.completed event")
+	}
+	if len(final.Output) != 1 || final.Output[0].Type != "function_call" {
+		t.Fatalf("expected exactly one function_call output item, got %+v", final.Output)
+	}
+}
+
 func TestOpenAICompatibleBackend_Backend500(t *testing.T) {
 	srv := newFakeChatServer(mode500)
 	defer srv.Close()

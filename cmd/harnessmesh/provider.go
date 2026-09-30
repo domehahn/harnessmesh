@@ -78,6 +78,19 @@ func providerServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("build provider registry: %w", err)
 	}
+	// Fail fast on genuine misconfiguration (an unresolvable or
+	// policy-denied default_backend) before ever printing "listening" or
+	// binding the port - a config that would 403 on every request is
+	// caught here instead of only surfacing on the Codex extension's first
+	// prompt. Deliberately not a Health() check too: a backend that is
+	// merely unreachable *right now* (e.g. it hasn't finished starting yet
+	// in a docker-compose/k8s dependency-ordering sense) should not
+	// prevent the gateway process itself from starting - that is what
+	// /readyz is for; use `harnessmesh provider doctor` to check backend
+	// health explicitly before relying on a fresh deployment.
+	if _, err := registry.Resolve(""); err != nil {
+		return fmt.Errorf("resolve default backend: %w", err)
+	}
 	srv := provider.NewServer(gwCfg, registry)
 
 	mode := "zero-credit"

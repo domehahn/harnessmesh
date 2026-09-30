@@ -77,6 +77,9 @@ Because product documentation for a fast-moving CLI can change, re-verify agains
    ```json
    {
      "version": 2,
+     "agents": {
+       "placeholder": { "kind": "fake", "role": "executor", "writable": true }
+     },
      "provider": {
        "enabled": true,
        "listen": "127.0.0.1:8789",
@@ -92,7 +95,7 @@ Because product documentation for a fast-moving CLI can change, re-verify agains
    }
    ```
 
-   `zero_credit_mode` is not set here, so it defaults to `true` (fail closed).
+   `zero_credit_mode` is not set here, so it defaults to `true` (fail closed). The `agents.placeholder` entry is required by `internal/config`'s "at least one agent must be configured" invariant even for a provider-only deployment - `provider serve` never reads `cfg.Agents` itself, but the check is deliberately not relaxed, since a zero-agent config would otherwise let MeshCommit's single-writer enforcement silently fail open if the same file were ever reused for `mcp serve`/`bridge serve`.
 
 3. Start the gateway:
 

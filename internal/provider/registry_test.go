@@ -162,3 +162,23 @@ func TestIsMeteredBackendType(t *testing.T) {
 		t.Fatalf("expected openai-compatible and bedrock to not be metered")
 	}
 }
+
+func TestInputItems_UnmarshalNull_DoesNotFabricateMessage(t *testing.T) {
+	var it InputItems
+	if err := it.UnmarshalJSON([]byte("null")); err != nil {
+		t.Fatalf("unmarshal null: %v", err)
+	}
+	if len(it) != 0 {
+		t.Fatalf("expected null input to produce an empty InputItems, got %+v", it)
+	}
+}
+
+func TestInputItems_UnmarshalString_ProducesUserMessage(t *testing.T) {
+	var it InputItems
+	if err := it.UnmarshalJSON([]byte(`"hello"`)); err != nil {
+		t.Fatalf("unmarshal string: %v", err)
+	}
+	if len(it) != 1 || it[0].Content[0].Text != "hello" {
+		t.Fatalf("expected a single user message with text 'hello', got %+v", it)
+	}
+}

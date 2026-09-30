@@ -9,20 +9,14 @@ import (
 	"github.com/domehahn/harnessmesh/internal/config"
 )
 
-// meteredBackendTypes mirrors internal/config's meteredProviderBackendTypes
-// (kept independent to avoid an import cycle - config validates the static
-// configuration shape at load time; this package enforces the same rule
-// again at registry-build and per-request time, as defense in depth).
-var meteredBackendTypes = map[string]bool{
-	"openai-api": true,
-	"codex":      true,
-}
-
 // IsMeteredBackendType reports whether a provider backend type resolves to
 // a metered LLM backend (the real OpenAI API, or Codex used as an
-// inference engine).
+// inference engine). internal/provider imports internal/config directly
+// (for config.ProviderBackendConfig etc.), so this delegates to config's
+// single definition rather than keeping an independent copy that could
+// drift out of sync.
 func IsMeteredBackendType(t string) bool {
-	return meteredBackendTypes[strings.ToLower(strings.TrimSpace(t))]
+	return config.IsMeteredProviderBackendType(t)
 }
 
 // Policy is the resolved, effective zero-credit/routing policy for one
@@ -62,7 +56,7 @@ func toSet(ss []string) map[string]bool {
 // way to reach StreamResponse on a configured backend.
 func (p Policy) CheckBackendType(name, t string) error {
 	lt := strings.ToLower(strings.TrimSpace(t))
-	if p.ZeroCreditMode && meteredBackendTypes[lt] {
+	if p.ZeroCreditMode && config.IsMeteredProviderBackendType(lt) {
 		return &MeteredBackendDeniedError{Backend: name, Reason: fmt.Sprintf("backend type %q is metered and zero_credit_mode is enabled", t)}
 	}
 	if p.DeniedBackendTypes[lt] {
@@ -163,10 +157,13 @@ func isLoopbackOrWildcard(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// Resolve returns the backend named name, after re-checking policy (defense
-// in depth: policy could theoretically differ between startup and request
-// time only via ResolveMode's env-var override, which this re-check
-// correctly picks up).
+// Resolve returns the backend named name, after re-checking policy. Policy
+// itself is resolved once at NewRegistry time and cached for the registry's
+// lifetime (it is not re-derived from config or the environment per
+// request) - this re-check is defense in depth against a future call site
+// that resolves a backend name without going through the same policy the
+// registry was built with, not a mechanism for picking up a runtime
+// environment-variable change.
 func (r *Registry) Resolve(name string) (InferenceBackend, error) {
 	if name == "" {
 		name = r.policy.DefaultBackend

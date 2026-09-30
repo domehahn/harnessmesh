@@ -359,7 +359,16 @@ func TestProviderGateway_ValidZeroCreditConfig_Passes(t *testing.T) {
 	}
 }
 
-func TestProviderGateway_OnlyProviderEnabled_NoAgentsRequired(t *testing.T) {
+// TestProviderGateway_StillRequiresAtLeastOneAgent proves the "at least one
+// agent" requirement is deliberately NOT relaxed for provider-enabled
+// configs (self-review caught a real gap here: relaxing it would let a
+// zero-agent, provider.enabled=true config also be silently accepted by
+// `mcp serve`/`bridge serve` if reused there, under which
+// MeshCommitCoordinator.requireWritableExecutor treats "no agents
+// registered" as permissive-by-design and would fail open for every
+// participant name). A provider-only deployment must define at least one
+// placeholder agent - see configs/codex-provider.example.json.
+func TestProviderGateway_StillRequiresAtLeastOneAgent(t *testing.T) {
 	raw := []byte(`{
 		"version": 2,
 		"provider": {
@@ -369,7 +378,95 @@ func TestProviderGateway_OnlyProviderEnabled_NoAgentsRequired(t *testing.T) {
 			"backends": {"local": {"type": "openai-compatible", "base_url": "http://127.0.0.1:8000/v1"}}
 		}
 	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected a zero-agent config to still be rejected even with provider.enabled=true")
+	}
+}
+
+func TestProviderGateway_OnlyProviderEnabled_WithPlaceholderAgent(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"placeholder": {"kind": "fake", "role": "executor", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"token": "test-token",
+			"default_backend": "local",
+			"backends": {"local": {"type": "openai-compatible", "base_url": "http://127.0.0.1:8000/v1"}}
+		}
+	}`)
 	if _, err := Parse(raw); err != nil {
-		t.Fatalf("expected a provider-only config (no collaboration agents) to be valid, got: %v", err)
+		t.Fatalf("expected a provider-only config with a placeholder agent to be valid, got: %v", err)
+	}
+}
+
+func TestProviderGateway_RequiresDefaultBackend(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"placeholder": {"kind": "fake", "role": "executor", "writable": true}},
+		"provider": {"enabled": true, "token": "test-token"}
+	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected provider.enabled=true with no default_backend to be rejected")
+	}
+}
+
+func TestProviderGateway_RequiresAtLeastOneBackend(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"placeholder": {"kind": "fake", "role": "executor", "writable": true}},
+		"provider": {"enabled": true, "token": "test-token", "default_backend": "local"}
+	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected provider.enabled=true with no backends defined to be rejected")
+	}
+}
+
+func TestProviderGateway_DefaultBackendCannotBeExplicitlyDenied(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"placeholder": {"kind": "fake", "role": "executor", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"token": "test-token",
+			"default_backend": "local",
+			"backends": {"local": {"type": "openai-compatible", "base_url": "http://127.0.0.1:8000/v1"}},
+			"denied_backend_types": ["openai-compatible"]
+		}
+	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected a default_backend whose type is in denied_backend_types to be rejected at config-load time")
+	}
+}
+
+func TestProviderGateway_DefaultBackendMustBeInAllowedTypes(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"placeholder": {"kind": "fake", "role": "executor", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"token": "test-token",
+			"default_backend": "local",
+			"backends": {"local": {"type": "bedrock", "base_url": "us-east-1"}},
+			"allowed_backend_types": ["openai-compatible"]
+		}
+	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected a default_backend whose type is not in allowed_backend_types to be rejected at config-load time")
+	}
+}
+
+func TestProviderGateway_OpenAICompatibleTypeCheckIsCaseInsensitive(t *testing.T) {
+	raw := []byte(`{
+		"version": 2,
+		"agents": {"placeholder": {"kind": "fake", "role": "executor", "writable": true}},
+		"provider": {
+			"enabled": true,
+			"token": "test-token",
+			"default_backend": "local",
+			"backends": {"local": {"type": "OpenAI-Compatible"}}
+		}
+	}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected a mixed-case \"OpenAI-Compatible\" type with no base_url to still be rejected (base_url requirement must be case-insensitive)")
 	}
 }

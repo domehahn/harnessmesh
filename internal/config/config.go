@@ -574,7 +574,23 @@ func Parse(raw []byte) (*Config, error) {
 		cfg.Switchyard.ExtraEnv = map[string]string{}
 	}
 
-	if len(cfg.Agents) == 0 && !cfg.Provider.Enabled {
+	if len(cfg.Agents) == 0 {
+		// Deliberately unconditional, including for provider-gateway-only
+		// deployments: internal/collaboration's MeshCommitCoordinator
+		// treats a config with zero registered agents as "no agent-config
+		// model in play" and skips its single-writer/external-participant
+		// enforcement (see requireWritableExecutor) - a legitimate
+		// allowance for standalone/test use, but dangerous if a real,
+		// config.Parse-validated zero-agent config were ever reused for
+		// `mcp serve`/`bridge serve` (an operator mistake, e.g. copying a
+		// provider-only harnessmesh.json). Requiring at least one agent
+		// unconditionally means that reuse fails immediately and loudly
+		// here, instead of silently building a collaboration engine whose
+		// change-transaction authorization checks are all no-ops. A
+		// provider-only deployment defines one placeholder agent entry -
+		// see configs/codex-provider.example.json - which costs nothing at
+		// runtime since `provider serve` never constructs a
+		// collaboration.Engine or reads cfg.Agents at all.
 		return nil, fmt.Errorf("at least one agent must be configured")
 	}
 
@@ -708,28 +724,61 @@ var meteredProviderBackendTypes = map[string]bool{
 	"codex":      true,
 }
 
+// IsMeteredProviderBackendType reports whether a provider backend type
+// resolves to a metered LLM backend (the real OpenAI API, or Codex used as
+// an inference engine). Exported so internal/provider can reuse this
+// single definition instead of keeping an independent copy.
+func IsMeteredProviderBackendType(t string) bool {
+	return meteredProviderBackendTypes[strings.ToLower(strings.TrimSpace(t))]
+}
+
 // validateProviderGateway rejects configuration combinations that would let
 // zero-credit mode be silently defeated: a default/fallback backend that
 // resolves to a metered type, an allowlist that includes a metered type
 // while zero-credit mode is on, a backend reference that doesn't exist, or
 // an openai-compatible backend with no base_url.
+func toStringSet(ss []string) map[string]bool {
+	out := make(map[string]bool, len(ss))
+	for _, s := range ss {
+		out[strings.ToLower(strings.TrimSpace(s))] = true
+	}
+	return out
+}
+
 func validateProviderGateway(cfg *Config) error {
 	p := cfg.Provider
 	if !p.Enabled {
 		return nil
 	}
 
+	if strings.TrimSpace(p.DefaultBackend) == "" {
+		return fmt.Errorf("provider.default_backend is required when provider.enabled is true")
+	}
+	if len(p.Backends) == 0 {
+		return fmt.Errorf("provider.backends must define at least one backend when provider.enabled is true")
+	}
+
+	denied := toStringSet(p.DeniedBackendTypes)
+	allowed := toStringSet(p.AllowedBackendTypes)
+
 	for name, b := range p.Backends {
 		if strings.TrimSpace(b.Type) == "" {
 			return fmt.Errorf("provider.backends[%q]: type is required", name)
 		}
-		if b.Type == "openai-compatible" && strings.TrimSpace(b.BaseURL) == "" {
+		lt := strings.ToLower(strings.TrimSpace(b.Type))
+		if lt == "openai-compatible" && strings.TrimSpace(b.BaseURL) == "" {
 			return fmt.Errorf("provider.backends[%q]: base_url is required for type \"openai-compatible\"", name)
 		}
 	}
 
 	zeroCredit := p.IsZeroCreditMode()
 
+	// checkBackendRef mirrors internal/provider's Policy.CheckBackendType so
+	// a self-contradictory config (e.g. default_backend resolving to a type
+	// also listed in denied_backend_types, or excluded by
+	// allowed_backend_types) is caught here rather than only discovered at
+	// first request, when the gateway would otherwise report itself
+	// "listening" while every request silently 403s.
 	checkBackendRef := func(field, name string) error {
 		if name == "" {
 			return nil
@@ -738,8 +787,15 @@ func validateProviderGateway(cfg *Config) error {
 		if !exists {
 			return fmt.Errorf("provider.%s %q is not defined in provider.backends", field, name)
 		}
-		if zeroCredit && meteredProviderBackendTypes[strings.ToLower(b.Type)] {
+		lt := strings.ToLower(strings.TrimSpace(b.Type))
+		if zeroCredit && meteredProviderBackendTypes[lt] {
 			return fmt.Errorf("provider.%s %q resolves to metered backend type %q, which zero_credit_mode forbids", field, name, b.Type)
+		}
+		if denied[lt] {
+			return fmt.Errorf("provider.%s %q resolves to backend type %q, which is listed in provider.denied_backend_types", field, name, b.Type)
+		}
+		if len(allowed) > 0 && !allowed[lt] {
+			return fmt.Errorf("provider.%s %q resolves to backend type %q, which is not in provider.allowed_backend_types", field, name, b.Type)
 		}
 		return nil
 	}

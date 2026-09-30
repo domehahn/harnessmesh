@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -26,8 +27,11 @@ import (
 type BedrockBackend struct {
 	name    string
 	modelID string
-	client  *bedrockruntime.Client
 	region  string
+
+	clientOnce sync.Once
+	client     *bedrockruntime.Client
+	clientErr  error
 }
 
 func NewBedrockBackend(name string, cfg config.ProviderBackendConfig) *BedrockBackend {
@@ -42,20 +46,27 @@ func (b *BedrockBackend) Capabilities() Capabilities {
 	return Capabilities{Streaming: true, Tools: true}
 }
 
+// ensureClient builds the Bedrock client exactly once, even under
+// concurrent first-request traffic: AWS credential-chain resolution
+// (file I/O, and potentially IMDS/STS network calls) is expensive enough
+// that letting every concurrent caller race to build their own client
+// would both waste that work N times and, since the unsynchronized
+// assignment to b.client was a genuine data race, corrupt the shared
+// field under `go test -race`.
 func (b *BedrockBackend) ensureClient(ctx context.Context) error {
-	if b.client != nil {
-		return nil
-	}
-	var opts []func(*awsconfig.LoadOptions) error
-	if b.region != "" {
-		opts = append(opts, awsconfig.WithRegion(b.region))
-	}
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
-	if err != nil {
-		return &BackendUnavailableError{Backend: b.name, Reason: fmt.Sprintf("load AWS config: %v", err)}
-	}
-	b.client = bedrockruntime.NewFromConfig(awsCfg)
-	return nil
+	b.clientOnce.Do(func() {
+		var opts []func(*awsconfig.LoadOptions) error
+		if b.region != "" {
+			opts = append(opts, awsconfig.WithRegion(b.region))
+		}
+		awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+		if err != nil {
+			b.clientErr = &BackendUnavailableError{Backend: b.name, Reason: fmt.Sprintf("load AWS config: %v", err)}
+			return
+		}
+		b.client = bedrockruntime.NewFromConfig(awsCfg)
+	})
+	return b.clientErr
 }
 
 func (b *BedrockBackend) Health(ctx context.Context) error {
@@ -102,7 +113,12 @@ func (b *BedrockBackend) StreamResponse(ctx context.Context, req Request, sink S
 	msgItemID := fmt.Sprintf("%s_msg_0", responseID)
 	msgOpened := false
 	var textBuilder strings.Builder
-	oi, ci := 0, 0
+	// oi/ci are assigned lazily when the message actually opens, from the
+	// same shared nextIndex counter tool calls use, so a streamed item's
+	// output_index always matches its eventual position in the final
+	// Output array - including for a tool-only response with no text.
+	var oi int
+	ci := 0
 
 	type toolState struct {
 		id, name string
@@ -111,7 +127,7 @@ func (b *BedrockBackend) StreamResponse(ctx context.Context, req Request, sink S
 	}
 	tools := map[int32]*toolState{}
 	var toolOrder []int32
-	nextIndex := 1
+	nextIndex := 0
 
 	usage := &Usage{}
 	stream := out.GetStream()
@@ -144,6 +160,8 @@ func (b *BedrockBackend) StreamResponse(ctx context.Context, req Request, sink S
 			switch d := v.Value.Delta.(type) {
 			case *brtypes.ContentBlockDeltaMemberText:
 				if !msgOpened {
+					oi = nextIndex
+					nextIndex++
 					if err := sink.Send(StreamEvent{Type: "response.output_item.added", OutputIndex: &oi, Item: &OutputItem{ID: msgItemID, Type: "message", Status: StatusInProgress, Role: "assistant"}}); err != nil {
 						return err
 					}
@@ -185,7 +203,7 @@ func (b *BedrockBackend) StreamResponse(ctx context.Context, req Request, sink S
 		return &StreamInterruptedError{Reason: err.Error()}
 	}
 
-	output := []OutputItem{}
+	output := make([]OutputItem, nextIndex)
 	if msgOpened {
 		finalText := textBuilder.String()
 		if err := sink.Send(StreamEvent{Type: "response.output_text.done", ItemID: msgItemID, OutputIndex: &oi, ContentIndex: &ci, Text: finalText}); err != nil {
@@ -198,7 +216,7 @@ func (b *BedrockBackend) StreamResponse(ctx context.Context, req Request, sink S
 		if err := sink.Send(StreamEvent{Type: "response.output_item.done", OutputIndex: &oi, Item: &msgItem}); err != nil {
 			return err
 		}
-		output = append(output, msgItem)
+		output[oi] = msgItem
 	}
 	for _, idx := range toolOrder {
 		st := tools[idx]
@@ -212,6 +230,7 @@ func (b *BedrockBackend) StreamResponse(ctx context.Context, req Request, sink S
 		if err := sink.Send(StreamEvent{Type: "response.output_item.done", OutputIndex: &outIdx, Item: &item}); err != nil {
 			return err
 		}
+		output[st.index] = item
 		output = append(output, item)
 	}
 
@@ -239,6 +258,25 @@ func translateToBedrock(req Request) ([]brtypes.Message, []brtypes.SystemContent
 			messages = append(messages, brtypes.Message{
 				Role:    role,
 				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: text.String()}},
+			})
+		case "function_call":
+			// A tool call HarnessMesh's caller (Codex) echoes back from a
+			// prior turn. Bedrock's Converse API requires every toolResult
+			// to reference a toolUse block in the immediately preceding
+			// assistant turn, so this must be translated too, not dropped -
+			// otherwise every tool-using multi-turn conversation against
+			// this backend fails at the second turn.
+			var argsDoc map[string]any
+			if item.Arguments != "" {
+				_ = json.Unmarshal([]byte(item.Arguments), &argsDoc)
+			}
+			messages = append(messages, brtypes.Message{
+				Role: brtypes.ConversationRoleAssistant,
+				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberToolUse{Value: brtypes.ToolUseBlock{
+					ToolUseId: aws.String(item.CallID),
+					Name:      aws.String(item.Name),
+					Input:     brdocument.NewLazyDocument(argsDoc),
+				}}},
 			})
 		case "function_call_output":
 			messages = append(messages, brtypes.Message{

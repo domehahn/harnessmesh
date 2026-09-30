@@ -361,14 +361,14 @@ func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, attemp
 	errCh := make(chan error, 1)
 	go func() {
 		defer sink.Close()
-		if len(attempts) == 1 {
-			usedBackend = attempts[0]
-			errCh <- s.runBackend(ctx, attempts[0], req, sink)
-		} else {
-			var err error
-			usedBackend, err = s.runWithFallback(ctx, attempts, req, sink)
-			errCh <- err
-		}
+		// Unlike streamHTTP, there is no direct-vs-buffered distinction to
+		// preserve here: sink is already a bufferingSink regardless, so
+		// routing the single-attempt case through runWithFallback (which
+		// degrades to one iteration) produces identical output to calling
+		// runBackend directly, without a separate code path to keep in sync.
+		var err error
+		usedBackend, err = s.runWithFallback(ctx, attempts, req, sink)
+		errCh <- err
 	}()
 
 	for ev := range sink.events {

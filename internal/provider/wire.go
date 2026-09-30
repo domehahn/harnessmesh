@@ -24,6 +24,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Request is the subset of the Responses API request body HarnessMesh
@@ -49,6 +50,11 @@ type Request struct {
 type InputItems []InputItem
 
 func (it *InputItems) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "null" || trimmed == "" {
+		*it = nil
+		return nil
+	}
 	var asString string
 	if err := json.Unmarshal(data, &asString); err == nil {
 		*it = InputItems{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: asString}}}}

@@ -269,7 +269,13 @@ func (b *OpenAICompatibleBackend) StreamResponse(ctx context.Context, req Reques
 	}
 
 	msgItemID := fmt.Sprintf("%s_msg_0", responseID)
-	msgIndex := 0
+	// Output indices are assigned lazily, in the order items actually open
+	// (whichever of the message or the first tool call streams first gets
+	// index 0) - not a hardcoded "message is always index 0" - so a
+	// streamed response.output_item.added's output_index always matches
+	// that item's eventual position in response.completed's Output array,
+	// including for a tool-only response with no assistant text.
+	msgIndex := -1
 	msgContentIndex := 0
 	msgOpened := false
 	var textBuilder strings.Builder
@@ -281,7 +287,7 @@ func (b *OpenAICompatibleBackend) StreamResponse(ctx context.Context, req Reques
 	}
 	toolCalls := map[int]*toolCallState{}
 	var toolCallOrder []int
-	nextOutputIndex := 1
+	nextOutputIndex := 0
 
 	usage := &Usage{}
 	finishReason := ""
@@ -332,6 +338,8 @@ func (b *OpenAICompatibleBackend) StreamResponse(ctx context.Context, req Reques
 
 		if choice.Delta.Content != "" {
 			if !msgOpened {
+				msgIndex = nextOutputIndex
+				nextOutputIndex++
 				oi := msgIndex
 				if err := sink.Send(StreamEvent{Type: "response.output_item.added", OutputIndex: &oi, Item: &OutputItem{ID: msgItemID, Type: "message", Status: StatusInProgress, Role: "assistant"}}); err != nil {
 					return err
@@ -381,7 +389,11 @@ func (b *OpenAICompatibleBackend) StreamResponse(ctx context.Context, req Reques
 		return &StreamInterruptedError{Reason: err.Error()}
 	}
 
-	output := []OutputItem{}
+	// output is built by assigned index, not by append order, so a streamed
+	// item's output_index always matches its final position - including
+	// when a tool call opened before the message (or when there is no
+	// message at all).
+	output := make([]OutputItem, nextOutputIndex)
 	if msgOpened {
 		oi, ci := msgIndex, msgContentIndex
 		finalText := textBuilder.String()
@@ -395,7 +407,7 @@ func (b *OpenAICompatibleBackend) StreamResponse(ctx context.Context, req Reques
 		if err := sink.Send(StreamEvent{Type: "response.output_item.done", OutputIndex: &oi, Item: &msgItem}); err != nil {
 			return err
 		}
-		output = append(output, msgItem)
+		output[msgIndex] = msgItem
 	}
 	for _, idx := range toolCallOrder {
 		st := toolCalls[idx]
@@ -409,7 +421,7 @@ func (b *OpenAICompatibleBackend) StreamResponse(ctx context.Context, req Reques
 		if err := sink.Send(StreamEvent{Type: "response.output_item.done", OutputIndex: &oi, Item: &item}); err != nil {
 			return err
 		}
-		output = append(output, item)
+		output[st.index] = item
 	}
 
 	status := StatusCompleted
