@@ -39,6 +39,21 @@ const EnvVar = "HARNESSMESH_CHATGPT_CREDIT_ISOLATION"
 const (
 	BackendOpenAIAPI = "openai-api"
 	BackendCodex     = "codex"
+	// BackendChatGPTPlanUsage identifies calls made via OpenAI's officially
+	// documented "Sign in with ChatGPT" mechanism (developers.openai.com/siwc):
+	// a Responses API request authenticated with an OAuth token scoped to
+	// consume the user's ChatGPT plan usage allowance, not a metered API
+	// key. It is deliberately tracked separately from BackendOpenAIAPI -
+	// conflating the two would make the "OpenAI API calls = 0" guarantee
+	// meaningless for this path, since this genuinely is not metered API
+	// billing. It is NOT free, though: per help.openai.com's "ChatGPT Work
+	// and Codex" article, on plans where these features are bundled,
+	// "Codex, ChatGPT Work, ChatGPT for Excel, and Workspace Agents use a
+	// shared allowance and credit pool" - so this counter existing and
+	// being nonzero is expected and correct when the chatgpt-subscription
+	// backend is used, and should never be conflated with a
+	// credit-isolation violation.
+	BackendChatGPTPlanUsage = "chatgpt-plan-usage"
 )
 
 var meteredBackends = map[string]string{
@@ -110,8 +125,9 @@ func CheckParticipant(mode Mode, participant string, isExternal bool, adapterOrK
 // bridge end-to-end workflow, proving isolation empirically rather than
 // only structurally.
 var (
-	openAICalls atomic.Uint64
-	codexCalls  atomic.Uint64
+	openAICalls      atomic.Uint64
+	codexCalls       atomic.Uint64
+	chatgptPlanCalls atomic.Uint64
 )
 
 // RecordCall increments the metered-call counter for backend. Safe for
@@ -122,6 +138,8 @@ func RecordCall(backend string) {
 		openAICalls.Add(1)
 	case BackendCodex:
 		codexCalls.Add(1)
+	case BackendChatGPTPlanUsage:
+		chatgptPlanCalls.Add(1)
 	}
 }
 
@@ -132,6 +150,8 @@ func Calls(backend string) uint64 {
 		return openAICalls.Load()
 	case BackendCodex:
 		return codexCalls.Load()
+	case BackendChatGPTPlanUsage:
+		return chatgptPlanCalls.Load()
 	}
 	return 0
 }
@@ -141,4 +161,5 @@ func Calls(backend string) uint64 {
 func ResetForTest() {
 	openAICalls.Store(0)
 	codexCalls.Store(0)
+	chatgptPlanCalls.Store(0)
 }

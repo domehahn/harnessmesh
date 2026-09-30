@@ -184,6 +184,109 @@ func TestE2E_ZeroCreditMode_FullLifecycleProof(t *testing.T) {
 	}
 }
 
+// TestE2E_ChatGPTSubscriptionBackend_ZeroOpenAIAPIAndZeroCodex drives a full
+// Codex-shaped request lifecycle through the real stack
+// (config.Parse -> NewRegistry -> NewServer -> Handler) with the
+// chatgpt-subscription backend selected as default, against a fake local
+// server standing in for https://api.openai.com/v1/responses (never the
+// real endpoint - no real ChatGPT account or OAuth consent is available in
+// this environment). With OPENAI_API_KEY set and a tripwire "codex" binary
+// on PATH, it proves:
+//
+//	metered OpenAI API calls (creditguard.BackendOpenAIAPI) = 0
+//	Codex invocations (creditguard.BackendCodex, and the tripwire)  = 0
+//
+// while explicitly showing creditguard.BackendChatGPTPlanUsage DOES
+// increment - that is expected and correct (see backend_subscription.go's
+// doc comment): this backend genuinely calls a Responses-API-shaped
+// endpoint, just never api.openai.com with an API key and never the Codex
+// CLI. This test cannot and does not prove anything about real-world
+// OpenAI-side billing/quota routing, which is outside HarnessMesh's
+// visibility - only that HarnessMesh's own call path is exactly what it
+// claims to be.
+func TestE2E_ChatGPTSubscriptionBackend_ZeroOpenAIAPIAndZeroCodex(t *testing.T) {
+	tripwireDir := t.TempDir()
+	tripwireFile := tripwireDir + "/codex-was-invoked"
+	fakeCodex := tripwireDir + "/codex"
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\ntouch "+tripwireFile+"\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	oldKey := os.Getenv("OPENAI_API_KEY")
+	t.Cleanup(func() {
+		os.Setenv("PATH", oldPath)
+		os.Setenv("OPENAI_API_KEY", oldKey)
+	})
+	os.Setenv("PATH", tripwireDir+string(os.PathListSeparator)+oldPath)
+	os.Setenv("OPENAI_API_KEY", "sk-test-should-never-be-used-by-the-chatgpt-subscription-backend")
+
+	creditguard.ResetForTest()
+
+	fakeResponses := newFakeResponsesServer("normal")
+	defer fakeResponses.Close()
+
+	tokenPath := t.TempDir() + "/auth.json"
+	tokens := &SIWCTokenSet{ClientID: "oaiapp_test", AccessToken: "test-access", RefreshToken: "test-refresh", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := saveSIWCTokenSet(tokenPath, tokens); err != nil {
+		t.Fatalf("saveSIWCTokenSet: %v", err)
+	}
+
+	cfg := config.ProviderGatewayConfig{
+		Enabled: true, Token: "test-provider-token", DefaultBackend: "chatgpt",
+		Backends: map[string]config.ProviderBackendConfig{
+			"chatgpt": {Type: "chatgpt-subscription"},
+		},
+	}
+	registry, err := NewRegistry(cfg, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	// Point the constructed backend at the fake local server and stored
+	// test token instead of the real, documented OpenAI endpoints/token
+	// path - this is the one deliberate seam between "real client code"
+	// and "test environment," identical in spirit to every other
+	// backend's test setup in this package.
+	sub := registry.backends["chatgpt"].(*SubscriptionBackend)
+	sub.tokenPath = tokenPath
+	sub.client = &siwcTokenClient{tokenURL: fakeResponses.URL, responsesURL: fakeResponses.URL, httpClient: http.DefaultClient}
+
+	server := NewServer(cfg, registry)
+	handler := server.Handler()
+
+	rec := doProviderReq(t, handler, "test-provider-token", map[string]any{
+		"model": "gpt-5-chatgpt",
+		"input": []map[string]any{
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "say hi"}}},
+		},
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Output[0].Content[0].Text != "hello from ChatGPT plan" {
+		t.Fatalf("expected the fake ChatGPT-plan backend's output, got %q", resp.Output[0].Content[0].Text)
+	}
+
+	// --- The critical proof ---
+	if got := creditguard.Calls(creditguard.BackendOpenAIAPI); got != 0 {
+		t.Fatalf("expected 0 metered OpenAI API calls, got %d", got)
+	}
+	if got := creditguard.Calls(creditguard.BackendCodex); got != 0 {
+		t.Fatalf("expected 0 Codex invocations, got %d", got)
+	}
+	if _, err := os.Stat(tripwireFile); err == nil {
+		t.Fatalf("codex tripwire file exists: the codex binary was executed")
+	}
+	// This one is *expected* to be nonzero - it is what actually served
+	// the request, via the documented, non-API-billed ChatGPT-plan path.
+	if got := creditguard.Calls(creditguard.BackendChatGPTPlanUsage); got != 1 {
+		t.Fatalf("expected exactly 1 chatgpt-plan-usage call (the request that was actually served), got %d", got)
+	}
+}
+
 // TestE2E_NetworkEgress_NoRequestToOpenAIOrExternalHosts proves the
 // zero-credit request path never even attempts to dial any host other than
 // the explicitly configured local backend - not by DNS blocking, but by
