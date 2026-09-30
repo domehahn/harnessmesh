@@ -179,18 +179,38 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleModels implements GET /v1/models using the documented OpenAI Model
-// object shape (developers.openai.com/api/reference/resources/models,
-// fetched 2026-09-30: id, object:"model", created, owned_by - the latter
-// two REQUIRED fields this endpoint previously omitted). That omission is
-// the confirmed root cause of a real Codex app-server decode failure
-// ("failed to decode models response: Data at line 1 column 98") - "valid
-// JSON" was not sufficient; Codex's model-catalog deserializer expects
-// the standard, complete Model object, not a minimal custom shape.
-// backend_type is kept as an additional, non-standard field for
-// HarnessMesh's own diagnostic use; extra fields are standard-permitted
-// and ignored by conforming JSON deserializers.
+// handleModels implements GET /v1/models with TWO distinct dialects,
+// distinguished by request shape rather than User-Agent:
+//
+//   - Generic OpenAI-compatible clients (no "client_version" query param):
+//     the documented OpenAI Model-list shape
+//     (developers.openai.com/api/reference/resources/models, fetched
+//     2026-09-30: {"object":"list","data":[{id, object:"model", created,
+//     owned_by, ...}]}).
+//   - The Codex VS Code extension / Codex CLI (appends
+//     "?client_version=<version>" - confirmed from the real Codex source,
+//     codex-rs/model-provider/src/models_endpoint.rs, tag
+//     rust-v0.155.0-alpha.16.3): Codex's OWN ModelsResponse schema
+//     ({"models":[...]})  - NOT the public OpenAI shape. A prior fix that
+//     added "created"/"owned_by" to the OpenAI-shaped response made that
+//     response valid per the public Model object, but Codex never parses
+//     that shape at all; its ModelsClient deserializes
+//     `ModelsResponse { models: Vec<ModelInfo> }`
+//     (codex-rs/protocol/src/openai_models.rs), a structurally different,
+//     Codex-specific schema. Returning the OpenAI shape to Codex is the
+//     confirmed root cause of "failed to decode models response: Data at
+//     line 1 column N" - "valid JSON" was never sufficient; the shape
+//     itself was wrong. See codex_model_catalog.go for the embedded,
+//     byte-faithful real catalog payload this branch serves.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("client_version") {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", codexModelCatalogETag)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(codexModelCatalogJSON)
+		return
+	}
+
 	created := time.Now().Unix()
 	var models []map[string]any
 	for name, b := range s.registry.Backends() {

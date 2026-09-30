@@ -175,6 +175,31 @@ func FuzzCallOutputUnmarshal(f *testing.F) {
 	})
 }
 
+// FuzzCodexModelsResponseUnmarshal proves the Codex-dialect model-catalog
+// compatibility decoder (server_codex_models_test.go) never panics on
+// arbitrary input.
+func FuzzCodexModelsResponseUnmarshal(f *testing.F) {
+	f.Add(string(codexModelCatalogJSON))
+	f.Add(`{"models":[]}`)
+	f.Add(`{"models":null}`)
+	f.Add(`{}`)
+	f.Add(`null`)
+	f.Add(`not json`)
+	f.Add(`{"models":[{"slug":"x"}]}`)
+	f.Add(`{"models":[{"slug":"x","truncation_policy":{"mode":"tokens","limit":"not-a-number"}}]}`)
+	f.Add(`{"models":"not-an-array"}`)
+
+	f.Fuzz(func(t *testing.T, data string) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("codexModelsResponseCompat unmarshal panicked on %q: %v", data, r)
+			}
+		}()
+		var decoded codexModelsResponseCompat
+		_ = json.Unmarshal([]byte(data), &decoded)
+	})
+}
+
 // FuzzSIWCNormalize proves normalizeForSIWC never panics on arbitrary
 // request bodies, including every documented forbidden-field shape.
 func FuzzSIWCNormalize(f *testing.F) {

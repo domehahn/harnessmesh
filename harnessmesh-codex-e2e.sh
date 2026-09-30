@@ -14,6 +14,7 @@ set -Eeuo pipefail
 #
 # Optional env:
 #   HM_MODEL=gpt-5.6-luna
+#   HM_CODEX_CLI_VERSION=0.155.0-alpha.16.3
 #   HM_LISTEN=127.0.0.1:8789
 #   HM_CODEX_HOME=$HOME/.codex-harnessmesh
 #   HM_USER_DATA=$HOME/.vscode-harnessmesh-user-data
@@ -24,6 +25,12 @@ set -Eeuo pipefail
 
 REPO="${1:-$HOME/dev/workspace/harnessmesh}"
 MODEL="${HM_MODEL:-gpt-5.6-luna}"
+# The real installed Codex VS Code extension's reported cli_version, used
+# for the models?client_version=... compatibility probe below - the exact
+# value HarnessMesh's embedded Codex model catalog
+# (internal/provider/codex_model_catalog.json) was sourced to match
+# (github.com/openai/codex tag rust-v0.155.0-alpha.16.3).
+CODEX_CLI_VERSION="${HM_CODEX_CLI_VERSION:-0.155.0-alpha.16.3}"
 LISTEN="${HM_LISTEN:-127.0.0.1:8789}"
 BASE_URL="http://${LISTEN}/v1"
 CODEX_HOME_DIR="${HM_CODEX_HOME:-$HOME/.codex-harnessmesh}"
@@ -322,16 +329,36 @@ PY
   fi
 fi
 
-say "Probe /v1/models because Codex logs previously showed model-refresh decode errors"
-HTTP_CODE="$(curl -sS -o "$RUN_DIR/models.body" -w '%{http_code}' \
+say "TEST A: generic OpenAI-compatible GET /v1/models (no client_version)"
+HTTP_CODE_A="$(curl -sS -o "$RUN_DIR/models-generic.body" -w '%{http_code}' \
   "$BASE_URL/models" \
   -H "Authorization: Bearer $HARNESSMESH_PROVIDER_TOKEN" || true)"
-echo "HTTP $HTTP_CODE" | tee "$RUN_DIR/models.status"
-if [[ "$HTTP_CODE" == "200" ]] && jq -e . "$RUN_DIR/models.body" >/dev/null 2>&1; then
-  pass "/v1/models returned valid JSON"
+echo "HTTP $HTTP_CODE_A" | tee "$RUN_DIR/models-generic.status"
+if [[ "$HTTP_CODE_A" == "200" ]] \
+  && [[ "$(jq -r '.object' "$RUN_DIR/models-generic.body" 2>/dev/null)" == "list" ]] \
+  && jq -e '.data | type == "array"' "$RUN_DIR/models-generic.body" >/dev/null 2>&1; then
+  pass "TEST A: /v1/models (generic) .object==list, .data is array"
 else
-  warn "/v1/models is not Codex-compatible yet (HTTP $HTTP_CODE); see $RUN_DIR/models.body"
+  fail "TEST A: /v1/models (generic) did not match the OpenAI-compatible shape (HTTP $HTTP_CODE_A); see $RUN_DIR/models-generic.body"
 fi
+
+say "TEST B: Codex-dialect GET /v1/models?client_version=$CODEX_CLI_VERSION"
+HTTP_CODE_B="$(curl -sS -o "$RUN_DIR/models-codex.body" -w '%{http_code}' \
+  "$BASE_URL/models?client_version=$CODEX_CLI_VERSION" \
+  -H "Authorization: Bearer $HARNESSMESH_PROVIDER_TOKEN" || true)"
+echo "HTTP $HTTP_CODE_B" | tee "$RUN_DIR/models-codex.status"
+if [[ "$HTTP_CODE_B" == "200" ]] \
+  && jq -e '.models | type == "array" and length > 0' "$RUN_DIR/models-codex.body" >/dev/null 2>&1; then
+  pass "TEST B: /v1/models?client_version=... .models is a non-empty array"
+else
+  fail "TEST B: /v1/models?client_version=... did not match the Codex ModelsResponse shape (HTTP $HTTP_CODE_B); see $RUN_DIR/models-codex.body"
+fi
+
+# CODEX_MODEL_CATALOG is only ever reported PASS after the live Codex
+# process itself is scanned below for the decode error - HTTP-level shape
+# checks alone are not sufficient proof (that was the exact class of
+# false confidence that missed this defect the first time).
+CODEX_MODEL_CATALOG="UNVERIFIED"
 
 if [[ "${HM_SKIP_VSCODE:-0}" == "1" ]]; then
   warn "VS Code test skipped (HM_SKIP_VSCODE=1)"
@@ -458,15 +485,27 @@ EOF
       if rg -q 'OutputTextDelta without active item' "$RUN_DIR/vscode-relevant.log" "$NEWEST" 2>/dev/null; then
         STREAM_LIFECYCLE_INVALID=1
       fi
+      # CODEX_MODEL_CATALOG is only ever reported PASS here, from the live
+      # Codex process's own log - never inferred from the HTTP-level TEST
+      # A/B shape checks above, which previously showed "HTTP 200 + valid
+      # JSON" while the live decode was still failing against the wrong
+      # schema entirely.
       if rg -q 'failed to refresh available models:.*failed to decode models response' "$RUN_DIR/vscode-relevant.log"; then
-        warn "Codex model refresh compatibility error observed"
+        fail "Codex model refresh compatibility error observed in the live log - CODEX_MODEL_CATALOG remains FAIL regardless of HTTP status"
+        CODEX_MODEL_CATALOG="FAIL"
+      elif rg -qi 'refresh(ed)? available models|models refresh' "$RUN_DIR/vscode-relevant.log" "$NEWEST" 2>/dev/null; then
+        pass "Live Codex model refresh observed with no decode error"
+        CODEX_MODEL_CATALOG="PASS"
+      else
+        warn "No model-refresh activity observed in the live log this run - CODEX_MODEL_CATALOG stays UNVERIFIED"
       fi
       if rg -q 'routePattern=/(wham|settings).*status=401|httpStatus=401' "$RUN_DIR/vscode-relevant.log"; then
-        warn "Codex ChatGPT UI-side 401s observed in isolated profile"
+        warn "Codex ChatGPT UI-side 401s observed in isolated profile (pre-existing, non-blocking - see docs/codex-provider.md)"
       fi
     else
       warn "No VS Code log directory found"
     fi
+    echo "CODEX_MODEL_CATALOG: $CODEX_MODEL_CATALOG" | tee -a "$REPORT"
 
     if [[ "$TOOL_OUTPUT_REPLAY_SCHEMA_INVALID" == "1" ]]; then
       fail "REAL CODEX TOOL LOOP: real tool call + local tool execution succeeded, but HarnessMesh rejected the tool-output replay request's schema"
@@ -489,6 +528,151 @@ EOF
 
   say "Provider request-shape diagnostics after real Codex turn"
   rg -n 'siwc-request-diag' "$PROVIDER_LOG" || true
+
+  # ============================================================
+  # Live write/edit/cleanup E2E (Mission 7): a controlled, disposable
+  # workspace-write test proving HarnessMesh's Responses path supports not
+  # just reading, but creating, patching, re-reading, and deleting a file
+  # through Codex's real local tool-execution loop.
+  # ============================================================
+  WRITE_TEST_FILE="$REPO/.harnessmesh-e2e-write-test.txt"
+  say "Capture git status baseline before the write/edit test"
+  BASELINE_STATUS="$RUN_DIR/git-status-baseline.txt"
+  ( cd "$REPO" && git status --porcelain=v1 ) >"$BASELINE_STATUS"
+  echo "--- baseline git status (porcelain) ---"
+  cat "$BASELINE_STATUS"
+  if [[ -e "$WRITE_TEST_FILE" ]]; then
+    fail "Disposable test file already exists before the test started: $WRITE_TEST_FILE - remove it and rerun"
+  fi
+
+  cat <<'EOF'
+
+MANUAL VS CODE STEP - WRITE/EDIT/CLEANUP TEST
+==============================================
+In the SAME isolated Codex window, start a NEW chat and paste exactly:
+
+Nutze zwingend die verfügbaren lokalen Repository-Tools.
+
+Erstelle im aktuellen Workspace die Datei
+.harnessmesh-e2e-write-test.txt mit exakt diesem Inhalt:
+
+ALPHA
+ORIGINAL
+
+Ändere anschließend ausschließlich die zweite Zeile mit einem
+Datei-/Patch-Tool zu:
+
+PATCHED
+
+Lies die Datei danach erneut ein und verifiziere exakt:
+
+ALPHA
+PATCHED
+
+Lösche anschließend die Testdatei wieder.
+
+Verändere keine andere Datei.
+
+Antworte erst nach erfolgreicher Verifikation und erfolgreichem
+Löschen ausschließlich mit:
+
+HARNESSMESH_WRITE_PATCH_OK
+
+Then wait until Codex either:
+- returns a final answer,
+- visibly errors,
+- or stops making progress.
+
+Return here and press ENTER.
+EOF
+  read -r
+
+  say "Inspect latest Codex session for the write/edit/cleanup test"
+  WRITE_SESSION="$(find "$CODEX_HOME_DIR/sessions" -type f -name '*.jsonl' -print0 2>/dev/null | \
+    xargs -0 ls -t 2>/dev/null | head -1 || true)"
+
+  WRITE_TEST_CLASS="UNVERIFIED"
+  WRITE_FINAL_MESSAGE_OK=0
+  WRITE_HAD_TOOL_CALL=0
+  WRITE_HAD_TOOL_OUTPUT=0
+  WRITE_HAD_TASK_COMPLETE=0
+  WRITE_FILE_GONE=0
+  WRITE_GIT_STATUS_CLEAN=0
+
+  if [[ -z "$WRITE_SESSION" ]]; then
+    fail "No Codex session JSONL found for the write/edit test under $CODEX_HOME_DIR/sessions"
+  else
+    echo "Latest session: $WRITE_SESSION" | tee -a "$REPORT"
+
+    # 1. Final agent message.
+    if rg -q '"last_agent_message":"HARNESSMESH_WRITE_PATCH_OK"' "$WRITE_SESSION"; then
+      pass "Write/edit test: final agent message is HARNESSMESH_WRITE_PATCH_OK"
+      WRITE_FINAL_MESSAGE_OK=1
+    else
+      fail "Write/edit test: final agent message was not exactly HARNESSMESH_WRITE_PATCH_OK"
+    fi
+
+    # 2. At least one local tool call occurred, and which concrete tool(s)
+    # were used (Codex may use a dedicated apply_patch tool, or an
+    # exec-based patch command - either is a valid edit capability proof).
+    TOOL_CALL_TYPES="$RUN_DIR/write-test-tool-calls.txt"
+    rg -o '"type":"(function_call|custom_tool_call)"[^}]*"name":"[a-zA-Z_.]+"' "$WRITE_SESSION" >"$TOOL_CALL_TYPES" 2>/dev/null || true
+    rg -q '"type":"(function_call|custom_tool_call)"' "$WRITE_SESSION" && WRITE_HAD_TOOL_CALL=1 || true
+    if [[ "$WRITE_HAD_TOOL_CALL" == "1" ]]; then
+      pass "Write/edit test: at least one local tool call occurred"
+      echo "Concrete tool(s) used:" | tee -a "$REPORT"
+      cat "$TOOL_CALL_TYPES" | tee -a "$REPORT" || true
+    else
+      fail "Write/edit test: no local tool call observed"
+    fi
+
+    # 3. At least one tool output was replayed.
+    rg -q '"type":"(function_call_output|custom_tool_call_output)"' "$WRITE_SESSION" && WRITE_HAD_TOOL_OUTPUT=1 || true
+    if [[ "$WRITE_HAD_TOOL_OUTPUT" == "1" ]]; then
+      pass "Write/edit test: at least one tool output was replayed"
+    else
+      fail "Write/edit test: no tool output replay observed"
+    fi
+
+    # 7. The turn reaches task_complete.
+    rg -q '"type":"task_complete"' "$WRITE_SESSION" && WRITE_HAD_TASK_COMPLETE=1 || true
+    if [[ "$WRITE_HAD_TASK_COMPLETE" == "1" ]]; then
+      pass "Write/edit test: turn reached task_complete"
+    else
+      fail "Write/edit test: turn never reached task_complete"
+    fi
+  fi
+
+  # 4. The temporary file no longer exists.
+  if [[ ! -e "$WRITE_TEST_FILE" ]]; then
+    pass "Write/edit test: disposable test file no longer exists"
+    WRITE_FILE_GONE=1
+  else
+    fail "Write/edit test: disposable test file still exists at $WRITE_TEST_FILE"
+  fi
+
+  # 5 & 6. git status after the test is byte-equivalent to the baseline -
+  # no tracked file diff, no leftover untracked file.
+  AFTER_STATUS="$RUN_DIR/git-status-after.txt"
+  ( cd "$REPO" && git status --porcelain=v1 ) >"$AFTER_STATUS"
+  echo "--- git status after the write/edit test (porcelain) ---"
+  cat "$AFTER_STATUS"
+  if diff -q "$BASELINE_STATUS" "$AFTER_STATUS" >/dev/null 2>&1; then
+    pass "Write/edit test: git status after the test exactly matches the pre-test baseline"
+    WRITE_GIT_STATUS_CLEAN=1
+  else
+    fail "Write/edit test: git status after the test DIFFERS from the pre-test baseline"
+    echo "--- diff (baseline vs after) ---"
+    diff "$BASELINE_STATUS" "$AFTER_STATUS" || true
+  fi
+
+  if [[ "$WRITE_FINAL_MESSAGE_OK" == "1" && "$WRITE_HAD_TOOL_CALL" == "1" && "$WRITE_HAD_TOOL_OUTPUT" == "1" \
+        && "$WRITE_HAD_TASK_COMPLETE" == "1" && "$WRITE_FILE_GONE" == "1" && "$WRITE_GIT_STATUS_CLEAN" == "1" ]]; then
+    WRITE_TEST_CLASS="PASS"
+  else
+    WRITE_TEST_CLASS="FAIL"
+  fi
+  echo "Write/edit/cleanup E2E classification: $WRITE_TEST_CLASS" | tee -a "$REPORT"
 fi
 
 say "FINAL SUMMARY"
@@ -497,6 +681,9 @@ say "FINAL SUMMARY"
   echo "PASS=$PASS"
   echo "WARN=$WARN"
   echo "FAIL=$FAIL"
+  echo "Codex tool-loop classification: ${CODEX_CLASS:-not evaluated (VS Code test skipped or no session found)}"
+  echo "CODEX_MODEL_CATALOG: ${CODEX_MODEL_CATALOG:-UNVERIFIED}"
+  echo "Write/edit/cleanup E2E: ${WRITE_TEST_CLASS:-not evaluated (VS Code test skipped)}"
   echo "Run directory: $RUN_DIR"
   echo "Provider log: $PROVIDER_LOG"
   echo "Report: $REPORT"

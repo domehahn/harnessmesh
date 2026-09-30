@@ -7,20 +7,25 @@ import (
 	"testing"
 )
 
-// This file proves the fix for a real Codex app-server decode failure
-// against GET /v1/models: "failed to decode models response: Data at
-// line 1 column 98 (body: 99 bytes)". The response WAS valid JSON (jq
-// validated it), but it omitted "created" and "owned_by" - both REQUIRED
-// fields of the documented OpenAI Model object
+// This file proves GET /v1/models (the GENERIC, no-"client_version"
+// dialect - see server_codex_models_test.go for the separate, structurally
+// different Codex-dialect dialect at ?client_version=...) matches the
+// documented OpenAI Model object shape
 // (developers.openai.com/api/reference/resources/models, fetched
 // 2026-09-30: id:string, object:"model", created:number, owned_by:string,
-// shutdown_date:optional). "Valid JSON" was not sufficient; the Codex
-// model-catalog deserializer expects this exact, complete shape.
+// shutdown_date:optional) - both "created" and "owned_by" are REQUIRED
+// fields a previous version of this endpoint omitted entirely.
+//
+// Note: an earlier pass of this audit mistakenly believed this generic
+// shape was also what the real Codex VS Code extension's model-catalog
+// decoder expected. It is not - Codex never parses this shape at all; see
+// server_codex_models_test.go for the confirmed root cause and the
+// correct, structurally distinct ?client_version=... dialect.
 
-// codexModel mirrors the documented OpenAI Model object schema exactly,
-// for asserting the response the Codex app-server actually deserializes
-// against - not just "is this valid JSON".
-type codexModel struct {
+// openAIModel mirrors the documented OpenAI Model object schema exactly,
+// for asserting the generic-dialect response - not just "is this valid
+// JSON".
+type openAIModel struct {
 	ID           string  `json:"id"`
 	Object       string  `json:"object"`
 	Created      int64   `json:"created"`
@@ -28,12 +33,12 @@ type codexModel struct {
 	ShutdownDate *string `json:"shutdown_date,omitempty"`
 }
 
-type codexModelList struct {
-	Object string       `json:"object"`
-	Data   []codexModel `json:"data"`
+type openAIModelList struct {
+	Object string        `json:"object"`
+	Data   []openAIModel `json:"data"`
 }
 
-func TestServer_Models_MatchesCodexExpectedSchema(t *testing.T) {
+func TestServer_Models_GenericDialect_MatchesOpenAIModelSchema(t *testing.T) {
 	backend := &fakeInferenceBackend{name: "chatgpt", typ: "chatgpt-subscription", events: simpleTextEvents("resp_1", "ok")}
 	reg := newTestRegistry(t, map[string]InferenceBackend{"chatgpt": backend}, Policy{ZeroCreditMode: true, DefaultBackend: "chatgpt"})
 	s := NewServer(testProviderConfig("secret"), reg)
@@ -55,9 +60,9 @@ func TestServer_Models_MatchesCodexExpectedSchema(t *testing.T) {
 	// check: zero-valued required fields (created=0, owned_by="") are
 	// exactly what a previous version of this endpoint produced by never
 	// setting them at all.
-	var list codexModelList
+	var list openAIModelList
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-		t.Fatalf("response does not match the documented Codex-expected Model schema (id/object/created/owned_by): %v\nbody: %s", err, rec.Body.String())
+		t.Fatalf("response does not match the documented OpenAI Model schema (id/object/created/owned_by): %v\nbody: %s", err, rec.Body.String())
 	}
 	if list.Object != "list" {
 		t.Fatalf(`expected top-level object="list", got %q`, list.Object)
