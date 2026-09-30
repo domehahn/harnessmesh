@@ -95,6 +95,16 @@ func FuzzInputItemsUnmarshal(f *testing.F) {
 	f.Add(`[{"type":"additional_tools","role":"developer","tools":[123]}]`)
 	f.Add(`[{"type":"additional_tools","role":"developer","tools":[{"type":"web_search"}]}]`)
 	f.Add(`[{"type":"computer_call","call_id":"c1"}]`)
+	f.Add(`[{"type":"apply_patch_call","call_id":"c1","operation":{"type":"update_file","diff":"x","path":"a"}}]`)
+	f.Add(`[{"type":"apply_patch_call_output","call_id":"c1","output":"ok"}]`)
+	f.Add(`[{"type":"local_shell_call","call_id":"c1","action":{"command":["ls"]}}]`)
+	f.Add(`[{"type":"local_shell_call_output","id":"c1","output":"ok"}]`)
+	f.Add(`[{"type":"custom_tool_call","call_id":"c1","name":"code_exec","input":"print(1)"}]`)
+	f.Add(`[{"type":"custom_tool_call_output","call_id":"c1","output":"1\n"}]`)
+	f.Add(`[{"type":"web_search_call","id":"w1","status":"completed"}]`)
+	f.Add(`[{"type":"multi_agent_call"}]`)
+	f.Add(`[{"type":"program"}]`)
+	f.Add(`[{"type":"compaction_trigger"}]`)
 
 	f.Fuzz(func(t *testing.T, data string) {
 		defer func() {

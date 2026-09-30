@@ -267,7 +267,10 @@ func TestAdditionalTools_H_WrongRole_Malformed(t *testing.T) {
 // is rejected specifically, not silently allowed through additional_tools'
 // door.
 func TestAdditionalTools_I_UnsupportedSIWCHostedToolType_Rejected(t *testing.T) {
-	cases := []string{"web_search", "computer_use_preview", "file_search", "code_interpreter", "mcp"}
+	// web_search is deliberately NOT in this list: SIWC's preview-
+	// limitations page explicitly lists "Web search" under Supported
+	// (subject to model/account policy) - see TestAdditionalTools_WebSearchTool_Allowed.
+	cases := []string{"apply_patch", "local_shell", "computer_use_preview", "file_search", "code_interpreter", "mcp"}
 	for _, toolType := range cases {
 		t.Run(toolType, func(t *testing.T) {
 			src := `{"type":"additional_tools","role":"developer","tools":[{"type":"` + toolType + `","name":"x"}]}`
@@ -280,6 +283,21 @@ func TestAdditionalTools_I_UnsupportedSIWCHostedToolType_Rejected(t *testing.T) 
 				t.Fatalf("expected *UnsupportedSIWCCapabilityError, got %T: %v", err, err)
 			}
 		})
+	}
+}
+
+// web_search is confirmed SIWC-supported ("subject to model and
+// account/workspace policy") per the preview-limitations page, so it must
+// be ALLOWED through additional_tools, unlike the hosted/specialized-
+// execution tool types above.
+func TestAdditionalTools_WebSearchTool_Allowed(t *testing.T) {
+	src := `{"type":"additional_tools","role":"developer","tools":[{"type":"web_search","name":"web_search"}]}`
+	var it InputItem
+	if err := json.Unmarshal([]byte(src), &it); err != nil {
+		t.Fatalf("expected web_search tool type to be allowed inside additional_tools, got: %v", err)
+	}
+	if len(it.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(it.Tools))
 	}
 }
 

@@ -179,13 +179,24 @@ func (c Content) MarshalJSON() ([]byte, error) {
 //     non-schema type.
 //   - UnsupportedSIWCCapabilityError: the item's "type" (or, for
 //     additional_tools, a tool definition's "type") IS a real, documented
-//     Responses item/tool type, but ChatGPT-plan-usage / SIWC's documented
-//     preview scope does not cover it - principally hosted tools
-//     (computer_call, file_search_call, web_search_call, tool_search_call/
-//     tool_search_output) that require OpenAI-hosted execution, which the
-//     SIWC docs this package could fetch never describe as available to
-//     open-source/locally-hosted apps. additional_tools support is NOT
-//     blanket permission to enable every hosted Responses tool.
+//     Responses item/tool type, but SIWC's documented preview-limitations
+//     page (developers.openai.com/siwc/token-sharing-open-source/
+//     preview-limitations, fetched 2026-09-30) explicitly lists it as
+//     unsupported. That page's exact "Unsupported" list: "Image
+//     generation, file search, Code Interpreter, native computer use,
+//     hosted MCP/connectors", "Tool search functionality",
+//     "programmatic_tool_calling at the top level", and "Apply patch,
+//     local shell, and other specialized execution tools" - the last item
+//     is a real correction from an earlier pass of this audit, which
+//     incorrectly assumed apply_patch/local_shell were SIWC-supported
+//     "local Codex execution patterns" merely because they execute
+//     client-side; the preview-limitations page names them explicitly as
+//     unsupported regardless. additional_tools support is NOT blanket
+//     permission to enable every hosted or specialized-execution Responses
+//     tool. Note the same page's "Supported" list explicitly includes
+//     "Web search (subject to model and account/workspace policy)" -
+//     web_search_call is therefore NOT in this category (see
+//     siwcSupportedResponsesItemTypes below).
 //   - MalformedInputItemError: the item's "type" is both known AND
 //     SIWC-supported, but its shape doesn't satisfy that type's documented
 //     structural requirements (e.g. additional_tools with a missing/empty
@@ -223,32 +234,69 @@ func (e *MalformedInputItemError) Error() string {
 	return fmt.Sprintf("malformed %s input item: %s", e.Type, e.Reason)
 }
 
-// siwcHostedResponsesItemTypes are real, documented Responses API input
-// item types (developers.openai.com/api/reference/resources/responses)
-// that represent OpenAI-hosted tool execution - outside what SIWC's
-// documented preview scope covers for a locally-hosted open-source app.
-// Recognizing them (rather than falling through to "unknown type") lets
-// HarnessMesh give a precise UnsupportedSIWCCapabilityError instead of a
-// generic unsupported-type error.
-var siwcHostedResponsesItemTypes = map[string]bool{
+// siwcUnsupportedResponsesItemTypes are real, documented Responses API
+// input item types - confirmed via developers.openai.com/api/reference/
+// resources/responses/methods/create.md, developers.openai.com/api/docs/
+// guides/tools-apply-patch.md, and developers.openai.com/api/docs/guides/
+// tools-local-shell.md (all fetched 2026-09-30) - that SIWC's preview-
+// limitations page (developers.openai.com/siwc/token-sharing-open-source/
+// preview-limitations) explicitly places outside its supported scope.
+// Recognizing them by name (rather than falling through to "unknown type")
+// lets HarnessMesh give a precise UnsupportedSIWCCapabilityError instead
+// of a generic unsupported-type error. shell_call/shell_call_output are
+// deliberately NOT included: only local_shell_call/local_shell_call_output
+// could be confirmed to exist in the fetched documentation.
+var siwcUnsupportedResponsesItemTypes = map[string]bool{
+	// "native computer use" - confirmed unsupported.
 	"computer_call":        true,
 	"computer_call_output": true,
-	"file_search_call":     true,
-	"web_search_call":      true,
-	"tool_search_call":     true,
-	"tool_search_output":   true,
+	// "file search" - confirmed unsupported.
+	"file_search_call": true,
+	// "Tool search functionality" - confirmed unsupported.
+	"tool_search_call":   true,
+	"tool_search_output": true,
+	// "Apply patch, local shell, and other specialized execution tools" -
+	// confirmed unsupported, even though they execute client-side.
+	"apply_patch_call":        true,
+	"apply_patch_call_output": true,
+	"local_shell_call":        true,
+	"local_shell_call_output": true,
+	// "Image generation" / "Code Interpreter" - confirmed unsupported.
+	"image_generation_call": true,
+	"code_interpreter_call": true,
+	// "hosted MCP/connectors" - confirmed unsupported.
+	"mcp_call":              true,
+	"mcp_list_tools":        true,
+	"mcp_approval_request":  true,
+	"mcp_approval_response": true,
 }
 
-// siwcSupportedToolTypes are the tool "type" values SIWC's documentation
-// describes as supported inside an additional_tools item: plain function
-// tools and custom tools. Any other tool type embedded in
-// additional_tools.tools (e.g. a hosted "web_search"/"computer_use_preview"/
-// "file_search"/"code_interpreter"/"mcp" tool) is rejected as an
-// unsupported SIWC capability - additional_tools support is not blanket
-// permission to enable every hosted Responses tool.
+// web_search_call, custom_tool_call, and custom_tool_call_output are real,
+// documented Responses API input item types that SIWC's preview-
+// limitations page does NOT list as unsupported (either explicitly
+// permitted, like web_search_call, or a generic client-executed mechanism
+// like custom_tool_call the page's "Supported" list names directly:
+// "function/custom tools") - see their own InputItem.UnmarshalJSON case
+// blocks below, which model them losslessly via the same Extra-
+// preservation pattern as reasoning: only the fields needed for basic
+// structure (id/status/call_id/...) are named, everything else -
+// including web_search_call's polymorphic "action" payload - passes
+// through untouched.
+
+// siwcSupportedToolTypes are the tool "type" values SIWC's
+// preview-limitations page describes as supported: plain function tools,
+// custom tools ("Supported: ... function/custom tools"), and web search
+// ("Supported: Web search, subject to model and account/workspace
+// policy"). Any other tool type embedded in additional_tools.tools (e.g. a
+// hosted "file_search"/"computer_use_preview"/"code_interpreter"/"mcp"/
+// "image_generation" tool, or the specifically-named-unsupported
+// "apply_patch"/"local_shell" tool types) is rejected as an unsupported
+// SIWC capability - additional_tools support is not blanket permission to
+// enable every hosted or specialized-execution Responses tool.
 var siwcSupportedToolTypes = map[string]bool{
-	"function": true,
-	"custom":   true,
+	"function":   true,
+	"custom":     true,
+	"web_search": true,
 }
 
 // InputItem is a discriminated union over the Responses API input item
@@ -283,11 +331,17 @@ type InputItem struct {
 	// type == "reasoning": ID/Status only - its actual reasoning payload
 	// (summary, encrypted_content, ...) is intentionally NOT modeled here
 	// and lives entirely in Extra, since HarnessMesh never interprets it.
+	// type == "web_search_call": ID/Status only - its "action" payload is
+	// intentionally left in Extra (polymorphic: search/open_page/
+	// find_in_page shapes this package does not need to interpret).
+	// type == "custom_tool_call": ID/CallID/Name/Input/Status.
+	// type == "custom_tool_call_output": ID/CallID/Output/Status.
 	// type == "additional_tools": Role (must be "developer") and Tools.
 	ID        string
 	CallID    string
 	Name      string
 	Arguments string
+	Input     string
 	Output    string
 	Status    string
 
@@ -386,6 +440,43 @@ func (it *InputItem) UnmarshalJSON(data []byte) error {
 				return err
 			}
 		}
+	case "web_search_call":
+		// Confirmed SIWC-supported ("Web search, subject to model and
+		// account/workspace policy"); HarnessMesh cannot itself verify that
+		// policy, so it forwards the item losslessly (id/status named,
+		// everything else - including the polymorphic "action" payload -
+		// preserved via Extra) and lets the real upstream API enforce it.
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{{"id", &item.ID}, {"status", &item.Status}} {
+			if err := assignStringField(f.key, f.dst); err != nil {
+				return err
+			}
+		}
+	case "custom_tool_call":
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{{"id", &item.ID}, {"call_id", &item.CallID}, {"name", &item.Name}, {"input", &item.Input}, {"status", &item.Status}} {
+			if err := assignStringField(f.key, f.dst); err != nil {
+				return err
+			}
+		}
+	case "custom_tool_call_output":
+		// custom_tool_call's output-item shape was not directly observed
+		// in the fetched documentation (only the call item's JSON example
+		// was shown); this mirrors the consistent call/call_output field
+		// pattern confirmed for function_call_output, apply_patch_call_output,
+		// and local_shell_call_output.
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{{"call_id", &item.CallID}, {"id", &item.ID}, {"output", &item.Output}, {"status", &item.Status}} {
+			if err := assignStringField(f.key, f.dst); err != nil {
+				return err
+			}
+		}
 	case "additional_tools":
 		if err := assignStringField("role", &item.Role); err != nil {
 			return err
@@ -429,7 +520,7 @@ func (it *InputItem) UnmarshalJSON(data []byte) error {
 		item.Tools = tools
 		delete(item.Extra, "tools")
 	default:
-		if siwcHostedResponsesItemTypes[typ] {
+		if siwcUnsupportedResponsesItemTypes[typ] {
 			return &UnsupportedSIWCCapabilityError{Capability: fmt.Sprintf("input item type %q", typ)}
 		}
 		return &UnsupportedResponsesInputItemTypeError{Type: typ}
@@ -511,6 +602,33 @@ func (it InputItem) MarshalJSON() ([]byte, error) {
 			key string
 			val string
 		}{{"id", it.ID}, {"status", it.Status}} {
+			if err := setStr(f.key, f.val); err != nil {
+				return nil, err
+			}
+		}
+	case "web_search_call":
+		for _, f := range []struct {
+			key string
+			val string
+		}{{"id", it.ID}, {"status", it.Status}} {
+			if err := setStr(f.key, f.val); err != nil {
+				return nil, err
+			}
+		}
+	case "custom_tool_call":
+		for _, f := range []struct {
+			key string
+			val string
+		}{{"id", it.ID}, {"call_id", it.CallID}, {"name", it.Name}, {"input", it.Input}, {"status", it.Status}} {
+			if err := setStr(f.key, f.val); err != nil {
+				return nil, err
+			}
+		}
+	case "custom_tool_call_output":
+		for _, f := range []struct {
+			key string
+			val string
+		}{{"call_id", it.CallID}, {"id", it.ID}, {"output", it.Output}, {"status", it.Status}} {
 			if err := setStr(f.key, f.val); err != nil {
 				return nil, err
 			}

@@ -161,16 +161,16 @@ func TestCodexFixture_UnknownItemType_Rejected(t *testing.T) {
 }
 
 // TestCodexFixture_HostedItemType_RejectedAsUnsupportedSIWCCapability
-// proves a real, documented Responses item type requiring OpenAI-hosted
-// execution (outside SIWC's documented preview scope) is rejected with
-// the specific UnsupportedSIWCCapabilityError, not conflated with a
+// proves a real, documented Responses item type SIWC's preview-limitations
+// page explicitly lists as unsupported ("native computer use") is rejected
+// with the specific UnsupportedSIWCCapabilityError, not conflated with a
 // genuinely unknown/non-schema type.
 func TestCodexFixture_HostedItemType_RejectedAsUnsupportedSIWCCapability(t *testing.T) {
-	body := `{"model":"x","input":[{"type":"web_search_call","status":"completed"}]}`
+	body := `{"model":"x","input":[{"type":"computer_call","status":"completed"}]}`
 	var req Request
 	err := json.Unmarshal([]byte(body), &req)
 	if err == nil {
-		t.Fatalf("expected a hosted web_search_call item to be rejected, not silently accepted")
+		t.Fatalf("expected a hosted computer_call item to be rejected, not silently accepted")
 	}
 	if _, ok := err.(*UnsupportedSIWCCapabilityError); !ok {
 		t.Fatalf("expected *UnsupportedSIWCCapabilityError, got %T: %v", err, err)
