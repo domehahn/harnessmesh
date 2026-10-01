@@ -1,6 +1,49 @@
 # Codex Provider Gateway
 
-This document describes how to use the official Codex VS Code extension / Codex CLI with HarnessMesh as a **custom model provider**, so the actual model inference is served by a backend of your choosing - a local model, AWS Bedrock, or (if you explicitly disable zero-credit mode) the real OpenAI API - instead of OpenAI's own Codex inference.
+This document describes how to use the official Codex VS Code extension / Codex CLI with HarnessMesh as a **custom model provider**, so the actual model inference is served by a backend of your choosing - a local model, AWS Bedrock, or (if you explicitly disable zero-API-billing mode) the real OpenAI API - instead of OpenAI's own Codex inference.
+
+## Production billing semantics
+
+The canonical setting is `provider.zero_api_billing_mode` (default `true`).
+The older `zero_credit_mode` name is accepted as a compatibility alias only.
+When enabled, the gateway proves:
+
+- OpenAI API-key billing is disabled.
+- Metered OpenAI API backends and the Codex CLI inference backend are denied.
+- No fallback can escape into either metered backend.
+
+This is not a promise of zero Codex or ChatGPT plan usage. SIWC requests may
+count against a ChatGPT/Codex allowance; OpenAI controls that accounting and
+HarnessMesh cannot guarantee zero allowance usage. HarnessMesh does not turn
+ChatGPT into a free API, and SIWC is not the same thing as browser ChatGPT
+conversation usage.
+
+The architecture is:
+
+```text
+Codex VS Code -> HarnessMesh -> chatgpt-siwc -> OpenAI
+```
+
+The Codex UI may independently request `/settings/user`, `/wham/usage`,
+`/subscriptions`, `/plugins/featured`, or `/accounts/optimized/check`.
+These are `KNOWN_NON_BLOCKING_EXTERNAL_UI_REQUEST` routes and do not determine
+provider `/v1/responses` compatibility.
+
+## Upgrade, rollback, and verification
+
+The vendored Codex model catalog is sourced from the OpenAI Codex
+`rust-v0.155.0-alpha.16.3` model schema and is served in the Codex-native
+`{"models":[...]}` dialect when `client_version` is present. Generic clients
+receive the OpenAI-compatible `{"object":"list","data":[...]}` dialect.
+Compatibility tests cover the vendored schema and the observed 0.159.2 client.
+When upgrading Codex, run `go test ./internal/provider -run 'Test.*Model'` and
+the full `make production-readiness` gate before rollout. If compatibility
+fails, keep the prior binary/catalog and restore the previous Codex version;
+do not invent model metadata.
+
+The authoritative local gate is `make production-readiness`. It uses fake or
+local upstreams only. `live-openai-e2e` is a separate, explicitly acknowledged
+operation requiring `HARNESSMESH_ALLOW_LIVE_OPENAI_INFERENCE=1`.
 
 ## Architecture
 
@@ -29,7 +72,7 @@ This is a **separate plane** from HarnessMesh's collaboration engine (MCP, the V
 
 **The Codex extension itself is never forked.** It talks to HarnessMesh exactly the way it would talk to any other custom model provider, via `~/.codex/config.toml`'s `model_providers` table.
 
-## Core goal: the zero-credit request path
+## Core goal: the zero-API-billing request path
 
 ```text
 Codex VS Code Extension
@@ -43,12 +86,15 @@ HarnessMesh
 Codex VS Code Extension
 ```
 
-With this path (the default), entering a prompt in the Codex extension costs:
+With this path (the default), entering a prompt in the Codex extension uses:
 
 ```text
 OpenAI API usage  = 0
 Codex inference usage = 0
 ```
+
+This does not promise zero ChatGPT/Codex plan allowance usage for the separate
+`chatgpt-subscription` backend; OpenAI controls that accounting.
 
 The Codex extension is used purely as: the IDE frontend, agent runtime, repo-context UI, and diff/review/apply UX. HarnessMesh replaces the model-provider endpoint entirely - Codex has no idea (and no way to tell) that a local model, not OpenAI's, is answering.
 
@@ -141,7 +187,7 @@ Because product documentation for a fast-moving CLI can change, re-verify agains
 
 ## Backends
 
-| Type | What it is | Metered under zero-credit mode? |
+| Type | What it is | Metered under zero-API-billing mode? |
 | :--- | :--- | :--- |
 | `openai-compatible` | A local/self-hosted server speaking OpenAI's Chat Completions wire (vLLM, Ollama, LM Studio, llama.cpp) | Not applicable - no OpenAI account involved |
 | `bedrock` | AWS Bedrock via the official AWS SDK v2 `ConverseStream` API, using the standard AWS credential chain | Not applicable - no OpenAI account involved |

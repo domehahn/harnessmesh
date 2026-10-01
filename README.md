@@ -378,7 +378,7 @@ Usage:
 - [Interactive Peer Conversation Protocol](docs/peer-conversation.md)
 - [Model Context Protocol (MCP)](docs/mcp.md)
 - [ChatGPT Integration (remote MCP bridge)](docs/chatgpt-integration.md)
-- [Codex Provider Gateway (zero-credit local/Bedrock inference for the Codex extension)](docs/codex-provider.md)
+- [Codex Provider Gateway (zero-API-billing local/Bedrock inference for the Codex extension)](docs/codex-provider.md)
 - [Peer Protocol Specification](docs/peer-protocol.md)
 - [Security & Context Filtering](docs/security.md)
 - [Context Projection Engine](docs/context-projection.md)

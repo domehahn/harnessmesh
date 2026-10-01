@@ -13,7 +13,7 @@
   "provider": {
     "enabled": true,
     "listen": "127.0.0.1:8789",
-    "zero_credit_mode": true,
+    "zero_api_billing_mode": true,
     "default_backend": "local",
 
     "backends": {

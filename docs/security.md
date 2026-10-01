@@ -47,7 +47,7 @@ An `execution_mode: external` participant (the ChatGPT-browser role) can never r
 
 ## Credit isolation (Codex provider gateway)
 
-Separately from the ChatGPT-bridge guarantee above, `internal/provider`'s zero-credit mode (the default) makes the `openai-api` and `codex` backend types unreachable from the Codex-compatible provider gateway: rejected at config-load time if referenced as `default_backend` or in `fallback.order`, and re-checked at request time regardless (`Registry.Resolve`/`FallbackChain`). There is no silent fallback from a failed local/Bedrock backend to a metered one. See [docs/codex-provider.md](codex-provider.md#zero-credit-mode).
+Separately from the ChatGPT-bridge guarantee above, `internal/provider`'s zero-API-billing mode (the default) makes the `openai-api` and `codex` backend types unreachable from the Codex-compatible provider gateway: rejected at config-load time if referenced as `default_backend` or in `fallback.order`, and re-checked at request time regardless (`Registry.Resolve`/`FallbackChain`). There is no silent fallback from a failed local/Bedrock backend to a metered one. See [docs/codex-provider.md](codex-provider.md#production-billing-semantics).
 
 The provider gateway is authenticated and rate/size/timeout-limited independently of the MCP/bridge tokens - a provider-gateway token grants no collaboration or admin capability, because none is reachable from that server at all.
 
