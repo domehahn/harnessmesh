@@ -40,7 +40,7 @@ func (e *ProviderPolicyDeniedError) Error() string {
 	return fmt.Sprintf("ProviderPolicyDenied: %s", e.Reason)
 }
 
-// MeteredBackendDeniedError is returned whenever zero-credit policy would
+// MeteredBackendDeniedError is returned whenever zero-API-billing policy would
 // otherwise be bypassed - the single most important failure mode in this
 // package. It must never be silently swallowed or downgraded to a
 // fallback.
@@ -50,7 +50,7 @@ type MeteredBackendDeniedError struct {
 }
 
 func (e *MeteredBackendDeniedError) Error() string {
-	return fmt.Sprintf("MeteredBackendDenied: requested provider %q is forbidden by zero-credit policy: %s", e.Backend, e.Reason)
+	return fmt.Sprintf("MeteredBackendDenied: requested provider %q is forbidden by zero_api_billing_mode: %s", e.Backend, e.Reason)
 }
 
 type PayloadTooLargeError struct {

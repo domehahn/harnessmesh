@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,10 +45,12 @@ type ProviderGatewayConfig struct {
 	Listen  string `json:"listen,omitempty"` // default 127.0.0.1:8789
 	Token   string `json:"token,omitempty"`
 
-	// ZeroCreditMode, when true (the default), forbids routing any request
-	// through a metered backend (openai-api, codex) and disables automatic
-	// fallback to one - see internal/provider/policy.go. Fails closed.
-	ZeroCreditMode *bool `json:"zero_credit_mode,omitempty"`
+	// ZeroAPIBillingMode, when true (the default), forbids routing any request
+	// through a metered backend (openai-api, codex). zero_credit_mode remains
+	// accepted as a legacy alias, but is never emitted in user-facing output.
+	ZeroAPIBillingMode *bool `json:"zero_api_billing_mode,omitempty"`
+	ZeroCreditMode     *bool `json:"zero_credit_mode,omitempty"`
+	AllowPublicListen  bool  `json:"allow_public_listen,omitempty"`
 
 	DefaultBackend string                           `json:"default_backend,omitempty"`
 	Backends       map[string]ProviderBackendConfig `json:"backends,omitempty"`
@@ -63,11 +67,18 @@ type ProviderGatewayConfig struct {
 // IsZeroCreditMode returns the effective zero-credit setting: true (the
 // fail-closed default) unless explicitly set to false.
 func (p ProviderGatewayConfig) IsZeroCreditMode() bool {
+	if p.ZeroAPIBillingMode != nil {
+		return *p.ZeroAPIBillingMode
+	}
 	if p.ZeroCreditMode == nil {
 		return true
 	}
 	return *p.ZeroCreditMode
 }
+
+// IsZeroAPIBillingMode is the canonical name for the policy. The legacy
+// method above remains for source compatibility with existing integrations.
+func (p ProviderGatewayConfig) IsZeroAPIBillingMode() bool { return p.IsZeroCreditMode() }
 
 type ProviderBackendConfig struct {
 	// Type is one of: "openai-compatible" (a local/self-hosted server
@@ -757,6 +768,17 @@ func validateProviderGateway(cfg *Config) error {
 	if len(p.Backends) == 0 {
 		return fmt.Errorf("provider.backends must define at least one backend when provider.enabled is true")
 	}
+	listen := p.Listen
+	if listen == "" {
+		listen = "127.0.0.1:8789"
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil || host == "" {
+		return fmt.Errorf("provider.listen %q is invalid; expected host:port", listen)
+	}
+	if !p.AllowPublicListen && !isLoopbackHost(host) {
+		return fmt.Errorf("provider.listen %q is not loopback-safe; set provider.allow_public_listen=true only with an authenticated, protected deployment", listen)
+	}
 
 	denied := toStringSet(p.DeniedBackendTypes)
 	allowed := toStringSet(p.AllowedBackendTypes)
@@ -766,8 +788,19 @@ func validateProviderGateway(cfg *Config) error {
 			return fmt.Errorf("provider.backends[%q]: type is required", name)
 		}
 		lt := strings.ToLower(strings.TrimSpace(b.Type))
+		switch lt {
+		case "openai-compatible", "openai-api", "codex", "bedrock", "chatgpt-subscription":
+		default:
+			return fmt.Errorf("provider.backends[%q]: unsupported backend type %q", name, b.Type)
+		}
 		if lt == "openai-compatible" && strings.TrimSpace(b.BaseURL) == "" {
 			return fmt.Errorf("provider.backends[%q]: base_url is required for type \"openai-compatible\"", name)
+		}
+		if b.BaseURL != "" {
+			u, parseErr := url.Parse(b.BaseURL)
+			if parseErr != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				return fmt.Errorf("provider.backends[%q]: base_url %q must be an absolute http(s) URL", name, b.BaseURL)
+			}
 		}
 	}
 
@@ -817,6 +850,14 @@ func validateProviderGateway(cfg *Config) error {
 	}
 
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // MigrateV1ToV2 migrates a v1 configuration JSON payload to v2.

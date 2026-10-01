@@ -27,10 +27,17 @@ type AuditRecord struct {
 	Timestamp     time.Time `json:"timestamp"`
 	RequestID     string    `json:"request_id"`
 	CorrelationID string    `json:"correlation_id,omitempty"`
+	Route         string    `json:"route,omitempty"`
+	Method        string    `json:"method,omitempty"`
 	Client        string    `json:"client,omitempty"`
 	Model         string    `json:"model,omitempty"`
 	Backend       string    `json:"backend,omitempty"`
 	Result        string    `json:"result"` // "ok", "error"
+	Status        int       `json:"status,omitempty"`
+	Stream        bool      `json:"stream,omitempty"`
+	ErrorClass    string    `json:"error_class,omitempty"`
+	Cancelled     bool      `json:"cancelled,omitempty"`
+	TimedOut      bool      `json:"timed_out,omitempty"`
 	PolicyDenied  bool      `json:"policy_denied,omitempty"`
 	LatencyMS     int64     `json:"latency_ms"`
 	StreamStatus  string    `json:"stream_status,omitempty"`
@@ -141,7 +148,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "harnessmesh_provider_requests_total %d\n", s.requests.Load())
 	fmt.Fprintf(w, "harnessmesh_provider_errors_total %d\n", s.errors.Load())
 	fmt.Fprintf(w, "harnessmesh_provider_streams_active %d\n", s.activeReqs.Load())
-	fmt.Fprintf(w, "harnessmesh_zero_credit_policy_denials_total %d\n", s.denials.Load())
+	fmt.Fprintf(w, "harnessmesh_zero_api_billing_policy_denials_total %d\n", s.denials.Load())
 	fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"openai-api\"} %d\n", creditguard.Calls(creditguard.BackendOpenAIAPI))
 	fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"codex\"} %d\n", creditguard.Calls(creditguard.BackendCodex))
 	s.backendCalls.Range(func(k, v any) bool {
@@ -166,16 +173,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"zero_credit_mode":     policy.ZeroCreditMode,
-		"default_backend":      policy.DefaultBackend,
-		"fallback_enabled":     policy.FallbackEnabled,
-		"backends":             backends,
-		"requests_total":       s.requests.Load(),
-		"errors_total":         s.errors.Load(),
-		"policy_denials_total": s.denials.Load(),
-		"active_streams":       s.activeReqs.Load(),
-		"openai_api_calls":     creditguard.Calls(creditguard.BackendOpenAIAPI),
-		"codex_calls":          creditguard.Calls(creditguard.BackendCodex),
+		"zero_api_billing_mode": policy.ZeroCreditMode,
+		"default_backend":       policy.DefaultBackend,
+		"fallback_enabled":      policy.FallbackEnabled,
+		"backends":              backends,
+		"requests_total":        s.requests.Load(),
+		"errors_total":          s.errors.Load(),
+		"policy_denials_total":  s.denials.Load(),
+		"active_streams":        s.activeReqs.Load(),
+		"openai_api_calls":      creditguard.Calls(creditguard.BackendOpenAIAPI),
+		"codex_calls":           creditguard.Calls(creditguard.BackendCodex),
 	})
 }
 
@@ -313,7 +320,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	backend, err := s.registry.Resolve(backendName)
 	if err != nil {
 		s.recordDenialIfPolicy(err)
-		s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Model: req.Model, Backend: backendName, Result: "error", PolicyDenied: isPolicyError(err), LatencyMS: time.Since(start).Milliseconds()})
+		s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: r.URL.Path, Method: r.Method, Model: req.Model, Backend: backendName, Result: "error", Status: statusForProviderError(err), Stream: req.Stream, ErrorClass: fmt.Sprintf("%T", err), PolicyDenied: isPolicyError(err), LatencyMS: time.Since(start).Milliseconds()})
 		writeProviderError(w, statusForProviderError(err), err)
 		return
 	}
@@ -386,7 +393,7 @@ func (s *Server) streamHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 	if usedBackend != nil {
 		backendName = usedBackend.Name()
 	}
-	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Model: req.Model, Backend: backendName, Result: status, LatencyMS: time.Since(start).Milliseconds(), StreamStatus: status})
+	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: r.URL.Path, Method: r.Method, Model: req.Model, Backend: backendName, Result: status, Status: http.StatusOK, Stream: true, ErrorClass: errorClass(err), Cancelled: err == context.Canceled, TimedOut: err == context.DeadlineExceeded, LatencyMS: time.Since(start).Milliseconds(), StreamStatus: status})
 }
 
 func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, attempts []InferenceBackend, req Request, requestID, correlationID string, start time.Time) {
@@ -421,7 +428,7 @@ func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, attemp
 	if err != nil {
 		status = "error"
 		s.errors.Add(1)
-		s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Model: req.Model, Backend: backend.Name(), Result: status, LatencyMS: time.Since(start).Milliseconds()})
+		s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: "/v1/responses", Method: http.MethodPost, Model: req.Model, Backend: backend.Name(), Result: status, Status: statusForProviderError(err), Stream: false, ErrorClass: errorClass(err), Cancelled: err == context.Canceled, TimedOut: err == context.DeadlineExceeded, LatencyMS: time.Since(start).Milliseconds()})
 		writeProviderError(w, statusForProviderError(err), err)
 		return
 	}
@@ -430,7 +437,7 @@ func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, attemp
 		writeProviderError(w, http.StatusInternalServerError, fmt.Errorf("backend produced no final response"))
 		return
 	}
-	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Model: req.Model, Backend: backend.Name(), Result: status, LatencyMS: time.Since(start).Milliseconds()})
+	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: "/v1/responses", Method: http.MethodPost, Model: req.Model, Backend: backend.Name(), Result: status, Status: http.StatusOK, Stream: false, LatencyMS: time.Since(start).Milliseconds()})
 	w.Header().Set("X-Request-Id", requestID)
 	writeJSON(w, http.StatusOK, final)
 }
@@ -526,6 +533,13 @@ func isPolicyError(err error) bool {
 		return true
 	}
 	return false
+}
+
+func errorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("%T", err)
 }
 
 func isPayloadTooLarge(err error) bool {

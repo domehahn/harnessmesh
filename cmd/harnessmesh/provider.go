@@ -161,9 +161,9 @@ func providerServe(args []string) error {
 	}
 	srv := provider.NewServer(gwCfg, registry)
 
-	mode := "zero-credit"
+	mode := "zero_api_billing_mode"
 	if !gwCfg.IsZeroCreditMode() {
-		mode = "UNRESTRICTED (zero_credit_mode=false)"
+		mode = "UNRESTRICTED (zero_api_billing_mode=false)"
 	}
 	fmt.Fprintf(os.Stderr, "HarnessMesh provider gateway listening on %s (default_backend=%q, mode=%s)\n", listenAddr, gwCfg.DefaultBackend, mode)
 	fmt.Fprintf(os.Stderr, "Codex config.toml: run `harnessmesh integrate codex-provider --listen %s`\n", listenAddr)
@@ -216,12 +216,16 @@ func doctorProvider(cfg *config.Config) bool {
 		fmt.Println("PASS provider token configured")
 	}
 
-	mode := "strict (zero-credit)"
+	mode := "strict (zero_api_billing_mode)"
 	if !cfg.Provider.IsZeroCreditMode() {
 		mode = "OFF - openai-api/codex backends are reachable if configured"
-		fmt.Printf("INFO zero_credit_mode=%s\n", mode)
+		fmt.Printf("INFO zero_api_billing_mode=%s\n", mode)
 	} else {
-		fmt.Println("PASS zero_credit_mode=strict: OpenAI API and Codex backends are denied by policy")
+		fmt.Println("PASS OpenAI API-key billing disabled")
+		fmt.Println("PASS metered OpenAI API backends denied")
+		fmt.Println("PASS Codex CLI inference backend denied")
+		fmt.Println("INFO ChatGPT SIWC usage accounting is controlled by OpenAI")
+		fmt.Println("INFO HarnessMesh cannot guarantee zero ChatGPT/Codex plan allowance usage")
 	}
 
 	if os.Getenv("OPENAI_API_KEY") != "" {

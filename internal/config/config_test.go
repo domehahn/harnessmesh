@@ -359,6 +359,29 @@ func TestProviderGateway_ValidZeroCreditConfig_Passes(t *testing.T) {
 	}
 }
 
+func TestProviderGateway_ZeroAPIBillingMode_IsCanonicalAndLegacyAliasWorks(t *testing.T) {
+	raw := []byte(`{"version":2,"agents":{"placeholder":{"kind":"fake","role":"executor","writable":true}},"provider":{"enabled":true,"zero_api_billing_mode":true,"default_backend":"local","backends":{"local":{"type":"openai-compatible","base_url":"http://127.0.0.1:8000/v1"}}}}`)
+	cfg, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("canonical mode should parse: %v", err)
+	}
+	if !cfg.Provider.IsZeroAPIBillingMode() || !cfg.Provider.IsZeroCreditMode() {
+		t.Fatal("expected canonical and compatibility accessors to report enabled")
+	}
+	legacy := []byte(`{"version":2,"agents":{"placeholder":{"kind":"fake","role":"executor","writable":true}},"provider":{"enabled":true,"zero_credit_mode":false,"default_backend":"local","backends":{"local":{"type":"openai-compatible","base_url":"http://127.0.0.1:8000/v1"}}}}`)
+	cfg, err = Parse(legacy)
+	if err != nil || cfg.Provider.IsZeroAPIBillingMode() {
+		t.Fatalf("legacy alias should remain compatible, cfg=%v err=%v", cfg, err)
+	}
+}
+
+func TestProviderGateway_UnsafeListenAndUnknownBackendFailFast(t *testing.T) {
+	raw := []byte(`{"version":2,"agents":{"placeholder":{"kind":"fake","role":"executor","writable":true}},"provider":{"enabled":true,"listen":"0.0.0.0:8789","default_backend":"local","backends":{"local":{"type":"future-backend","base_url":"http://127.0.0.1:8000/v1"}}}}`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected unsafe listen and unknown backend configuration to fail fast")
+	}
+}
+
 // TestProviderGateway_StillRequiresAtLeastOneAgent proves the "at least one
 // agent" requirement is deliberately NOT relaxed for provider-enabled
 // configs (self-review caught a real gap here: relaxing it would let a

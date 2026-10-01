@@ -19,7 +19,7 @@ func IsMeteredBackendType(t string) bool {
 	return config.IsMeteredProviderBackendType(t)
 }
 
-// Policy is the resolved, effective zero-credit/routing policy for one
+// Policy is the resolved, effective zero-API-billing/routing policy for one
 // provider gateway instance.
 type Policy struct {
 	ZeroCreditMode      bool
