@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 )
 
 // EmbeddingProvider is intentionally small so deployments can use OpenAI,
@@ -43,6 +45,7 @@ func (p *OpenAIEmbeddingProvider) Embed(ctx context.Context, inputs []string) ([
 	if p == nil || p.APIKey == "" {
 		return nil, fmt.Errorf("embedding provider is not configured")
 	}
+	creditguard.RecordCall(creditguard.BackendOpenAIAPI)
 	body, err := json.Marshal(map[string]any{"model": p.Model, "input": inputs})
 	if err != nil {
 		return nil, err

@@ -1,0 +1,1081 @@
+// Package provider implements HarnessMesh's Codex-compatible model-provider
+// gateway: an HTTP server speaking the subset of the OpenAI Responses API
+// wire protocol (wire_api = "responses") that the official Codex VS Code
+// extension / Codex CLI require of a custom model_provider. It is a
+// separate, bounded plane from HarnessMesh's collaboration engine
+// (internal/collaboration) - this package performs no collaboration
+// operations, and nothing in internal/collaboration depends on it.
+//
+// Verified against OpenAI/Codex documentation as of 2026-09-29:
+//   - developers.openai.com/codex/config-reference (model_providers table:
+//     base_url, name, wire_api, env_key/experimental_bearer_token/auth,
+//     http_headers/env_http_headers, query_params, request_max_retries,
+//     stream_idle_timeout_ms, stream_max_retries, supports_websockets)
+//   - "responses" is the only supported wire_api value (default when
+//     omitted); chat/completions support was deprecated.
+//   - Convention: base_url ends in "/v1"; Codex POSTs to
+//     "{base_url}/responses".
+//   - developers.openai.com/api/reference/resources/responses/streaming-events
+//     (SSE event names: response.created, response.output_item.added,
+//     response.output_text.delta, response.function_call_arguments.delta,
+//     response.completed, error, etc.)
+package provider
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// Request is the subset of the Responses API request body HarnessMesh
+// accepts. Fields Codex is not known to require are intentionally omitted
+// rather than guessed.
+type Request struct {
+	Model        string          `json:"model"`
+	Input        InputItems      `json:"input"`
+	Instructions string          `json:"instructions,omitempty"`
+	Stream       bool            `json:"stream,omitempty"`
+	Tools        []Tool          `json:"tools,omitempty"`
+	ToolChoice   json.RawMessage `json:"tool_choice,omitempty"`
+	// Reasoning carries the documented top-level reasoning-effort object
+	// (e.g. {"effort":"medium"}) opaquely - HarnessMesh does not interpret
+	// it, only passes it through to backends that support it.
+	Reasoning          json.RawMessage `json:"reasoning,omitempty"`
+	Temperature        *float64        `json:"temperature,omitempty"`
+	MaxOutputTokens    *int            `json:"max_output_tokens,omitempty"`
+	ParallelToolCalls  *bool           `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	Metadata           map[string]any  `json:"metadata,omitempty"`
+
+	// Include is the documented Responses API "include" parameter - an
+	// array of ResponseIncludable enum values (developers.openai.com/api/
+	// reference/resources/responses/methods/create.md, fetched
+	// 2026-09-30: "Specify additional output data to include in the model
+	// response... reasoning.encrypted_content" among others). Forwarded
+	// verbatim; it is not on SIWC's forbidden-field list, and is how a
+	// caller requests reasoning.encrypted_content for stateless
+	// (store:false) reasoning continuation.
+	Include []string `json:"include,omitempty"`
+	// PromptCacheKey is the real current Codex VS Code extension's
+	// "prompt_cache_key" field - distinct from the forbidden
+	// "prompt_cache_retention" (a different, unrelated field name; this
+	// one is not on SIWC's forbidden-field list). Its precise documented
+	// semantics could not be confirmed in the pages this package could
+	// fetch; forwarded verbatim as UNVERIFIED-but-not-excluded, consistent
+	// with this package's policy of not rejecting on mere suspicion.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// Text is the real current Codex VS Code extension's "text" top-level
+	// field. Its precise documented shape could not be confirmed with
+	// confidence in the pages this package could fetch (conflicting
+	// signals from a large, paginated reference page); kept fully opaque
+	// (json.RawMessage) so it is forwarded verbatim regardless of its
+	// actual shape, rather than guessing a type. UNVERIFIED-but-not-
+	// excluded - not on SIWC's forbidden-field list.
+	Text json.RawMessage `json:"text,omitempty"`
+	// ClientMetadata is the real current Codex VS Code extension's
+	// "client_metadata" top-level field. Not found in the official
+	// Responses reference pages this package could fetch, and not on
+	// SIWC's forbidden-field list; forwarded verbatim as opaque,
+	// UNVERIFIED-but-not-excluded client-supplied metadata.
+	ClientMetadata json.RawMessage `json:"client_metadata,omitempty"`
+
+	// RawKeys captures every top-level JSON key actually present in the
+	// original request body (regardless of whether a typed field above
+	// models it), so a route-specific validator - see
+	// siwc_request_normalize.go's normalizeForSIWC - can detect the
+	// presence of a field it must reject even when this general-purpose
+	// struct has no dedicated Go field for it (e.g. "background",
+	// "conversation", "multi_agent"), and can distinguish an EXPLICITLY
+	// sent zero value (e.g. "store":false) from a field that was never
+	// sent at all, which a plain bool/omitempty field cannot.
+	RawKeys map[string]json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes into the typed fields exactly as a plain struct
+// would (via a type-aliased pass, which carries no methods and so cannot
+// recurse into this method), and additionally captures every top-level key
+// into RawKeys for callers that need raw presence/value detection.
+func (r *Request) UnmarshalJSON(data []byte) error {
+	type requestAlias Request
+	var a requestAlias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = Request(a)
+	r.RawKeys = raw
+	return nil
+}
+
+// InputItems accepts either a plain string (shorthand for a single user
+// message) or an array of typed input items, matching the Responses API's
+// documented flexible "input" field.
+type InputItems []InputItem
+
+func (it *InputItems) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "null" || trimmed == "" {
+		*it = nil
+		return nil
+	}
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		*it = InputItems{{Type: "message", Role: "user", Content: NewPartsContent([]ContentPart{{Type: "input_text", Text: asString}})}}
+		return nil
+	}
+	var asArray []InputItem
+	if err := json.Unmarshal(data, &asArray); err != nil {
+		// A specific, already-typed per-item compatibility error is more
+		// useful than the generic "expected string or array" wrapper below
+		// - the top-level shape WAS a valid array, only one item failed a
+		// specific, named compatibility check.
+		var unsupportedType *UnsupportedResponsesInputItemTypeError
+		var unsupportedCapability *UnsupportedSIWCCapabilityError
+		var malformed *MalformedInputItemError
+		if errors.As(err, &unsupportedType) || errors.As(err, &unsupportedCapability) || errors.As(err, &malformed) {
+			return err
+		}
+		return fmt.Errorf("input: expected string or array of input items: %w", err)
+	}
+	*it = asArray
+	return nil
+}
+
+// Content represents the Responses API message "content" field, which the
+// documented schema allows to be encoded as EITHER a plain string (the
+// "easy message" shorthand OpenAI's own SIWC documentation demonstrates:
+// {"role":"user","content":"Say exactly: Hello, world!"}) or an array of
+// typed content parts ({"type":"input_text","text":"..."} and friends).
+// Content round-trips through whichever encoding it was received in -
+// HarnessMesh does not normalize one form into the other when forwarding a
+// request upstream, since both are independently valid wire shapes and
+// real Codex/Responses examples use both.
+type Content struct {
+	text   string
+	parts  []ContentPart
+	isText bool
+	set    bool
+}
+
+// NewTextContent builds Content in its plain-string form.
+func NewTextContent(text string) Content { return Content{text: text, isText: true, set: true} }
+
+// NewPartsContent builds Content in its content-parts-array form.
+func NewPartsContent(parts []ContentPart) Content {
+	return Content{parts: parts, isText: false, set: true}
+}
+
+// IsSet reports whether this Content was actually populated (as opposed to
+// a zero-value Content on an item type, like function_call, that has no
+// "content" field at all).
+func (c Content) IsSet() bool { return c.set }
+
+// IsText reports whether this Content was encoded as a plain string.
+func (c Content) IsText() bool { return c.set && c.isText }
+
+// Text returns the plain-string form's value (empty if IsText is false).
+func (c Content) Text() string { return c.text }
+
+// Parts returns the content-parts-array form's value (nil if IsText is true).
+func (c Content) Parts() []ContentPart { return c.parts }
+
+// PlainText renders this content as flat text, for backends (Bedrock,
+// Codex CLI, OpenAI-compatible Chat Completions) that only ever accept a
+// single text string: the plain-string form verbatim, or every part's Text
+// field concatenated in order.
+func (c Content) PlainText() string {
+	if !c.set {
+		return ""
+	}
+	if c.isText {
+		return c.text
+	}
+	var b strings.Builder
+	for _, p := range c.parts {
+		b.WriteString(p.Text)
+	}
+	return b.String()
+}
+
+func (c *Content) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "null" {
+		return fmt.Errorf("content: null is not a valid message content value")
+	}
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		*c = Content{text: asString, isText: true, set: true}
+		return nil
+	}
+	var asParts []ContentPart
+	if err := json.Unmarshal(data, &asParts); err == nil {
+		*c = Content{parts: asParts, isText: false, set: true}
+		return nil
+	}
+	return fmt.Errorf("content: expected a string or an array of content parts")
+}
+
+func (c Content) MarshalJSON() ([]byte, error) {
+	if !c.set {
+		return []byte("null"), nil
+	}
+	if c.isText {
+		return json.Marshal(c.text)
+	}
+	if c.parts == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(c.parts)
+}
+
+// CallOutput represents the Responses API "output" field on
+// function_call_output and custom_tool_call_output input items. A real
+// Codex VS Code tool-result replay request proved this field is NOT
+// string-only: the current Codex client encodes it as either a plain
+// string or an array of content items (e.g.
+// {"type":"input_text","text":"..."}, and other content-item shapes such
+// as image/audio references) - a request HarnessMesh previously rejected
+// outright with "output must be a string". Each array element is
+// preserved as raw, untouched JSON (never decoded into a narrow struct),
+// so content-item fields this package doesn't model - including entirely
+// different content-item types like image references - are never lost.
+// CallOutput never normalizes an array into a flattened string: doing so
+// would destroy content-item semantics (e.g. collapsing a mixed text+
+// image array into text alone).
+type CallOutput struct {
+	text   string
+	items  []json.RawMessage
+	isText bool
+	set    bool
+}
+
+// NewTextCallOutput builds CallOutput in its plain-string form.
+func NewTextCallOutput(text string) CallOutput {
+	return CallOutput{text: text, isText: true, set: true}
+}
+
+// NewItemsCallOutput builds CallOutput in its content-items-array form.
+func NewItemsCallOutput(items []json.RawMessage) CallOutput {
+	return CallOutput{items: items, isText: false, set: true}
+}
+
+// IsSet reports whether this CallOutput was actually populated.
+func (c CallOutput) IsSet() bool { return c.set }
+
+// IsText reports whether this CallOutput was encoded as a plain string.
+func (c CallOutput) IsText() bool { return c.set && c.isText }
+
+// Items returns the content-items-array form's raw elements (nil if
+// IsText is true).
+func (c CallOutput) Items() []json.RawMessage { return c.items }
+
+// Text returns the plain-string form's value (empty if IsText is false).
+func (c CallOutput) Text() string { return c.text }
+
+// PlainText renders this output as flat text, for backends (Bedrock,
+// Codex CLI, OpenAI-compatible Chat Completions) that only ever accept a
+// single text string: the plain-string form verbatim, or every content
+// item's "text" field (when present) concatenated in order. Items with no
+// "text" field (e.g. an image reference) contribute nothing to this flat
+// rendering - those backends simply cannot represent them, which is a
+// pre-existing limitation of their own wire formats, not a new loss
+// introduced here (the original item is still preserved losslessly for
+// any backend, like SubscriptionBackend, that forwards it directly).
+func (c CallOutput) PlainText() string {
+	if !c.set {
+		return ""
+	}
+	if c.isText {
+		return c.text
+	}
+	var b strings.Builder
+	for _, raw := range c.items {
+		var probe struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(raw, &probe) == nil {
+			b.WriteString(probe.Text)
+		}
+	}
+	return b.String()
+}
+
+func (c *CallOutput) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "null" {
+		return fmt.Errorf("output: null is not a valid call output value")
+	}
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		*c = CallOutput{text: asString, isText: true, set: true}
+		return nil
+	}
+	var asItems []json.RawMessage
+	if err := json.Unmarshal(data, &asItems); err == nil {
+		for i, raw := range asItems {
+			var probe struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(raw, &probe); err != nil {
+				return fmt.Errorf("output[%d]: not a valid content item object: %w", i, err)
+			}
+			if probe.Type == "" {
+				return fmt.Errorf(`output[%d]: content item is missing required "type" field`, i)
+			}
+		}
+		*c = CallOutput{items: asItems, isText: false, set: true}
+		return nil
+	}
+	// Reject unsupported JSON primitives (number, boolean) with a specific
+	// message rather than silently accepting them - never accept
+	// arbitrary invalid primitive values.
+	return fmt.Errorf("output: expected a string or an array of content items")
+}
+
+func (c CallOutput) MarshalJSON() ([]byte, error) {
+	if !c.set {
+		return []byte("null"), nil
+	}
+	if c.isText {
+		return json.Marshal(c.text)
+	}
+	if c.items == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(c.items)
+}
+
+// This package distinguishes three distinct compatibility-failure modes
+// for an input item, rather than collapsing them into one generic error,
+// per an explicit real-account audit requirement: fixing one Codex-emitted
+// item type per real failure is not sustainable, so each failure mode must
+// say precisely which kind of gap it is.
+//
+//   - UnsupportedResponsesInputItemTypeError: the item's "type" is not
+//     found anywhere in the current official Responses API input-item
+//     schema this package could verify (developers.openai.com/api/reference/
+//     resources/responses, fetched 2026-09-30) - a genuinely unknown or
+//     non-schema type.
+//   - UnsupportedSIWCCapabilityError: the item's "type" (or, for
+//     additional_tools, a tool definition's "type") IS a real, documented
+//     Responses item/tool type, but SIWC's documented preview-limitations
+//     page (developers.openai.com/siwc/token-sharing-open-source/
+//     preview-limitations, fetched 2026-09-30) explicitly lists it as
+//     unsupported. That page's exact "Unsupported" list: "Image
+//     generation, file search, Code Interpreter, native computer use,
+//     hosted MCP/connectors", "Tool search functionality",
+//     "programmatic_tool_calling at the top level", and "Apply patch,
+//     local shell, and other specialized execution tools" - the last item
+//     is a real correction from an earlier pass of this audit, which
+//     incorrectly assumed apply_patch/local_shell were SIWC-supported
+//     "local Codex execution patterns" merely because they execute
+//     client-side; the preview-limitations page names them explicitly as
+//     unsupported regardless. additional_tools support is NOT blanket
+//     permission to enable every hosted or specialized-execution Responses
+//     tool. Note the same page's "Supported" list explicitly includes
+//     "Web search (subject to model and account/workspace policy)" -
+//     web_search_call is therefore NOT in this category (see
+//     siwcSupportedResponsesItemTypes below).
+//   - MalformedInputItemError: the item's "type" is both known AND
+//     SIWC-supported, but its shape doesn't satisfy that type's documented
+//     structural requirements (e.g. additional_tools with a missing/empty
+//     tools array, or a non-"developer" role).
+type UnsupportedResponsesInputItemTypeError struct {
+	Type string
+}
+
+func (e *UnsupportedResponsesInputItemTypeError) Error() string {
+	return fmt.Sprintf("unsupported input item type %q", e.Type)
+}
+
+// UnsupportedSIWCCapabilityError is returned for a real, documented
+// Responses API capability (an item type or a tool type) that is outside
+// SIWC/ChatGPT-plan-usage's documented preview scope - most commonly a
+// hosted tool that requires OpenAI-side execution this locally-hosted
+// gateway cannot and does not claim to support.
+type UnsupportedSIWCCapabilityError struct {
+	Capability string
+}
+
+func (e *UnsupportedSIWCCapabilityError) Error() string {
+	return fmt.Sprintf("capability %q is not supported under SIWC/ChatGPT-plan usage", e.Capability)
+}
+
+// MalformedInputItemError is returned for a known, SIWC-supported item
+// type whose shape violates that type's documented structural
+// requirements.
+type MalformedInputItemError struct {
+	Type   string
+	Reason string
+}
+
+func (e *MalformedInputItemError) Error() string {
+	return fmt.Sprintf("malformed %s input item: %s", e.Type, e.Reason)
+}
+
+// siwcUnsupportedResponsesItemTypes are real, documented Responses API
+// input item types - confirmed via developers.openai.com/api/reference/
+// resources/responses/methods/create.md, developers.openai.com/api/docs/
+// guides/tools-apply-patch.md, and developers.openai.com/api/docs/guides/
+// tools-local-shell.md (all fetched 2026-09-30) - that SIWC's preview-
+// limitations page (developers.openai.com/siwc/token-sharing-open-source/
+// preview-limitations) explicitly places outside its supported scope.
+// Recognizing them by name (rather than falling through to "unknown type")
+// lets HarnessMesh give a precise UnsupportedSIWCCapabilityError instead
+// of a generic unsupported-type error. shell_call/shell_call_output are
+// deliberately NOT included: only local_shell_call/local_shell_call_output
+// could be confirmed to exist in the fetched documentation.
+var siwcUnsupportedResponsesItemTypes = map[string]bool{
+	// "native computer use" - confirmed unsupported.
+	"computer_call":        true,
+	"computer_call_output": true,
+	// "file search" - confirmed unsupported.
+	"file_search_call": true,
+	// "Tool search functionality" - confirmed unsupported.
+	"tool_search_call":   true,
+	"tool_search_output": true,
+	// "Apply patch, local shell, and other specialized execution tools" -
+	// confirmed unsupported, even though they execute client-side.
+	// shell_call/shell_call_output (developers.openai.com/api/docs/guides/
+	// tools-shell.md, fetched 2026-09-30, confirmed real and distinct from
+	// local_shell_call: "Hosted shell and local shell use the same output
+	// item types") fall under this same "and other specialized execution
+	// tools" text.
+	"apply_patch_call":        true,
+	"apply_patch_call_output": true,
+	"local_shell_call":        true,
+	"local_shell_call_output": true,
+	"shell_call":              true,
+	"shell_call_output":       true,
+	// "Image generation" / "Code Interpreter" - confirmed unsupported.
+	"image_generation_call": true,
+	"code_interpreter_call": true,
+	// "hosted MCP/connectors" - confirmed unsupported.
+	"mcp_call":              true,
+	"mcp_list_tools":        true,
+	"mcp_approval_request":  true,
+	"mcp_approval_response": true,
+	// "programmatic_tool_calling at the top level" - confirmed unsupported
+	// (developers.openai.com/api/docs/guides/tools-programmatic-tool-calling.md,
+	// fetched 2026-09-30, confirms program/program_output are the item
+	// types this feature produces).
+	"program":        true,
+	"program_output": true,
+	// Multi-agent orchestration: SIWC's preview-limitations page states
+	// "the multi_agent parameter must be omitted from requests" - the
+	// top-level parameter that enables this feature at all - so its item
+	// types (developers.openai.com/api/docs/guides/agents-api/multi-agent.md,
+	// fetched 2026-09-30: "create_subagent_call, send_subagent_input_call,
+	// wait_for_subagents_call, and interrupt_subagent_call"; "An
+	// agent_message item contains inter-agent text when available") are
+	// unreachable/unsupported on this route. Note these are NOT named
+	// "multi_agent_call"/"multi_agent_call_output" - that was an incorrect
+	// guess from an earlier pass of this audit; these are the real,
+	// confirmed type strings.
+	"create_subagent_call":     true,
+	"send_subagent_input_call": true,
+	"wait_for_subagents_call":  true,
+	"interrupt_subagent_call":  true,
+	"agent_message":            true,
+}
+
+// web_search_call, custom_tool_call, and custom_tool_call_output are real,
+// documented Responses API input item types that SIWC's preview-
+// limitations page does NOT list as unsupported (either explicitly
+// permitted, like web_search_call, or a generic client-executed mechanism
+// like custom_tool_call the page's "Supported" list names directly:
+// "function/custom tools") - see their own InputItem.UnmarshalJSON case
+// blocks below, which model them losslessly via the same Extra-
+// preservation pattern as reasoning: only the fields needed for basic
+// structure (id/status/call_id/...) are named, everything else -
+// including web_search_call's polymorphic "action" payload - passes
+// through untouched.
+
+// siwcSupportedToolTypes are the tool "type" values SIWC's
+// preview-limitations page describes as supported: plain function tools,
+// custom tools ("Supported: ... function/custom tools"), and web search
+// ("Supported: Web search, subject to model and account/workspace
+// policy"). "namespace" is handled separately by validateAdditionalTool,
+// since acceptance of a namespace tool depends on its nested tools, not on
+// "namespace" itself being an allowlisted leaf type.
+var siwcSupportedToolTypes = map[string]bool{
+	"function":   true,
+	"custom":     true,
+	"web_search": true,
+}
+
+// siwcUnsupportedToolTypes are tool "type" values that are real, known
+// Responses tool types but represent OpenAI-hosted or specialized-
+// execution capabilities SIWC's preview-limitations page documents as
+// unsupported - file search, native computer use, Code Interpreter,
+// hosted MCP/connectors, image generation, apply_patch, and local_shell.
+// Recognizing them by name (rather than falling through to "unknown tool
+// type") gives a precise UnsupportedSIWCCapabilityError instead of
+// UnsupportedResponsesToolTypeError, mirroring
+// siwcUnsupportedResponsesItemTypes' item-level reasoning but for tool
+// definitions - including ones nested inside a namespace tool.
+var siwcUnsupportedToolTypes = map[string]bool{
+	"file_search":          true,
+	"computer_use_preview": true,
+	"code_interpreter":     true,
+	"mcp":                  true,
+	"image_generation":     true,
+	"apply_patch":          true,
+	"local_shell":          true,
+}
+
+// UnsupportedResponsesToolTypeError is returned when a tool definition's
+// "type" (inside additional_tools.tools, including nested inside a
+// namespace tool) is not found anywhere in the current official Responses
+// API tool-type schema this package could verify - a genuinely unknown or
+// non-schema tool type. Distinct from UnsupportedSIWCCapabilityError,
+// which names a REAL, documented tool type that SIWC specifically does
+// not support.
+type UnsupportedResponsesToolTypeError struct {
+	Type string
+}
+
+func (e *UnsupportedResponsesToolTypeError) Error() string {
+	return fmt.Sprintf("unsupported tool type %q", e.Type)
+}
+
+// validateAdditionalTool recursively validates one tool definition from an
+// additional_tools item.
+//
+// "namespace" is a REAL, SIWC-supported tool type, confirmed by a real
+// request sent directly to the production SIWC /v1/responses endpoint: a
+// namespace tool wrapping one nested function tool was accepted, echoed
+// back in the response's tools, and the model completed the turn normally
+// (terminal response.completed, monotonic sequence numbers 0..13). It is
+// NOT a hosted capability itself - acceptance depends entirely on whether
+// every tool nested inside it is itself SIWC-supported, checked here
+// recursively (a namespace nested inside another namespace is permitted:
+// the real evidence confirms namespace/function nesting, and deeper
+// nesting follows the identical documented shape).
+//
+// This function only validates; it never mutates, flattens, hoists,
+// reorders, or discards anything - the caller stores each tool definition
+// as raw, untouched JSON (InputItem.Tools is []json.RawMessage), so a
+// namespace tool's exact bytes - type, name, description, nested tools,
+// nested JSON Schemas, and any unrecognized forward-compatible field -
+// survive unchanged all the way to the upstream request.
+func validateAdditionalTool(rawTool json.RawMessage) error {
+	var probe struct {
+		Type  string            `json:"type"`
+		Name  string            `json:"name"`
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(rawTool, &probe); err != nil {
+		return &MalformedInputItemError{Type: "additional_tools", Reason: fmt.Sprintf("tool definition is not a valid object: %v", err)}
+	}
+	if probe.Type == "" {
+		return &MalformedInputItemError{Type: "additional_tools", Reason: `tool definition is missing required "type" field`}
+	}
+
+	if probe.Type == "namespace" {
+		if probe.Name == "" {
+			return &MalformedInputItemError{Type: "additional_tools", Reason: `namespace tool is missing required "name" field`}
+		}
+		if len(probe.Tools) == 0 {
+			return &MalformedInputItemError{Type: "additional_tools", Reason: `namespace tool is missing required non-empty "tools" field`}
+		}
+		for _, nested := range probe.Tools {
+			// Returned as-is (not wrapped) so callers can type-assert the
+			// exact underlying error (UnsupportedSIWCCapabilityError,
+			// UnsupportedResponsesToolTypeError, MalformedInputItemError),
+			// matching every other typed-error path in this package.
+			if err := validateAdditionalTool(nested); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if siwcSupportedToolTypes[probe.Type] {
+		return nil
+	}
+	if siwcUnsupportedToolTypes[probe.Type] {
+		return &UnsupportedSIWCCapabilityError{Capability: fmt.Sprintf("additional_tools tool type %q", probe.Type)}
+	}
+	return &UnsupportedResponsesToolTypeError{Type: probe.Type}
+}
+
+// InputItem is a discriminated union over the Responses API input item
+// "type" field. HarnessMesh models exactly the item types Codex is known
+// to send AND that SIWC's documented preview scope supports: "message",
+// "function_call", "function_call_output", "reasoning" (required so a
+// prior turn's reasoning item can be echoed back as input on the next
+// stateless request - SIWC requires store:false, so nothing is retained
+// server-side between turns), and "additional_tools" (function/custom
+// tools made available starting at this item's position in input - see
+// developers.openai.com/api/reference/resources/responses, fetched
+// 2026-09-30: "A list of additional tools made available at this item"
+// with role:"developer" and a tools array). Any JSON field present on a
+// recognized item that isn't one of the named fields below - including
+// fields this package doesn't interpret, like a reasoning item's
+// "summary"/"encrypted_content" payload - is preserved losslessly in Extra
+// and re-emitted verbatim, rather than silently dropped.
+type InputItem struct {
+	// Type is never emitted as an empty string: an "easy message" item
+	// (role+content with no explicit type - a documented shorthand) is
+	// normalized to "message", the canonical wire type OpenAI's Responses
+	// endpoint actually requires, during unmarshal (and defensively again
+	// on marshal, for a hand-constructed InputItem).
+	Type string
+
+	// type == "message"
+	Role    string
+	Content Content
+
+	// type == "function_call": ID/CallID/Name/Arguments/Status.
+	// type == "function_call_output": ID/CallID/Output/Status - Output is a
+	// CallOutput union (string OR an array of content items), never a
+	// plain string; see CallOutput's doc comment.
+	// type == "reasoning": ID/Status only - its actual reasoning payload
+	// (summary, encrypted_content, ...) is intentionally NOT modeled here
+	// and lives entirely in Extra, since HarnessMesh never interprets it.
+	// type == "web_search_call": ID/Status only - its "action" payload is
+	// intentionally left in Extra (polymorphic: search/open_page/
+	// find_in_page shapes this package does not need to interpret).
+	// type == "custom_tool_call": ID/CallID/Name/Input/Status.
+	// type == "custom_tool_call_output": ID/CallID/Output/Status (same
+	// CallOutput union as function_call_output).
+	// type == "additional_tools": Role (must be "developer") and Tools.
+	ID        string
+	CallID    string
+	Name      string
+	Arguments string
+	Input     string
+	Output    CallOutput
+	Status    string
+
+	// Tools holds an additional_tools item's tool definitions, each
+	// preserved as raw JSON exactly as received - including nested JSON
+	// Schema "parameters" - rather than decoded into a lossy shape. A
+	// []json.RawMessage marshals back to a JSON array element-wise, so the
+	// original array round-trips byte-for-byte.
+	Tools []json.RawMessage
+
+	// Extra preserves every JSON field on this item not already modeled
+	// above.
+	Extra map[string]json.RawMessage
+}
+
+func (it *InputItem) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("input item: expected a JSON object: %w", err)
+	}
+
+	typ := ""
+	if v, ok := raw["type"]; ok {
+		if err := json.Unmarshal(v, &typ); err != nil {
+			return fmt.Errorf("input item: \"type\" must be a string: %w", err)
+		}
+	}
+	_, hasRole := raw["role"]
+	_, hasContent := raw["content"]
+	if typ == "" {
+		if hasRole || hasContent {
+			// The documented "easy message" shorthand: role+content with
+			// no explicit type. Normalize it to the canonical wire type
+			// rather than emitting - or forwarding upstream - type:"".
+			typ = "message"
+		} else {
+			return fmt.Errorf("input item: missing required \"type\" field")
+		}
+	}
+
+	item := InputItem{Type: typ, Extra: make(map[string]json.RawMessage, len(raw))}
+	for k, v := range raw {
+		item.Extra[k] = v
+	}
+	delete(item.Extra, "type")
+
+	assignStringField := func(key string, dst *string) error {
+		v, ok := raw[key]
+		if !ok {
+			return nil
+		}
+		if err := json.Unmarshal(v, dst); err != nil {
+			return fmt.Errorf("input item (%s): %q must be a string: %w", typ, key, err)
+		}
+		delete(item.Extra, key)
+		return nil
+	}
+
+	// assignOutputField decodes the required "output" field on
+	// function_call_output/custom_tool_call_output through the CallOutput
+	// union (string or an array of content items) - NOT a plain string.
+	// This is the confirmed fix for a real Codex tool-result replay
+	// request HarnessMesh previously rejected outright with "output must
+	// be a string" when Codex encoded it as a content-item array.
+	assignOutputField := func() error {
+		v, ok := raw["output"]
+		if !ok {
+			return &MalformedInputItemError{Type: typ, Reason: `missing required "output" field`}
+		}
+		if err := json.Unmarshal(v, &item.Output); err != nil {
+			return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf("invalid \"output\": %v", err)}
+		}
+		delete(item.Extra, "output")
+		return nil
+	}
+
+	switch typ {
+	case "message":
+		if err := assignStringField("role", &item.Role); err != nil {
+			return err
+		}
+		v, ok := raw["content"]
+		if !ok {
+			return fmt.Errorf("input item (message): missing required \"content\" field")
+		}
+		if err := json.Unmarshal(v, &item.Content); err != nil {
+			return fmt.Errorf("input item (message): %w", err)
+		}
+		delete(item.Extra, "content")
+	case "function_call":
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{{"call_id", &item.CallID}, {"id", &item.ID}, {"name", &item.Name}, {"arguments", &item.Arguments}, {"status", &item.Status}} {
+			if err := assignStringField(f.key, f.dst); err != nil {
+				return err
+			}
+		}
+	case "function_call_output":
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{{"call_id", &item.CallID}, {"id", &item.ID}, {"status", &item.Status}} {
+			if err := assignStringField(f.key, f.dst); err != nil {
+				return err
+			}
+		}
+		if err := assignOutputField(); err != nil {
+			return err
+		}
+	case "reasoning":
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{{"id", &item.ID}, {"status", &item.Status}} {
+			if err := assignStringField(f.key, f.dst); err != nil {
+				return err
+			}
+		}
+	case "web_search_call":
+		// Confirmed SIWC-supported ("Web search, subject to model and
+		// account/workspace policy"); HarnessMesh cannot itself verify that
+		// policy, so it forwards the item losslessly (id/status named,
+		// everything else - including the polymorphic "action" payload -
+		// preserved via Extra) and lets the real upstream API enforce it.
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{{"id", &item.ID}, {"status", &item.Status}} {
+			if err := assignStringField(f.key, f.dst); err != nil {
+				return err
+			}
+		}
+	case "custom_tool_call":
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{{"id", &item.ID}, {"call_id", &item.CallID}, {"name", &item.Name}, {"input", &item.Input}, {"status", &item.Status}} {
+			if err := assignStringField(f.key, f.dst); err != nil {
+				return err
+			}
+		}
+	case "custom_tool_call_output":
+		// custom_tool_call's output-item shape was not directly observed
+		// in the fetched documentation (only the call item's JSON example
+		// was shown); this mirrors the consistent call/call_output field
+		// pattern confirmed for function_call_output, apply_patch_call_output,
+		// and local_shell_call_output.
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{{"call_id", &item.CallID}, {"id", &item.ID}, {"status", &item.Status}} {
+			if err := assignStringField(f.key, f.dst); err != nil {
+				return err
+			}
+		}
+		if err := assignOutputField(); err != nil {
+			return err
+		}
+	case "configuration_update", "compaction_trigger":
+		// developers.openai.com/api/docs/guides/reasoning.md, fetched
+		// 2026-09-30: configuration_update's confirmed shape is
+		// {"type":"configuration_update","reasoning":{"effort":"high"}} -
+		// "Add the following item before the next user message in the
+		// input array" to change reasoning effort mid-conversation.
+		// compaction_trigger is confirmed to exist ("explicitly compact
+		// history by including a compaction_trigger item in a /responses
+		// request") but no full field shape was shown.
+		//
+		// SIWC STATUS: UNVERIFIED, not confirmed SUPPORTED. Absence from
+		// SIWC's preview-limitations "Unsupported" list is not, by itself,
+		// sufficient evidence of support - that page only enumerates known
+		// exclusions, it does not claim to be an exhaustive allowlist. No
+		// SIWC documentation or real successful SIWC request has confirmed
+		// either item is accepted on this route. They are forwarded
+		// optimistically (not rejected) since there is also no evidence of
+		// exclusion and rejecting on mere suspicion would block a
+		// legitimate feature if one exists; if OpenAI's real endpoint
+		// rejects either, that structured rejection surfaces via the
+		// existing mapResponsesAPIError path exactly like any other
+		// upstream-rejected request. Their entire payload (e.g.
+		// "reasoning") is preserved via Extra rather than modeled
+		// field-by-field, since this package does not interpret it.
+	case "additional_tools":
+		if err := assignStringField("role", &item.Role); err != nil {
+			return err
+		}
+		// The documented shape's role is a fixed "developer" - no other
+		// value is described anywhere this package could verify, so
+		// anything else (including a missing role) is malformed rather
+		// than silently accepted or silently defaulted.
+		if item.Role == "" {
+			return &MalformedInputItemError{Type: typ, Reason: `missing required "role" field (must be "developer")`}
+		}
+		if item.Role != "developer" {
+			return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf(`"role" must be "developer", got %q`, item.Role)}
+		}
+
+		toolsRaw, ok := raw["tools"]
+		if !ok {
+			return &MalformedInputItemError{Type: typ, Reason: `missing required "tools" field`}
+		}
+		var tools []json.RawMessage
+		if err := json.Unmarshal(toolsRaw, &tools); err != nil {
+			return &MalformedInputItemError{Type: typ, Reason: fmt.Sprintf(`"tools" must be a JSON array: %v`, err)}
+		}
+		if len(tools) == 0 {
+			return &MalformedInputItemError{Type: typ, Reason: `"tools" must be non-empty`}
+		}
+		for _, rawTool := range tools {
+			if err := validateAdditionalTool(rawTool); err != nil {
+				return err
+			}
+		}
+		item.Tools = tools
+		delete(item.Extra, "tools")
+	default:
+		if siwcUnsupportedResponsesItemTypes[typ] {
+			return &UnsupportedSIWCCapabilityError{Capability: fmt.Sprintf("input item type %q", typ)}
+		}
+		return &UnsupportedResponsesInputItemTypeError{Type: typ}
+	}
+
+	*it = item
+	return nil
+}
+
+func (it InputItem) MarshalJSON() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(it.Extra)+6)
+	for k, v := range it.Extra {
+		out[k] = v
+	}
+
+	typ := it.Type
+	if typ == "" && (it.Role != "" || it.Content.IsSet()) {
+		// Defensive normalization for a hand-constructed InputItem that set
+		// Role/Content but forgot Type - matches the same normalization
+		// UnmarshalJSON applies to the documented "easy message" shorthand.
+		typ = "message"
+	}
+	if typ == "" {
+		// There must NEVER be a serialized Responses item containing
+		// "type":"" - if normalization above couldn't infer one, fail
+		// loudly instead of emitting it.
+		return nil, fmt.Errorf("input item: cannot marshal without a type")
+	}
+	typJSON, err := json.Marshal(typ)
+	if err != nil {
+		return nil, err
+	}
+	out["type"] = typJSON
+
+	setStr := func(key, v string) error {
+		if v == "" {
+			return nil
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		out[key] = b
+		return nil
+	}
+
+	switch typ {
+	case "message":
+		if err := setStr("role", it.Role); err != nil {
+			return nil, err
+		}
+		if it.Content.IsSet() {
+			b, err := it.Content.MarshalJSON()
+			if err != nil {
+				return nil, err
+			}
+			out["content"] = b
+		}
+	case "function_call":
+		for _, f := range []struct {
+			key string
+			val string
+		}{{"call_id", it.CallID}, {"id", it.ID}, {"name", it.Name}, {"arguments", it.Arguments}, {"status", it.Status}} {
+			if err := setStr(f.key, f.val); err != nil {
+				return nil, err
+			}
+		}
+	case "function_call_output":
+		for _, f := range []struct {
+			key string
+			val string
+		}{{"call_id", it.CallID}, {"id", it.ID}, {"status", it.Status}} {
+			if err := setStr(f.key, f.val); err != nil {
+				return nil, err
+			}
+		}
+		if it.Output.IsSet() {
+			b, err := it.Output.MarshalJSON()
+			if err != nil {
+				return nil, err
+			}
+			out["output"] = b
+		}
+	case "reasoning":
+		for _, f := range []struct {
+			key string
+			val string
+		}{{"id", it.ID}, {"status", it.Status}} {
+			if err := setStr(f.key, f.val); err != nil {
+				return nil, err
+			}
+		}
+	case "web_search_call":
+		for _, f := range []struct {
+			key string
+			val string
+		}{{"id", it.ID}, {"status", it.Status}} {
+			if err := setStr(f.key, f.val); err != nil {
+				return nil, err
+			}
+		}
+	case "custom_tool_call":
+		for _, f := range []struct {
+			key string
+			val string
+		}{{"id", it.ID}, {"call_id", it.CallID}, {"name", it.Name}, {"input", it.Input}, {"status", it.Status}} {
+			if err := setStr(f.key, f.val); err != nil {
+				return nil, err
+			}
+		}
+	case "custom_tool_call_output":
+		for _, f := range []struct {
+			key string
+			val string
+		}{{"call_id", it.CallID}, {"id", it.ID}, {"status", it.Status}} {
+			if err := setStr(f.key, f.val); err != nil {
+				return nil, err
+			}
+		}
+		if it.Output.IsSet() {
+			b, err := it.Output.MarshalJSON()
+			if err != nil {
+				return nil, err
+			}
+			out["output"] = b
+		}
+	case "additional_tools":
+		if err := setStr("role", it.Role); err != nil {
+			return nil, err
+		}
+		toolsJSON, err := json.Marshal(it.Tools)
+		if err != nil {
+			return nil, err
+		}
+		out["tools"] = toolsJSON
+	}
+
+	return json.Marshal(out)
+}
+
+type ContentPart struct {
+	Type string `json:"type"` // "input_text", "output_text", "input_image", ...
+	Text string `json:"text,omitempty"`
+}
+
+// Tool describes a function/tool Codex has made available for the model to
+// call. HarnessMesh only needs to pass this through to the backend and
+// report it back verbatim - it never interprets or executes tools itself
+// (see internal/provider's package doc: agent-runtime logic belongs to
+// Codex, not the provider endpoint).
+type Tool struct {
+	Type        string          `json:"type"` // "function"
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
+}
+
+// Status values for a Response or an output item.
+const (
+	StatusInProgress = "in_progress"
+	StatusCompleted  = "completed"
+	StatusIncomplete = "incomplete"
+	StatusFailed     = "failed"
+)
+
+// Response is the Responses API response object, returned as the body of a
+// non-streaming request and as the payload of the final response.completed
+// (or response.failed) streaming event.
+type Response struct {
+	ID                string          `json:"id"`
+	Object            string          `json:"object"` // "response"
+	CreatedAt         int64           `json:"created_at"`
+	Status            string          `json:"status"`
+	Model             string          `json:"model"`
+	Output            []OutputItem    `json:"output"`
+	Usage             *Usage          `json:"usage,omitempty"`
+	Error             *ResponseError  `json:"error,omitempty"`
+	IncompleteDetails json.RawMessage `json:"incomplete_details,omitempty"`
+	ParallelToolCalls bool            `json:"parallel_tool_calls,omitempty"`
+	Metadata          map[string]any  `json:"metadata,omitempty"`
+}
+
+// OutputItem is a discriminated union: "message" (assistant text) or
+// "function_call" (a tool invocation the caller must execute and answer
+// with a function_call_output input item on the next turn).
+type OutputItem struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"` // "message", "function_call", "reasoning"
+	Status string `json:"status,omitempty"`
+
+	// type == "message"
+	Role    string        `json:"role,omitempty"`
+	Content []ContentPart `json:"content,omitempty"`
+
+	// type == "function_call"
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+type Usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+type ResponseError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Type    string `json:"type,omitempty"`
+}

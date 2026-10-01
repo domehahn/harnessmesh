@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/config"
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 )
 
@@ -63,6 +64,7 @@ func (a *OpenAIAdapter) credentials() (string, string) {
 }
 
 func (a *OpenAIAdapter) Health(ctx context.Context) error {
+	creditguard.RecordCall(creditguard.BackendOpenAIAPI)
 	key, base := a.credentials()
 	if key == "" {
 		return &protocol.HarnessAuthenticationRequiredError{Agent: a.Name(), Reason: "OPENAI_API_KEY is not configured"}
@@ -84,6 +86,7 @@ func (a *OpenAIAdapter) Health(ctx context.Context) error {
 }
 
 func (a *OpenAIAdapter) Invoke(ctx context.Context, req InvokeRequest) (InvokeResult, error) {
+	creditguard.RecordCall(creditguard.BackendOpenAIAPI)
 	key, base := a.credentials()
 	if key == "" {
 		return InvokeResult{AgentName: a.Name()}, &protocol.HarnessAuthenticationRequiredError{Agent: a.Name(), Reason: "OPENAI_API_KEY is not configured"}

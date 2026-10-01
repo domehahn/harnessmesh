@@ -1,0 +1,41 @@
+{
+  "version": 2,
+
+  "_comment": "A placeholder agent is required even for a provider-only deployment - see internal/config's 'at least one agent must be configured' invariant, which is deliberately not relaxed for provider.enabled configs (a zero-agent config would fail open in MeshCommit's single-writer checks if this file were ever reused for `mcp serve`/`bridge serve`). `provider serve` itself never reads this section.",
+  "agents": {
+    "placeholder": {
+      "kind": "fake",
+      "role": "executor",
+      "writable": true
+    }
+  },
+
+  "provider": {
+    "enabled": true,
+    "listen": "127.0.0.1:8789",
+    "zero_api_billing_mode": true,
+    "default_backend": "local",
+
+    "backends": {
+      "local": {
+        "type": "openai-compatible",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "model": "your-local-model-id",
+        "timeout_sec": 120
+      },
+      "local-fallback": {
+        "type": "openai-compatible",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "your-ollama-model-id",
+        "timeout_sec": 120
+      }
+    },
+
+    "fallback": {
+      "enabled": true,
+      "order": ["local-fallback"]
+    },
+
+    "denied_backend_types": ["openai-api", "codex"]
+  }
+}

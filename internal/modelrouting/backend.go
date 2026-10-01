@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/config"
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 )
 
@@ -28,14 +29,28 @@ type SwitchyardBackend struct {
 	HTTPClient  *http.Client
 	mu          sync.RWMutex
 	stats       map[string]any
+	// creditIsolationMode is resolved once, from the owning Config, at
+	// construction time (see BuildRegistry) so ConfigureParticipant
+	// enforces the same operator-configured mode as internal/config's own
+	// agent validation - not an independent, always-strict re-derivation
+	// that could disagree with an explicit chatgpt.credit_isolation="off".
+	creditIsolationMode creditguard.Mode
 }
 
 func NewSwitchyardBackend(baseURL string, healthCheck bool) *SwitchyardBackend {
+	return NewSwitchyardBackendWithCreditIsolation(baseURL, healthCheck, creditguard.ResolveMode(""))
+}
+
+// NewSwitchyardBackendWithCreditIsolation is like NewSwitchyardBackend but
+// pins the credit-isolation mode explicitly, so it agrees with whatever the
+// owning Config resolved (see BuildRegistry).
+func NewSwitchyardBackendWithCreditIsolation(baseURL string, healthCheck bool, mode creditguard.Mode) *SwitchyardBackend {
 	return &SwitchyardBackend{
-		BaseURL:     strings.TrimRight(baseURL, "/"),
-		HealthCheck: healthCheck,
-		HTTPClient:  &http.Client{Timeout: 5 * time.Second},
-		stats:       make(map[string]any),
+		BaseURL:             strings.TrimRight(baseURL, "/"),
+		HealthCheck:         healthCheck,
+		HTTPClient:          &http.Client{Timeout: 5 * time.Second},
+		stats:               make(map[string]any),
+		creditIsolationMode: mode,
 	}
 }
 
@@ -79,6 +94,11 @@ func (s *SwitchyardBackend) Health(ctx context.Context) error {
 }
 
 func (s *SwitchyardBackend) ConfigureParticipant(cfg *config.AgentConfig) error {
+	if cfg.IsExternal() {
+		if err := creditguard.CheckParticipant(s.creditIsolationMode, "switchyard-participant", true, "openai-api"); err != nil {
+			return fmt.Errorf("refusing to route external participant through switchyard->OpenAI: %w", err)
+		}
+	}
 	cfg.UseSwitchyard = true
 	if cfg.ModelRouting != nil && cfg.ModelRouting.Route != "" {
 		cfg.SwitchyardRouteID = cfg.ModelRouting.Route
@@ -173,16 +193,18 @@ func BuildRegistry(cfg *config.Config) map[string]ModelRoutingBackend {
 	backends["fixed"] = &FixedBackend{}
 	backends["external"] = &ExternalBackend{}
 
+	creditIsolationMode := creditguard.ResolveMode(cfg.ChatGPT.CreditIsolation)
+
 	// Legacy switchyard config
 	if cfg.Switchyard.Enabled && cfg.Switchyard.BaseURL != "" {
-		backends["switchyard"] = NewSwitchyardBackend(cfg.Switchyard.BaseURL, true)
+		backends["switchyard"] = NewSwitchyardBackendWithCreditIsolation(cfg.Switchyard.BaseURL, true, creditIsolationMode)
 	}
 
 	// v2 model_routing_backends map
 	for name, bCfg := range cfg.ModelRoutingBackends {
 		switch strings.ToLower(bCfg.Type) {
 		case "switchyard":
-			backends[name] = NewSwitchyardBackend(bCfg.BaseURL, bCfg.HealthCheck)
+			backends[name] = NewSwitchyardBackendWithCreditIsolation(bCfg.BaseURL, bCfg.HealthCheck, creditIsolationMode)
 		case "fixed":
 			backends[name] = &FixedBackend{}
 		case "external":

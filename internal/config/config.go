@@ -3,10 +3,14 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 )
 
 type WorkspaceConfig struct {
@@ -26,6 +30,100 @@ type Config struct {
 	Agents               map[string]AgentConfig               `json:"agents"`
 	CapabilityRouting    map[string][]string                  `json:"capability_routing,omitempty"`
 	ChangeControl        ChangeControlConfig                  `json:"change_control,omitempty"`
+	ChatGPT              ChatGPTBridgeConfig                  `json:"chatgpt,omitempty"`
+	Bridge               BridgeConfig                         `json:"bridge,omitempty"`
+	Provider             ProviderGatewayConfig                `json:"provider,omitempty"`
+}
+
+// ProviderGatewayConfig configures HarnessMesh's Codex-compatible model
+// provider gateway (the Responses-API-wire HTTP server Codex's
+// model_providers.harnessmesh entry points at). This is a bounded interface
+// separate from the collaboration plane: it never performs collaboration
+// operations, and the collaboration plane never depends on it.
+type ProviderGatewayConfig struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Listen  string `json:"listen,omitempty"` // default 127.0.0.1:8789
+	Token   string `json:"token,omitempty"`
+
+	// ZeroAPIBillingMode, when true (the default), forbids routing any request
+	// through a metered backend (openai-api, codex). zero_credit_mode remains
+	// accepted as a legacy alias, but is never emitted in user-facing output.
+	ZeroAPIBillingMode *bool `json:"zero_api_billing_mode,omitempty"`
+	ZeroCreditMode     *bool `json:"zero_credit_mode,omitempty"`
+	AllowPublicListen  bool  `json:"allow_public_listen,omitempty"`
+
+	DefaultBackend string                           `json:"default_backend,omitempty"`
+	Backends       map[string]ProviderBackendConfig `json:"backends,omitempty"`
+
+	AllowedBackendTypes []string `json:"allowed_backend_types,omitempty"`
+	DeniedBackendTypes  []string `json:"denied_backend_types,omitempty"`
+
+	Fallback ProviderFallbackConfig `json:"fallback,omitempty"`
+
+	RequestMaxBytes  int `json:"request_max_bytes,omitempty"`
+	RequestTimeoutMS int `json:"request_timeout_ms,omitempty"`
+}
+
+// IsZeroCreditMode returns the effective zero-credit setting: true (the
+// fail-closed default) unless explicitly set to false.
+func (p ProviderGatewayConfig) IsZeroCreditMode() bool {
+	if p.ZeroAPIBillingMode != nil {
+		return *p.ZeroAPIBillingMode
+	}
+	if p.ZeroCreditMode == nil {
+		return true
+	}
+	return *p.ZeroCreditMode
+}
+
+// IsZeroAPIBillingMode is the canonical name for the policy. The legacy
+// method above remains for source compatibility with existing integrations.
+func (p ProviderGatewayConfig) IsZeroAPIBillingMode() bool { return p.IsZeroCreditMode() }
+
+type ProviderBackendConfig struct {
+	// Type is one of: "openai-compatible" (a local/self-hosted server
+	// speaking the OpenAI Chat Completions wire, e.g. vLLM/Ollama/LM
+	// Studio), "openai-api" (the real, metered OpenAI API - denied by
+	// default under zero-credit mode), "codex" (the Codex CLI as an
+	// inference backend - denied by default under zero-credit mode),
+	// "bedrock" (AWS Bedrock, if credentials/config are supplied), or
+	// "chatgpt-subscription" (unimplemented placeholder - see
+	// internal/provider's SubscriptionInferenceBackend doc comment).
+	Type         string            `json:"type"`
+	BaseURL      string            `json:"base_url,omitempty"`
+	APIKeyEnv    string            `json:"api_key_env,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	TimeoutSec   int               `json:"timeout_sec,omitempty"`
+	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`
+}
+
+type ProviderFallbackConfig struct {
+	Enabled bool     `json:"enabled,omitempty"`
+	Order   []string `json:"order,omitempty"`
+}
+
+// ChatGPTBridgeConfig configures the ChatGPT-as-collaboration-peer path.
+// It never enables any OpenAI API or Codex usage; CreditIsolation is the
+// explicit, fail-closed guard against that ever happening by accident.
+type ChatGPTBridgeConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// Participant is the agent name (in Agents) that represents the
+	// ChatGPT-browser peer. It must be execution_mode=external and
+	// writable=false.
+	Participant string `json:"participant,omitempty"`
+	// CreditIsolation is "strict" (default) or "off". See internal/creditguard.
+	CreditIsolation string `json:"credit_isolation,omitempty"`
+}
+
+// BridgeConfig configures the local REST/WebSocket bridge used by the
+// VS Code extension. It is a pure collaboration-state transport and never
+// itself contacts a metered LLM backend.
+type BridgeConfig struct {
+	Enabled          bool     `json:"enabled,omitempty"`
+	Listen           string   `json:"listen,omitempty"` // default 127.0.0.1:8788
+	WebSocketEnabled bool     `json:"websocket_enabled,omitempty"`
+	Token            string   `json:"token,omitempty"`
+	AllowedOrigins   []string `json:"allowed_origins,omitempty"`
 }
 
 type SelectionConfig struct {
@@ -488,10 +586,27 @@ func Parse(raw []byte) (*Config, error) {
 	}
 
 	if len(cfg.Agents) == 0 {
+		// Deliberately unconditional, including for provider-gateway-only
+		// deployments: internal/collaboration's MeshCommitCoordinator
+		// treats a config with zero registered agents as "no agent-config
+		// model in play" and skips its single-writer/external-participant
+		// enforcement (see requireWritableExecutor) - a legitimate
+		// allowance for standalone/test use, but dangerous if a real,
+		// config.Parse-validated zero-agent config were ever reused for
+		// `mcp serve`/`bridge serve` (an operator mistake, e.g. copying a
+		// provider-only harnessmesh.json). Requiring at least one agent
+		// unconditionally means that reuse fails immediately and loudly
+		// here, instead of silently building a collaboration engine whose
+		// change-transaction authorization checks are all no-ops. A
+		// provider-only deployment defines one placeholder agent entry -
+		// see configs/codex-provider.example.json - which costs nothing at
+		// runtime since `provider serve` never constructs a
+		// collaboration.Engine or reads cfg.Agents at all.
 		return nil, fmt.Errorf("at least one agent must be configured")
 	}
 
 	writableCount := 0
+	creditIsolationMode := creditguard.ResolveMode(cfg.ChatGPT.CreditIsolation)
 	for name, a := range cfg.Agents {
 		// Normalize kind / adapter
 		if a.Adapter != "" && a.Kind == "" {
@@ -515,6 +630,20 @@ func Parse(raw []byte) (*Config, error) {
 		default:
 			if !a.IsExternal() {
 				return nil, fmt.Errorf("agent %q: unsupported kind/adapter %q", name, a.Kind)
+			}
+		}
+
+		// Credit isolation: an external participant (the ChatGPT bridge role)
+		// must never be configured to resolve through a metered LLM backend.
+		// Fail closed at load time so this can never reach runtime.
+		if a.IsExternal() {
+			if err := creditguard.CheckParticipant(creditIsolationMode, name, true, a.Kind); err != nil {
+				return nil, err
+			}
+			if a.ModelRouting != nil {
+				if err := creditguard.CheckParticipant(creditIsolationMode, name, true, a.ModelRouting.Backend); err != nil {
+					return nil, err
+				}
 			}
 		}
 
@@ -590,7 +719,145 @@ func Parse(raw []byte) (*Config, error) {
 		}
 	}
 
+	if err := validateProviderGateway(&cfg); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+// meteredProviderBackendTypes are the provider-backend types that resolve to
+// a metered LLM backend (the real OpenAI API, or the Codex CLI/SDK used as
+// an inference engine). Zero-credit mode's whole purpose is to make it
+// structurally impossible for these to be reached implicitly.
+var meteredProviderBackendTypes = map[string]bool{
+	"openai-api": true,
+	"codex":      true,
+}
+
+// IsMeteredProviderBackendType reports whether a provider backend type
+// resolves to a metered LLM backend (the real OpenAI API, or Codex used as
+// an inference engine). Exported so internal/provider can reuse this
+// single definition instead of keeping an independent copy.
+func IsMeteredProviderBackendType(t string) bool {
+	return meteredProviderBackendTypes[strings.ToLower(strings.TrimSpace(t))]
+}
+
+// validateProviderGateway rejects configuration combinations that would let
+// zero-credit mode be silently defeated: a default/fallback backend that
+// resolves to a metered type, an allowlist that includes a metered type
+// while zero-credit mode is on, a backend reference that doesn't exist, or
+// an openai-compatible backend with no base_url.
+func toStringSet(ss []string) map[string]bool {
+	out := make(map[string]bool, len(ss))
+	for _, s := range ss {
+		out[strings.ToLower(strings.TrimSpace(s))] = true
+	}
+	return out
+}
+
+func validateProviderGateway(cfg *Config) error {
+	p := cfg.Provider
+	if !p.Enabled {
+		return nil
+	}
+
+	if strings.TrimSpace(p.DefaultBackend) == "" {
+		return fmt.Errorf("provider.default_backend is required when provider.enabled is true")
+	}
+	if len(p.Backends) == 0 {
+		return fmt.Errorf("provider.backends must define at least one backend when provider.enabled is true")
+	}
+	listen := p.Listen
+	if listen == "" {
+		listen = "127.0.0.1:8789"
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil || host == "" {
+		return fmt.Errorf("provider.listen %q is invalid; expected host:port", listen)
+	}
+	if !p.AllowPublicListen && !isLoopbackHost(host) {
+		return fmt.Errorf("provider.listen %q is not loopback-safe; set provider.allow_public_listen=true only with an authenticated, protected deployment", listen)
+	}
+
+	denied := toStringSet(p.DeniedBackendTypes)
+	allowed := toStringSet(p.AllowedBackendTypes)
+
+	for name, b := range p.Backends {
+		if strings.TrimSpace(b.Type) == "" {
+			return fmt.Errorf("provider.backends[%q]: type is required", name)
+		}
+		lt := strings.ToLower(strings.TrimSpace(b.Type))
+		switch lt {
+		case "openai-compatible", "openai-api", "codex", "bedrock", "chatgpt-subscription":
+		default:
+			return fmt.Errorf("provider.backends[%q]: unsupported backend type %q", name, b.Type)
+		}
+		if lt == "openai-compatible" && strings.TrimSpace(b.BaseURL) == "" {
+			return fmt.Errorf("provider.backends[%q]: base_url is required for type \"openai-compatible\"", name)
+		}
+		if b.BaseURL != "" {
+			u, parseErr := url.Parse(b.BaseURL)
+			if parseErr != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				return fmt.Errorf("provider.backends[%q]: base_url %q must be an absolute http(s) URL", name, b.BaseURL)
+			}
+		}
+	}
+
+	zeroCredit := p.IsZeroCreditMode()
+
+	// checkBackendRef mirrors internal/provider's Policy.CheckBackendType so
+	// a self-contradictory config (e.g. default_backend resolving to a type
+	// also listed in denied_backend_types, or excluded by
+	// allowed_backend_types) is caught here rather than only discovered at
+	// first request, when the gateway would otherwise report itself
+	// "listening" while every request silently 403s.
+	checkBackendRef := func(field, name string) error {
+		if name == "" {
+			return nil
+		}
+		b, exists := p.Backends[name]
+		if !exists {
+			return fmt.Errorf("provider.%s %q is not defined in provider.backends", field, name)
+		}
+		lt := strings.ToLower(strings.TrimSpace(b.Type))
+		if zeroCredit && meteredProviderBackendTypes[lt] {
+			return fmt.Errorf("provider.%s %q resolves to metered backend type %q, which zero_credit_mode forbids", field, name, b.Type)
+		}
+		if denied[lt] {
+			return fmt.Errorf("provider.%s %q resolves to backend type %q, which is listed in provider.denied_backend_types", field, name, b.Type)
+		}
+		if len(allowed) > 0 && !allowed[lt] {
+			return fmt.Errorf("provider.%s %q resolves to backend type %q, which is not in provider.allowed_backend_types", field, name, b.Type)
+		}
+		return nil
+	}
+
+	if err := checkBackendRef("default_backend", p.DefaultBackend); err != nil {
+		return err
+	}
+	for _, name := range p.Fallback.Order {
+		if err := checkBackendRef("fallback.order entry", name); err != nil {
+			return err
+		}
+	}
+	if zeroCredit {
+		for _, t := range p.AllowedBackendTypes {
+			if meteredProviderBackendTypes[strings.ToLower(t)] {
+				return fmt.Errorf("provider.allowed_backend_types includes metered type %q, which zero_credit_mode forbids", t)
+			}
+		}
+	}
+
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // MigrateV1ToV2 migrates a v1 configuration JSON payload to v2.
