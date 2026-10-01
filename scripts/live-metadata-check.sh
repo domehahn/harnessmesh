@@ -70,9 +70,13 @@ for line in open(path, encoding="utf-8", errors="replace"):
 raise SystemExit(1)
 PY
 then structured_ok=1; fi
-responses_requests="$(curl -sS "http://127.0.0.1:$port/metrics" | sed -n 's/^harnessmesh_provider_responses_requests_total //p' | tail -1)"
+metrics="$(curl -sS "http://127.0.0.1:$port/metrics")"
+responses_requests="$(printf '%s\n' "$metrics" | sed -n 's/^harnessmesh_provider_responses_requests_total //p' | tail -1)"
 [[ -n "$responses_requests" ]] || responses_requests=999
-upstream_inference_requests=0
+# Measure all provider backend calls. In metadata-only mode /v1/responses is
+# rejected before backend resolution, so this must stay at zero. An absent
+# backend series is correctly measured as zero rather than assumed to be zero.
+upstream_inference_requests="$(printf '%s\n' "$metrics" | awk '/^harnessmesh_provider_backend_calls_total\{/{sum += $2} END {print sum+0}')"
 if rg -q 'sk-|metadata-only-test-token|Authorization: Bearer' "$run_dir/provider.log" 2>/dev/null; then structured_ok=0; fi
 if kill -0 "$app_pid" 2>/dev/null && rg -q '"id"[[:space:]]*:[[:space:]]*1' "$run_dir/app.stdout" 2>/dev/null; then app_initialized=1; else app_initialized=0; fi
 if rg -qi 'failed to refresh available models|failed to decode models response' "$run_dir/app.stderr" "$run_dir/app.stdout" 2>/dev/null; then decode_errors=1; else decode_errors=0; fi
@@ -84,7 +88,7 @@ echo "CODEX_CATALOG_DECODER=$([[ "$codex_catalog_ok" == 1 ]] && echo PASS || ech
 echo "MODEL_DECODE_ERRORS=$decode_errors"
 echo "responses_requests=$responses_requests"
 echo "upstream_inference_requests=$upstream_inference_requests"
-if [[ "$schema_ok" == 1 && "$structured_ok" == 1 && "$app_initialized" == 1 && "$codex_catalog_ok" == 1 && "$decode_errors" == 0 && "$responses_requests" == 0 ]]; then
+if [[ "$schema_ok" == 1 && "$structured_ok" == 1 && "$app_initialized" == 1 && "$codex_catalog_ok" == 1 && "$decode_errors" == 0 && "$responses_requests" == 0 && "$upstream_inference_requests" == 0 ]]; then
   echo "LIVE_MODEL_METADATA=PASS"
   exit 0
 fi
