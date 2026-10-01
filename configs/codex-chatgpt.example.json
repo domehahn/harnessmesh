@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "agents": {
+    "placeholder": {
+      "kind": "fake",
+      "role": "executor",
+      "writable": true
+    }
+  },
+  "provider": {
+    "enabled": true,
+    "listen": "127.0.0.1:8789",
+    "zero_api_billing_mode": true,
+    "default_backend": "chatgpt",
+    "backends": {
+      "chatgpt": {
+        "type": "chatgpt-subscription"
+      }
+    },
+    "denied_backend_types": ["openai-api", "codex"]
+  }
+}
