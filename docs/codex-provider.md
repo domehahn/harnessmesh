@@ -45,6 +45,20 @@ The authoritative local gate is `make production-readiness`. It uses fake or
 local upstreams only. `live-openai-e2e` is a separate, explicitly acknowledged
 operation requiring `HARNESSMESH_ALLOW_LIVE_OPENAI_INFERENCE=1`.
 
+`make live-metadata-check` is a separate local verification. It discovers the
+installed `codex --version`, starts an isolated Codex app-server and
+`CODEX_HOME`, invokes Codex's metadata/catalog decoder, validates the
+Codex-native `/v1/models?client_version=...` response, and checks structured
+request logs. It starts HarnessMesh with the explicit
+`HARNESSMESH_METADATA_ONLY_TEST=1` guard: `/healthz` and `/v1/models` are
+available, while `/v1/responses` is rejected before backend resolution. The
+check asserts `responses_requests=0` and does not run a model turn.
+
+Catalog provenance remains the vendored OpenAI Codex schema from
+`rust-v0.155.0-alpha.16.3`; the installed version is always discovered at
+runtime and is never hardcoded as the only supported version. The deterministic
+production gate does not require a locally installed Codex binary.
+
 ## Architecture
 
 ```text
