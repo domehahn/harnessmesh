@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+
+  "workflow": {
+    "executor": "claude-executor",
+    "reviewer": "codex-reviewer",
+    "max_rounds": 3,
+    "max_wall_time_minutes": 120,
+    "stop_on_repeat": true,
+    "test_command": []
+  },
+
+  "context": {
+    "max_diff_chars": 120000,
+    "max_test_output_chars": 30000,
+    "diff_context_lines": 30,
+    "include_untracked": true
+  },
+
+  "switchyard": {
+    "enabled": false,
+    "base_url": "http://127.0.0.1:4000",
+    "route_id": "switchyard",
+    "inject_placeholder_auth": false,
+    "extra_env": {}
+  },
+
+  "agents": {
+    "claude-executor": {
+      "kind": "claude",
+      "command": "claude",
+      "model": "",
+      "mode": "acceptEdits",
+      "max_turns": 50,
+      "max_budget_usd": 0,
+      "timeout_minutes": 45,
+      "extra_args": [],
+      "env": {},
+      "use_switchyard": false
+    },
+
+    "codex-reviewer": {
+      "kind": "codex",
+      "command": "codex",
+      "model": "",
+      "mode": "read-only",
+      "max_turns": 50,
+      "timeout_minutes": 45,
+      "extra_args": [],
+      "env": {},
+      "use_switchyard": false
+    }
+  }
+}
