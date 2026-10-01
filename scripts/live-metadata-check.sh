@@ -2,12 +2,15 @@
 set -u
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root_dir"
-export GOCACHE="${GOCACHE:-/private/tmp/harnessmesh-live-metadata-go-cache}"
+tmp_root="${TMPDIR:-/tmp}"
+tmp_root="${tmp_root%/}"
+export GOCACHE="${GOCACHE:-${tmp_root}/harnessmesh-live-metadata-go-cache}"
+mkdir -p "$GOCACHE"
 codex_bin="${CODEX_BIN:-$(command -v codex || true)}"
 if [[ -z "$codex_bin" ]]; then echo "LIVE_MODEL_METADATA=FAIL"; exit 1; fi
 version="$("$codex_bin" --version 2>/dev/null | sed -n 's/^codex-cli //p' | tail -1)"
 if [[ -z "$version" ]]; then echo "LIVE_MODEL_METADATA=FAIL"; exit 1; fi
-run_dir="$(mktemp -d /private/tmp/harnessmesh-live-metadata.XXXXXX)"
+run_dir="$(mktemp -d "${tmp_root}/harnessmesh-live-metadata.XXXXXX")"
 provider_pid=""
 app_pid=""
 cleanup() {
