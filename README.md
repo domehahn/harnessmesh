@@ -1,86 +1,353 @@
 # HarnessMesh
 
-**HarnessMesh is an agent-to-agent collaboration fabric for AI coding harnesses.**
+**A persistent, evidence-driven collaboration fabric and change-control plane for AI coding harnesses.**
 
-- **NOT** an LLM proxy.
-- **NOT** another model router.
-- **NOT** a vendor-specific wrapper.
+HarnessMesh connects coding agents such as **Claude Code**, **OpenAI Codex**, **Google Antigravity**, **GitHub Copilot CLI**, ChatGPT-connected MCP clients, and custom adapters so they can collaborate through a shared, durable control plane instead of relying on human copy/paste between tools.
 
-HarnessMesh is the **broker, control plane, and collaboration fabric** that enables diverse AI coding harnesses to communicate directly with each other in real-time through standard tools (MCP) without human copy/paste.
+> HarnessMesh is an **agent collaboration plane**. It coordinates participants, context, evidence, decisions, durable knowledge, operational controls, and verified code changes. It is not a general-purpose LLM proxy and it does not replace a model router such as NVIDIA NeMo Switchyard.
 
-```text
-               ┌─────────────┐       ┌─────────────┐
-               │ Claude Code │       │ OpenAI      │
-               │   Adapter   │       │    Codex    │
-               └──────┬──────┘       └──────┬──────┘
-                      │                     │
-                      ▼                     ▼
-               ═════════════════════════════════════
-                          HarnessMesh
-               ═════════════════════════════════════
-                      ▲                     ▲
-                      │                     │
-               ┌──────┴──────┐       ┌──────┴──────┐
-               │   Google    │       │   GitHub    │
-               │ Antigravity │       │ Copilot CLI │
-               └─────────────┘       └─────────────┘
-```
+## Why HarnessMesh
+
+Typical multi-agent coding workflows break down at the boundaries between tools: context is copied manually, reviewers cannot challenge one another with durable evidence, concurrent writers corrupt worktrees, prior decisions disappear between sessions, and model/provider failures are handled ad hoc.
+
+HarnessMesh provides a single control plane for those concerns:
 
 ```text
-HarnessMesh (Agent Collaboration Plane)
-    ├── Collaboration Control Plane & Session Broker
-    ├── Model Context Protocol (MCP) Server (34 Tools)
-    ├── Peer Message Bus (`harnessmesh.peer/v1`)
-    ├── Dynamic Adapter Registry & Lifecycle Manager
-    ├── Capability-Based Peer Selection & Routing
-    ├── Parallel Multi-Review & Conservative Deduplication
-    ├── Context Projection & Secret Filtering
-    ├── Evidence Store & Challenge Resolution
-    ├── Loop, Depth & Budget Controller
-    └── Durable SQLite Session Persistence (WAL)
-
-Switchyard (Model Routing Plane - Optional)
-    ├── Model Selection & Provider Routing
-    └── Latency / Capability / Cost Routing
+                                  ┌─────────────────────┐
+                                  │   Human / CI / IDE  │
+                                  └──────────┬──────────┘
+                                             │
+                                             v
+┌────────────────┐                  ┌─────────────────────┐                  ┌────────────────┐
+│  Claude Code   │<────────────────>│                     │<────────────────>│  OpenAI Codex  │
+└────────────────┘                  │     HarnessMesh     │                  └────────────────┘
+                                    │                     │
+┌────────────────┐                  │ Collaboration Plane │                  ┌────────────────┐
+│  Antigravity   │<────────────────>│ + Evidence Control  │<────────────────>│ Copilot CLI    │
+└────────────────┘                  │ + Knowledge Archive │                  └────────────────┘
+                                    │ + MeshCommit        │
+┌────────────────┐                  │                     │                  ┌────────────────┐
+│ ChatGPT / MCP  │<────────────────>│                     │<────────────────>│ Custom Agents  │
+└────────────────┘                  └──────────┬──────────┘                  └────────────────┘
+                                             │
+                           optional model routing boundary
+                                             │
+                                             v
+                                  ┌─────────────────────┐
+                                  │ NVIDIA NeMo         │
+                                  │ Switchyard / Router │
+                                  └─────────────────────┘
 ```
 
-Switchyard is a model-routing plane. HarnessMesh is an agent-collaboration plane.
+## Current Version
+
+The public `main` branch is currently **HarnessMesh v0.5.0**.
+
+## Capability Map
+
+| Area | What HarnessMesh provides |
+| --- | --- |
+| **Multi-agent collaboration** | Persistent spaces, channels, causal threads, mentions, subscriptions, inboxes, participant modes, peer conversations, parallel reviews, findings, evidence, challenges, and decisions |
+| **Agent adapters** | First-class adapters for Claude Code, OpenAI Codex, Google Antigravity, GitHub Copilot CLI; deterministic fake adapter for tests; extensible adapter registry |
+| **Capability routing** | Dynamic peer discovery and routing by declared capabilities instead of hard-coded agent names |
+| **Evidence-driven review** | Structured findings, reproducible evidence, formal challenges, evidence-backed resolution, and conservative deduplication; no majority-vote shortcut |
+| **MeshCommit change control** | Evidence-gated change transactions, proof obligations, tree fingerprints, stale-evidence invalidation, independent-review rules, deterministic gates, and TOCTOU-safe commit binding |
+| **Single-writer safety** | Exactly one writable participant per workspace; reviewers and peers can be constrained to read-only operation |
+| **Context protection** | Bounded repository projections, sensitive-file filtering, path traversal rejection, symlink-escape protection, and sandbox command/working-directory policies |
+| **Persistent knowledge** | Compressed append-only knowledge archive, hybrid search, RAG context, summaries, quality signals, explicit memory, import, retention, verification, indexing, backup/restore, key rotation, and file watching |
+| **Durable state** | SQLite/WAL persistence for sessions, spaces, threads, findings, evidence, decisions, routing decisions, retries, dead letters, health state, approvals, and MeshCommit transactions |
+| **Operational resilience** | Retry outbox, priority, dead-letter recovery, quota-wait scheduling, circuit breakers, health tracking, budgets, human approvals, idempotency, and operational metrics |
+| **MCP** | Standards-based MCP over stdio and authenticated Streamable HTTP, including SSE, sessions, bearer auth, OAuth2 introspection, CORS, TLS, ACLs, rate limiting, metrics, and admin endpoints |
+| **Model-routing boundary** | Fixed routing, opaque external routing, and optional NVIDIA NeMo Switchyard integration while keeping participant selection separate from underlying model selection |
+| **Observability & operations** | Health checks, Prometheus-style metrics, admin status endpoints, session transcripts, routing audit records, operational status, and optional OTLP HTTP export integration |
+| **Release engineering** | Race tests, fuzz seed coverage, load benchmarks, vulnerability scanning, CodeQL, Docker builds, SBOM generation, checksums, and keyless Cosign signing for tagged releases |
+
+---
+
+# Core Functionality
+
+## 1. Persistent Collaboration Spaces
+
+HarnessMesh models collaboration as a durable workspace rather than a sequence of isolated prompts.
+
+A collaboration space supports:
+
+- lifecycle states such as `active`, `paused`, `stopped`, and archived persistence;
+- a designated writer participant;
+- multiple managed or external participants;
+- predefined channels: `#general`, `#architecture`, `#security`, `#testing`, `#findings`, and `#decisions`;
+- custom channels;
+- causal threads with `root_id` / `parent_id` relationships;
+- participant read cursors;
+- durable inboxes for offline/passive participants;
+- participant modes: `active`, `passive`, `on_demand`, and `paused`;
+- channel/event subscriptions and scope patterns;
+- formal, evidence-linked engineering decisions;
+- human pause, resume, and emergency stop controls.
+
+Rapid repository/event bursts can be coalesced through the event bus into semantic events such as `repository.changed`, reducing duplicate downstream work.
+
+## 2. Peer-to-Peer Agent Collaboration
+
+Participants can collaborate directly without routing every interaction through the human operator.
+
+HarnessMesh supports:
+
+- persistent multi-turn peer conversations;
+- targeted questions and inspections;
+- capability-based peer discovery;
+- causal replies;
+- single or parallel multi-peer review;
+- bounded concurrency;
+- structured findings with severity/category/location;
+- evidence submission from tests, diffs, compilers, linters, or other reproducible sources;
+- formal challenges to findings;
+- evidence-driven resolution;
+- conservative duplicate/related-finding handling;
+- session status, call counts, and collaboration budgets;
+- idempotency keys for expensive peer operations.
+
+### Evidence, not majority voting
+
+HarnessMesh does not resolve disagreements by counting model votes or assuming one model is authoritative:
+
+```text
+Claim
+  -> repository evidence
+  -> reproducer / test / compiler / static analysis
+  -> challenge if necessary
+  -> evidence-backed resolution
+```
+
+Unresolved high-impact findings remain unresolved until evidence closes them.
+
+## 3. Agent Capability Model
+
+Every configured participant can declare capabilities such as:
+
+- `read_repository`
+- `write_repository`
+- `run_commands`
+- `review`
+- `answer_questions`
+- `submit_evidence`
+
+Peers can be discovered dynamically through `peer.capabilities`, and operations may route by capability instead of by a fixed participant name.
+
+This makes the collaboration layer independent from any one vendor or agent implementation.
+
+## 4. First-Class Adapters
+
+| Harness | Typical use | Invocation model |
+| --- | --- | --- |
+| **Claude Code** | Executor, reviewer, peer | Headless Claude Code integration |
+| **OpenAI Codex** | Reviewer, executor, peer | Codex CLI with structured output handling |
+| **Google Antigravity** | Executor, reviewer, peer | Antigravity headless integration plus IDE MCP setup |
+| **GitHub Copilot CLI** | Executor, reviewer, peer | Non-interactive Copilot CLI integration |
+| **External MCP participant** | Browser/remote/externally managed participant | Passive/external participant through MCP |
+| **Fake adapter** | Deterministic CI and integration testing | In-memory deterministic execution |
+
+Adapters are registered dynamically through the common Harness abstraction. New adapters can be added without rewriting collaboration-domain logic.
+
+## 5. Managed vs. External Participants
+
+HarnessMesh distinguishes execution ownership:
+
+- **managed** participants may be invoked as local/headless harness processes by HarnessMesh;
+- **external** participants are not autonomously started as subprocesses and instead participate through MCP, mentions, pending inbox delivery, and external client sessions.
+
+This enables browser/remote clients such as ChatGPT-connected MCP sessions without pretending that an external client is a locally managed executable.
+
+## 6. Economy-Aware Participant Selection
+
+HarnessMesh can select a suitable **participant** independently from the underlying model/provider.
+
+The `cheapest_suitable` policy supports:
+
+- task tiers: trivial, routine, complex, critical;
+- capability filtering;
+- privacy/sensitive-path filtering;
+- local-participant preference where required;
+- single-writer enforcement;
+- relative-cost ranking;
+- session affinity;
+- bounded escalation after failed edits/builds/verifications;
+- de-escalation after successful resolution;
+- durable routing-decision audit records in SQLite.
+
+The architectural boundary is deliberate:
+
+```text
+HarnessMesh            selects the participant / harness
+Switchyard (optional)  selects the underlying model / provider
+```
+
+HarnessMesh does not second-guess model choices owned by Switchyard or opaque external clients.
+
+---
+
+# MeshCommit: Evidence-Gated Agentic Change Control
+
+HarnessMesh v0.5.0 adds **MeshCommit**, a deterministic change-control plane for agent-authored repository changes.
+
+## Change lifecycle
+
+```text
+ draft
+   |
+   v
+ prepared
+   |
+   v
+ under_verification
+   |\
+   | +--> blocked --------+
+   |                      |
+   +--> committable <-----+
+            |
+            v
+        committed
+
+ aborted  <- terminal exit from any non-committed state
+```
+
+A `MeshChange` tracks:
+
+- base commit and current working-tree fingerprint;
+- affected paths and content hashes;
+- policy-locked proof obligations;
+- evidence tied to an exact tree hash;
+- stale-evidence invalidation when relevant paths change;
+- independent review constraints and self-review protection;
+- deterministic ChangeGate evaluation without an LLM in the gate;
+- verified tree hash;
+- final commit SHA;
+- TOCTOU protection that prevents committing a tree different from the verified tree.
+
+### MeshCommit CLI
+
+```bash
+harnessmesh change create --title "Add user auth" --intent "Support bearer tokens"
+harnessmesh change list
+harnessmesh change show <change_id>
+harnessmesh change prepare <change_id>
+harnessmesh change verify <change_id>
+harnessmesh change evidence <change_id> --obligation <id> --type peer_review --result passed --source claude
+harnessmesh change gate <change_id>
+harnessmesh change commit <change_id> --message "Add user auth"
+harnessmesh change abort <change_id> --reason "Superseded"
+```
+
+---
+
+# Knowledge & Cross-Session Memory
+
+HarnessMesh persists operational state in SQLite and historical knowledge in a separate compressed archive.
 
 ## Compressed Knowledge Archive
 
-Every persisted message, collaboration event, finding, evidence record, and decision is also appended to a separate knowledge archive. The default path is `knowledge.hmkz` next to the SQLite database; override it with `HARNESSMESH_KNOWLEDGE_PATH`. Set `HARNESSMESH_KNOWLEDGE_DISABLED=1` only when archiving is intentionally disabled.
+By default:
 
-The archive is an append-only stream of framed, block-compressed NDJSON using Zstandard. Records are flushed in bounded blocks, so memory usage does not grow with the history and the file can contain hundreds of millions of records without loading the complete transcript. The archive is the durable source for historical knowledge; SQLite remains the transactional operational store.
-
-Other harnesses can use the MCP tools `knowledge.search`, `knowledge.context`, `knowledge.summary`, `knowledge.quality`, `knowledge.remember`, `knowledge.import`, `knowledge.compact`, and `knowledge.stats`. Search combines term ranking with deterministic local vector similarity and the persistent block index; it supports project/session/space/kind filters. The archive format remains provider-neutral so external model embeddings can be layered in later without changing stored records.
-
-The archive redacts common credentials before persistence. For at-rest encryption, set `HARNESSMESH_KNOWLEDGE_KEY`; HarnessMesh derives an AES-256-GCM key from it. Records also retain source, project, repository, branch, commit, agent, model, tags, confidence, and sensitivity metadata when supplied through the API or environment variables (`HARNESSMESH_PROJECT_ID`, `HARNESSMESH_REPOSITORY`, `HARNESSMESH_BRANCH`, `HARNESSMESH_COMMIT`, `HARNESSMESH_AGENT`, `HARNESSMESH_MODEL`).
-
-`knowledge verify` scans all compressed frames without loading the archive into memory. `knowledge export` creates an atomic byte-level backup, and `knowledge watch` imports changed transcript files on a polling interval. These operations are intended for local automation and scheduled backup jobs.
-
-The current search implementation is bounded, relevance-ranked hybrid search with a persistent block index and local vector fallback. It is safe for very large append-only histories; provider-backed embeddings remain an optional deployment optimization.
-
-Provider embeddings can be enabled through the `knowledge.EmbeddingProvider` interface. `NewOpenAIEmbeddingProvider()` uses `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `HARNESSMESH_EMBEDDING_MODEL` (default `text-embedding-3-small`). Storage deployments can inject a `store.BackendFactory`; SQLite remains the default and reports its capabilities through `BackendDescriptor`.
-
-`knowledge.VectorIndex` persists provider-generated vectors with project filtering and cosine ranking. `telemetry.OTLPHTTPExporter` sends span envelopes to an OpenTelemetry Collector; set the exporter endpoint in the embedding/observability integration layer.
-
-Agent adapters can use `executil.SandboxPolicy`/`RunWithPolicy` to enforce command and working-directory allowlists. `telemetry.Registry` exposes dependency-free Prometheus text and `Engine.ReplaySession` replays persisted events without duplicating event rows.
-
-For release validation use `make race`, `make fuzz`, `make load`, and `make security`. CI additionally runs race tests, archive benchmarks, Docker builds, CodeQL, and `govulncheck`. A future PostgreSQL/object-storage deployment can be injected through `store.BackendFactory`; the default local SQLite backend remains fully supported.
-
-Tagged releases use `.github/workflows/release.yml` to build, checksum, generate an SBOM, keylessly sign the checksum with Cosign, and publish release artifacts.
-
-For deployments that need tenant isolation, restrict the MCP process with comma-separated allowlists:
-
-```bash
-export HARNESSMESH_MCP_PROJECTS="project-a,project-b"
-export HARNESSMESH_MCP_CALLERS="claude,codex,antigravity"
-export HARNESSMESH_MCP_RATE_LIMIT="120"
+```text
+~/.harnessmesh/harnessmesh.db
+~/.harnessmesh/knowledge.hmkz
 ```
 
-Failed participant invocations are retained in the SQLite `delivery_retry_outbox` with payload, attempt count, error and retry timestamp. The engine retries transient failures automatically and moves exhausted/non-retryable entries to `delivery_dead_letters`.
+The `.hmkz` archive is an append-only stream of framed, block-compressed NDJSON using Zstandard. Records are flushed in bounded blocks so large histories do not require loading the complete archive into memory.
 
-Operational controls are also durable: retry items support priorities, agent health and circuit-breaker state are stored in SQLite, and expensive operations can require human approval. Configure the controls in `collaboration`:
+Stored knowledge can include:
+
+- messages and conversations;
+- collaboration events;
+- findings and challenges;
+- evidence;
+- engineering decisions;
+- explicit lessons/problems/solutions;
+- source, project, repository, branch, commit, agent, model, tags, confidence, and sensitivity metadata.
+
+### Knowledge features
+
+- bounded relevance-ranked search;
+- persistent block index;
+- deterministic local vector-similarity fallback;
+- project/session/space/kind filtering;
+- verified-only and confidence filtering;
+- bounded RAG context generation;
+- deterministic summaries;
+- quality analysis for verification, confidence, expiry, duplicates, and conflicts;
+- explicit `remember` records;
+- transcript import;
+- retention compaction;
+- archive verification;
+- index rebuild;
+- atomic export/backup and restore;
+- encryption-key rotation;
+- polling-based transcript file watch/import;
+- optional provider-generated vector embeddings through the embedding-provider interface.
+
+Common credentials are redacted before archive persistence. Set `HARNESSMESH_KNOWLEDGE_KEY` to enable AES-256-GCM encryption at rest.
+
+### Knowledge CLI
+
+```bash
+harnessmesh knowledge search --query "sqlite migration rollback" --project-id my-project --json
+harnessmesh knowledge import --file conversation.md --source claude-code --project-id my-project
+harnessmesh knowledge remember --text "Use WAL for concurrent readers" --kind lesson
+harnessmesh knowledge stats
+harnessmesh knowledge compact --before 2026-01-01T00:00:00Z
+harnessmesh knowledge verify
+harnessmesh knowledge index
+harnessmesh knowledge export --file /backup/knowledge.hmkz
+harnessmesh knowledge restore --file /backup/knowledge.hmkz
+harnessmesh knowledge rotate-key --key "$NEW_KNOWLEDGE_KEY"
+harnessmesh knowledge watch --file conversation.md --project-id my-project
+```
+
+---
+
+# Resilience, Quotas & Human Control
+
+HarnessMesh includes durable operational controls for long-running agent workflows.
+
+## Delivery resilience
+
+Failed participant deliveries can be persisted in a retry outbox with:
+
+- attempt count;
+- error information;
+- retry timestamp;
+- priority;
+- automatic transient retry;
+- permanent dead-letter storage after exhaustion/non-retryable failure;
+- operator requeue support.
+
+## Provider quota waits
+
+Normalized errors such as `usage limit`, `credits exhausted`, `quota exceeded`, explicit reset timestamps, or `try again in ...` can be classified as quota waits.
+
+Quota waits:
+
+- keep work pending;
+- schedule resumption for the provider reset time;
+- do not consume a normal retry attempt;
+- fall back to a configurable wait when no reset time is available.
+
+This does **not** bypass provider limits; it only makes the workflow durable across them.
+
+## Budgets, approvals and circuit breakers
+
+Operational controls include:
+
+- global token budgets;
+- global cost budgets;
+- approval thresholds for expensive/sensitive actions;
+- human approval/rejection records;
+- agent health tracking;
+- persisted circuit-breaker state;
+- configurable failure thresholds and cooldowns;
+- operational metrics.
+
+Example:
 
 ```json
 {
@@ -89,317 +356,481 @@ Operational controls are also durable: retry items support priorities, agent hea
     "global_max_cost_usd": 10,
     "approval_cost_usd": 1,
     "circuit_breaker_failures": 3,
-    "circuit_breaker_cooldown": "2m"
-  }
-}
-```
-
-The MCP tools `operations.status`, `operations.approvals`, `operations.approve`, and `knowledge.search_advanced` expose health, quota waits, retry backlog, approval gates, metrics, and source/time-filtered knowledge search.
-
-Provider credit and session limits are handled separately: messages such as `usage limit`, `credits exhausted`, `quota exceeded`, `reset at <timestamp>`, or `try again in <duration>` are classified as quota waits. HarnessMesh keeps the delivery pending, schedules it for the provider reset time, and resumes it automatically. A quota wait does not consume a retry attempt. If the provider gives no reset time, the default wait is 15 minutes; configure it per profile with `collaboration.quota_fallback_wait`, for example:
-
-```json
-{
-  "collaboration": {
+    "circuit_breaker_cooldown": "2m",
     "quota_fallback_wait": "15m"
   }
 }
 ```
 
-This mechanism works with Codex, Claude, Antigravity, Copilot, Switchyard, and custom adapters because it analyzes the normalized invocation error text. It does not bypass provider limits or require a second token; it only pauses durable work and probes again when the limit should have reset.
+---
+
+# MCP Interface
+
+HarnessMesh exposes **42 MCP tools** on the current v0.5.0 public `main` branch.
+
+## Peer tools — 11
+
+| Tool | Purpose |
+| --- | --- |
+| `peer.list` | List known participants, adapter types, roles and status |
+| `peer.capabilities` | Discover peers by capability/role |
+| `peer.ask` | Ask a peer for targeted help or inspection |
+| `peer.request_review` | Request single or parallel structured review |
+| `peer.submit_finding` | Publish a structured finding |
+| `peer.submit_evidence` | Attach reproducible evidence |
+| `peer.challenge` | Challenge a finding and mark it disputed |
+| `peer.resolve` | Resolve a finding with evidence-backed rationale |
+| `peer.reply` | Send a causal structured reply |
+| `peer.converse` | Maintain an interactive multi-turn peer conversation |
+| `peer.status` | Inspect session, finding counts and budget/round state |
+
+## Collaboration-space tools — 9
+
+| Tool | Purpose |
+| --- | --- |
+| `collaboration.publish` | Publish a message/proposal/question to a channel/thread |
+| `collaboration.reply` | Reply inside an existing thread |
+| `collaboration.inbox` | Retrieve participant messages, mentions and notifications |
+| `collaboration.channels` | Discover channels |
+| `collaboration.thread` | Retrieve a thread transcript |
+| `collaboration.subscribe` | Subscribe to channels/events/scope patterns |
+| `collaboration.unsubscribe` | Remove a subscription |
+| `collaboration.decide` | Propose or accept an evidence-backed decision |
+| `collaboration.status` | Inspect collaboration-space state |
+
+## Knowledge tools — 9
+
+| Tool | Purpose |
+| --- | --- |
+| `knowledge.search` | Search durable historical knowledge |
+| `knowledge.context` | Build bounded RAG-ready context |
+| `knowledge.stats` | Inspect archive statistics |
+| `knowledge.remember` | Store an explicit durable lesson/decision/problem/solution |
+| `knowledge.import` | Import external transcript/content |
+| `knowledge.compact` | Apply retention by timestamp |
+| `knowledge.summary` | Produce bounded evidence-oriented historical summary |
+| `knowledge.quality` | Inspect verification/confidence/expiry/duplicate/conflict signals |
+| `knowledge.search_advanced` | Search with time/source/agent metadata filters |
+
+## Operations tools — 5
+
+| Tool | Purpose |
+| --- | --- |
+| `operations.status` | Agent health, quota waits, circuit breakers, retry backlog and metrics |
+| `operations.approvals` | List approval requests |
+| `operations.approve` | Approve/reject a protected operation |
+| `operations.dead_letters` | List permanently failed deliveries |
+| `operations.requeue_dead_letter` | Requeue a dead-letter item with optional priority |
+
+## MeshCommit tools — 8
+
+| Tool | Purpose |
+| --- | --- |
+| `change.create` | Create an evidence-gated change transaction |
+| `change.prepare` | Prepare/re-fingerprint working-tree state |
+| `change.status` | Inspect state, hashes, obligations, evidence and gate result |
+| `change.diff` | Inspect affected paths and content hashes |
+| `change.verify` | Execute an automated proof obligation |
+| `change.evidence` | Submit structured verification evidence |
+| `change.abort` | Abort an in-flight change |
+| `change.commit_status` | Check committability and missing/failed obligations |
+
+> `harnessmesh change commit` is intentionally a CLI-controlled commit operation after the deterministic gate; it is not exposed as an unrestricted MCP tool.
 
 ---
 
-## Supported First-Class Harness Adapters (v0.3.0)
+# MCP Transports & Remote Access
 
-| Harness Adapter | CLI Tool | Default Roles | Headless Invocation |
-| :--- | :--- | :--- | :--- |
-| **Claude Code** | `claude` | Executor, Reviewer, Peer | `claude -p` |
-| **OpenAI Codex** | `codex` | Reviewer, Executor, Peer | `codex exec` with structured outputs |
-| **Google Antigravity** | `agy` | Executor, Reviewer, Peer | `agy -p --dangerously-skip-permissions` |
-| **GitHub Copilot CLI** | `copilot` | Executor, Reviewer, Peer | `copilot -p --allow-all-tools` |
+## Stdio
 
-The architecture dynamically registers adapters via `agent.RegisterAdapter(...)`. Additional harnesses (OpenCode, Gemini CLI, Aider, remote agents) can be added without modifying collaboration-domain logic.
+Local harnesses can launch HarnessMesh as an MCP server over standard input/output.
 
----
-
-## Core Capabilities & Invariants
-
-### 1. Persistent Multi-Agent Collaboration Spaces (`harnessmesh.collaboration/v1`)
-Transforms HarnessMesh into a persistent, multi-channel, event-driven collaboration environment:
-- **Predefined Structured Channels**: `#general`, `#architecture`, `#security`, `#testing`, `#findings`, `#decisions`.
-- **Causal Threaded Discussions**: Tracks `root_id` and `parent_id` hierarchies with participant read cursors.
-- **Participant Activity Modes**: `active` (immediate dispatch), `passive` (inbox buffering), `on_demand` (explicit mentions/capabilities), and `paused`.
-- **Durable Inboxes**: Allows offline or passive agents to catch up on unread channel messages, events, and action items.
-- **Verifiable Decision Records**: Formal architectural decisions linked to reproducible evidence.
-- **Human Supervision Controls**: Real-time space pause, resume, and emergency stop.
-
-### 2. Standards-Compliant MCP Server (34 Tools)
-Exposes a Model Context Protocol (MCP) server over standard I/O (`stdio`):
-
-#### Collaboration Space Tools (9 Tools)
-- `collaboration.publish`: Post messages to channels and threads with tagging and evidence.
-- `collaboration.reply`: Threaded reply linked causally to a parent message.
-- `collaboration.inbox`: Retrieve pending messages, unread counts, and action items.
-- `collaboration.channels`: List and discover available channels and topics.
-- `collaboration.thread`: Retrieve full thread conversation history.
-- `collaboration.subscribe`: Subscribe to channels and event topics.
-- `collaboration.unsubscribe`: Unsubscribe from channels or topics.
-- `collaboration.decide`: Propose and accept formal decisions with verifiable evidence.
-- `collaboration.status`: Inspect space health, active participants, channels, and lifecycle state.
-
-#### Point-to-Point Peer Tools (11 Tools)
-- `peer.converse`: Multi-turn interactive peer conversation with persistent thread continuity across turns.
-- `peer.list`: Enumerate active participants, adapters, and roles.
-- `peer.capabilities`: Discover peers by declared capabilities.
-- `peer.ask`: An active agent requests targeted assistance from a peer while working.
-- `peer.reply`: Sends causal, structured replies linked to parent messages.
-- `peer.request_review`: Requests single or parallel multi-peer code reviews.
-- `peer.submit_finding`: Publishes structured findings into the shared session.
-- `peer.submit_evidence`: Attaches verifiable evidence (test logs, diffs, race detection).
-- `peer.challenge`: Formally challenges a finding, marking it as `disputed`.
-- `peer.resolve`: Resolves findings based on evidence.
-- `peer.status`: Inspects session progress, open/disputed counts, and budget.
-
-### 3. Autonomous Antigravity & OpenAI Codex Peer Collaboration
-Work **exclusively** within the VS Code Antigravity chat. Antigravity autonomously queries OpenAI Codex for second opinions, architecture checks, debugging help, or validation via `peer.converse`. Responses are delivered directly into the active agent context — **zero human copy-pasting**.
-- Setup in one command: `harnessmesh integrate antigravity`
-- Persistent thread continuity across multiple conversational turns.
-- Bounded by turn limits, depth ceilings, and single-writer safety.
-
-### 4. Event Bus & Sliding-Window Coalescing
-High-throughput pub/sub event bus supporting topics like `repository.*` and `decision.*`. Rapid bursts of file changes are buffered through a sliding window (default 500ms) and coalesced into a single semantic `repository.changed` event.
-
-### 5. Causal Loop & Reentrancy Protection
-Graph-based causal loop detection traverses thread reply chains and blocks recursive agent reverberation loops (`CollaborationCycleDetectedError`).
-
-### 6. Evidence-Driven Resolution (No Majority Voting)
-Disagreements between models are never settled by "majority vote" or assuming one model is superior. Findings require verifiable repository evidence:
-```text
-Claim ➔ Repository Evidence ➔ Reproducer (Test / Race Detector / Compiler) ➔ Resolution
+```bash
+harnessmesh mcp serve --repo . --caller claude
 ```
-Any unresolved finding keeps the review status as `changes_required` (or `block` for criticals).
 
-### 7. Single-Writer Invariant
-To prevent simultaneous edits, git index corruption, and unstable test runs, HarnessMesh enforces a **single-writer invariant**:
-- Exactly **one writable harness** (e.g. Claude Code or Antigravity executor).
-- All **peers and reviewers** operate strictly in **read-only** sandboxes.
-- Multi-writer workspaces are rejected at config validation and runtime.
+## Authenticated HTTP
 
-### 8. Bounded Context Projection & Sensitive File Filtering
-HarnessMesh never forwards raw conversational transcripts between agents. Context projections are bounded, repository-centric, and strictly filtered:
-- Secret filtering excludes `.env`, `*.pem`, `*.key`, `*.p12`, `id_rsa`, `id_ed25519`, `secrets/`, `credentials/`, `terraform.tfstate`, and `.git/`.
-- Path traversal (`../`) and symlink escapes outside the repository root are automatically rejected.
+Remote clients can use authenticated JSON-RPC / MCP over HTTP.
 
-### 9. Crash-Safe Persistence (SQLite Schema v5)
-Collaboration spaces, channels, threads, messages, subscriptions, event deliveries, decisions, participant states, and findings are durably stored in an embedded SQLite database (`~/.harnessmesh/harnessmesh.db` or `.harnessmesh/harnessmesh.db`) with WAL journaling, busy timeouts, foreign keys, and versioned schema migrations.
+```bash
+export HARNESSMESH_MCP_TOKEN="$(openssl rand -hex 32)"
+harnessmesh mcp serve \
+  --listen 127.0.0.1:8787 \
+  --token "$HARNESSMESH_MCP_TOKEN" \
+  --caller remote-agent
+```
+
+The server provides:
+
+- legacy JSON-RPC `POST /` support;
+- Streamable HTTP MCP on `/mcp`;
+- POST/GET/DELETE/OPTIONS handling;
+- SSE responses;
+- MCP session IDs and protocol-version negotiation;
+- bearer-token authentication with constant-time token comparison;
+- optional OAuth2 token introspection via `HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL`;
+- optional introspection client secret via `HARNESSMESH_MCP_OAUTH_CLIENT_SECRET`;
+- strict CORS handling with configurable allowlisted origins;
+- native TLS when certificate/key flags are supplied;
+- request body limits;
+- request-rate limits (`HARNESSMESH_MCP_RATE_LIMIT`, default 120/minute);
+- project ACLs (`HARNESSMESH_MCP_PROJECTS`);
+- caller ACLs (`HARNESSMESH_MCP_CALLERS`);
+- admin-caller ACLs (`HARNESSMESH_MCP_ADMIN_CALLERS`);
+- security headers;
+- graceful server shutdown.
+
+Operational endpoints include:
+
+```text
+GET /healthz            liveness
+GET /metrics            Prometheus-style metrics
+GET /admin              authenticated operations UI
+GET /admin/knowledge    authenticated knowledge statistics
+GET /admin/operations   authenticated health/retry/dead-letter/metrics state
+```
 
 ---
 
-## Quick Start & Installation
+# Integrations
 
-### Prerequisites
+## Install MCP for local coding harnesses
+
+```bash
+# Claude Code
+harnessmesh mcp install claude --scope project
+harnessmesh mcp install claude --scope user
+
+# OpenAI Codex
+harnessmesh mcp install codex --scope project
+
+# Google Antigravity
+harnessmesh mcp install antigravity --scope project
+harnessmesh mcp install antigravity --scope user
+
+# GitHub Copilot CLI
+harnessmesh mcp install copilot --scope project
+harnessmesh mcp install copilot --scope user
+```
+
+## Full Antigravity integration
+
+```bash
+harnessmesh integrate antigravity \
+  --repo . \
+  --config configs/antigravity-openai-peer.json
+```
+
+This installs/merges the MCP configuration and the HarnessMesh collaboration rule used by Antigravity.
+
+## ChatGPT / external MCP integration
+
+HarnessMesh can expose the Streamable HTTP MCP endpoint for an external ChatGPT-compatible MCP client:
+
+```bash
+harnessmesh integrate chatgpt \
+  --repo . \
+  --config configs/chatgpt-claude.json \
+  --listen 127.0.0.1:8787
+```
+
+The integration command prepares instructions and a bearer token, and can also configure Claude Code for the same repository. A locally bound HTTP service must be exposed through an appropriately secured network path/tunnel before a remote web client can reach it.
+
+Plain ChatGPT conversations that are not connected to HarnessMesh cannot access the local knowledge archive automatically.
+
+---
+
+# Security Model
+
+HarnessMesh deliberately constrains agent collaboration instead of assuming every participant is trusted.
+
+## Workspace and context controls
+
+- exactly one writable participant per workspace;
+- read-only reviewer/peer operation where configured;
+- path traversal rejection;
+- symlink escape rejection outside repository root;
+- sensitive file filtering for `.env`, private keys, credentials, Terraform state, `.git`, and related secret-bearing paths;
+- bounded context projection rather than forwarding complete raw transcripts;
+- command and working-directory allowlists through sandbox policy helpers.
+
+## Identity and MCP controls
+
+- authenticated remote MCP;
+- anti-spoofing checks for caller/source/challenger/resolver identity;
+- constant-time bearer token comparison;
+- OAuth2 introspection option;
+- caller/project/admin ACLs;
+- rate limiting;
+- body-size bounds;
+- security response headers;
+- CORS restrictions;
+- optional TLS.
+
+## Change-control controls
+
+- evidence tied to tree hashes;
+- policy-locked proof obligations;
+- path-scoped evidence invalidation;
+- self-review/independent-review constraints;
+- deterministic, non-LLM commit gate;
+- TOCTOU protection between verified tree and committed tree.
+
+---
+
+# Persistence
+
+SQLite is the default transactional backend and uses WAL journaling, foreign keys, busy timeouts, and versioned migrations.
+
+Persisted domains include:
+
+- collaboration sessions and messages;
+- spaces, channels, threads and subscriptions;
+- participant state and inbox delivery;
+- findings, evidence, challenges and decisions;
+- routing decisions and usage records;
+- retry queue and dead letters;
+- health/circuit-breaker state;
+- human approvals;
+- MeshChange transactions, paths, proof obligations, evidence and gate results.
+
+The storage layer exposes a backend-factory seam for alternate deployments. SQLite is the fully supported built-in default; references to future PostgreSQL/object-storage deployments describe the extension seam rather than a bundled PostgreSQL implementation.
+
+---
+
+# Model Routing
+
+HarnessMesh supports three routing-backend modes:
+
+| Backend | Behavior |
+| --- | --- |
+| `fixed` | Direct/unproxied participant model configuration |
+| `external` | Model routing is owned by an external/opaque client such as Copilot |
+| `switchyard` | Optional NVIDIA NeMo Switchyard backend with health checks and route metadata |
+
+Inspect routing configuration with:
+
+```bash
+harnessmesh switchyard doctor --config harnessmesh.json
+harnessmesh switchyard routes --config harnessmesh.json
+harnessmesh switchyard config validate --config harnessmesh.json
+```
+
+---
+
+# CLI Reference
+
+The current top-level command surface is:
+
+```text
+harnessmesh collaborate --task "..." [options]
+harnessmesh space <list|show|create|pause|resume|stop> [options]
+harnessmesh channel <list|create|show> [options]
+harnessmesh thread <list|show|reply> [options]
+harnessmesh inbox list --space <id> [options]
+harnessmesh subscriptions <list|add|remove> [options]
+harnessmesh decide <list|propose|accept> [options]
+harnessmesh change <create|list|show|prepare|verify|evidence|gate|commit|abort> [options]
+harnessmesh integrate <antigravity|chatgpt> [options]
+harnessmesh mcp serve [options]
+harnessmesh mcp install <claude|codex|antigravity|copilot> [--scope <project|user>]
+harnessmesh peer converse --message "..." [options]
+harnessmesh peer ask --peer <name> --question "..." [options]
+harnessmesh peer review --peer <name> [options]
+harnessmesh peer status --session <id>
+harnessmesh agents <list|show <name>>
+harnessmesh session <list|show|messages|resume|stop> [options]
+harnessmesh findings <session-id> [--json]
+harnessmesh evidence <session-id> [--json]
+harnessmesh knowledge <search|import|remember|stats|compact|verify|index|export|restore|rotate-key|watch> [options]
+harnessmesh config <validate|migrate|print> [options]
+harnessmesh switchyard <doctor|routes|config validate> [options]
+harnessmesh smoke-test antigravity-codex [options]
+harnessmesh doctor [--config <path>]
+harnessmesh print-config [--config <path>]
+harnessmesh version
+```
+
+## Session inspection
+
+```bash
+harnessmesh session list
+harnessmesh session show <session-id>
+harnessmesh session messages <session-id>
+harnessmesh session resume <session-id>
+harnessmesh session stop <session-id>
+harnessmesh findings <session-id>
+harnessmesh evidence <session-id>
+```
+
+Session transcripts preserve causal IDs, status and duration metadata so peer interactions can be audited after the fact.
+
+## Configuration management
+
+```bash
+harnessmesh config validate harnessmesh.json
+harnessmesh config migrate old-v1.json new-v2.json
+harnessmesh config print --config harnessmesh.json
+harnessmesh print-config --config harnessmesh.json
+```
+
+Printed configuration is redacted before output.
+
+## Diagnostics
+
+```bash
+harnessmesh doctor --config configs/antigravity-openai-peer.json
+harnessmesh smoke-test antigravity-codex --config configs/antigravity-openai-peer.json
+```
+
+`doctor` checks configured harness health, relevant authentication state, model-routing backends, Git availability and the SQLite store, and reports Antigravity integration state when applicable.
+
+---
+
+# Quick Start
+
+## Prerequisites
+
 - Go 1.23+
 - Git
+- the CLI(s) for the harness adapters you intend to use
 
-### Build from Source
+## Build
 
 ```bash
 git clone https://github.com/domehahn/harnessmesh.git
 cd harnessmesh
-go build -trimpath -o bin/harnessmesh ./cmd/harnessmesh
+make build
+./bin/harnessmesh version
+./bin/harnessmesh doctor
 ```
 
-Run environment diagnostics:
+## Pick a profile
+
+Ready-to-use examples include:
+
+```text
+configs/claude-codex.json
+configs/antigravity-codex.json
+configs/copilot-codex.json
+configs/antigravity-multi-review.json
+configs/codex-multi-review.json
+configs/antigravity-openai-peer.json
+configs/chatgpt-claude.json
+configs/harnessmesh.example.json
+configs/harnessmesh.switchyard.example.json
+configs/no-switchyard-example.json
+configs/switchyard-example.json
+```
+
+## Run a collaboration task
 
 ```bash
-bin/harnessmesh doctor
+./bin/harnessmesh collaborate \
+  --task "Review the authentication changes and verify the test coverage" \
+  --config configs/claude-codex.json \
+  --repo .
+```
+
+## Or start MCP
+
+```bash
+./bin/harnessmesh mcp serve \
+  --repo . \
+  --config configs/claude-codex.json \
+  --caller claude
 ```
 
 ---
 
-## MCP Server Integration
+# Validation, CI & Release Engineering
 
-Install MCP configuration into your coding harness of choice:
-
-```bash
-# For Claude Code (.mcp.json)
-bin/harnessmesh mcp install claude
-
-# For OpenAI Codex (codex-mcp.json)
-bin/harnessmesh mcp install codex
-
-# For Google Antigravity (.antigravity/mcp.json)
-bin/harnessmesh mcp install antigravity
-
-# For GitHub Copilot CLI (.copilot/mcp.json)
-bin/harnessmesh mcp install copilot
-```
-
-### Reuse HarnessMesh in Any Session
-
-Install the MCP server with user scope once so it is available in new projects and future VS Code conversations:
+Local validation targets:
 
 ```bash
-bin/harnessmesh mcp install claude --scope user
-bin/harnessmesh mcp install codex --scope user
-bin/harnessmesh mcp install antigravity --scope user
-bin/harnessmesh mcp install copilot --scope user
+make test
+make vet
+make race
+make fuzz
+make load
+make security
+make build
 ```
 
-Install only the harnesses you actually use. Restart the harness or open a new VS Code conversation after installation. In every connected conversation, the harness can use the same persistent archive through:
+The repository also includes CI/release automation for:
 
-```text
-knowledge.search   Search previous discussions, findings, evidence, decisions, and events.
-knowledge.context  Return bounded search results formatted as RAG context.
-knowledge.summary  Return a bounded deterministic summary grouped by record kind.
-knowledge.remember Store an explicit lesson, problem, solution, or decision.
-knowledge.import   Import a copied Claude, ChatGPT, Codex, or Markdown transcript.
-knowledge.compact  Remove records older than an RFC3339 retention cutoff.
-knowledge.stats    Show archive path, compressed size, encryption, and record statistics.
-knowledge.quality  Report verification, confidence, expiry, duplicate, and conflict signals.
-```
-
-Example instructions to give an agent at the beginning of a new conversation:
-
-```text
-Before proposing a solution, search HarnessMesh knowledge for related prior decisions,
-findings, failed approaches, and evidence. Use knowledge.context with the current task
-and relevant repository paths, then cite the retrieved record IDs in your reasoning.
-Publish important conclusions, problems, evidence, and decisions back to HarnessMesh.
-```
-
-The default persistent locations are:
-
-```text
-~/.harnessmesh/harnessmesh.db
-~/.harnessmesh/knowledge.hmkz
-```
-
-If the user home directory is not writable, HarnessMesh falls back to `.harnessmesh/` in the current working directory. Override the archive location with `HARNESSMESH_KNOWLEDGE_PATH`:
-
-```bash
-export HARNESSMESH_KNOWLEDGE_PATH="$HOME/.harnessmesh/knowledge.hmkz"
-```
-
-The same functions are available without MCP for scripts and CI:
-
-```bash
-harnessmesh knowledge import --file conversation.md --source claude-code --project-id my-project
-harnessmesh knowledge search --query "sqlite migration rollback" --project-id my-project --json
-harnessmesh knowledge compact --before 2025-01-01T00:00:00Z
-harnessmesh knowledge verify
-harnessmesh knowledge index
-harnessmesh knowledge export --file /backup/knowledge.hmkz
-harnessmesh knowledge restore --file /backup/knowledge.hmkz
-harnessmesh knowledge rotate-key --key "$NEW_KNOWLEDGE_KEY"
-# Optional: import changed transcript files continuously
-harnessmesh knowledge watch --file conversation.md --project-id my-project
-```
-
-For a remote VS Code extension or another machine, start the authenticated HTTP MCP endpoint:
-
-```bash
-export HARNESSMESH_MCP_TOKEN="replace-with-a-long-random-token"
-harnessmesh mcp serve --listen 127.0.0.1:8787 --token "$HARNESSMESH_MCP_TOKEN" --caller remote-agent
-```
-
-Use `Authorization: Bearer <token>` for JSON-RPC `POST /` requests. `GET /healthz` is unauthenticated for liveness checks, `GET /metrics` exposes basic Prometheus counters, and authenticated `GET /admin/knowledge` exposes archive administration statistics. Native TLS is available with `--tls-cert` and `--tls-key`; otherwise bind to localhost or use a TLS reverse proxy.
-
-Instead of a static token, OAuth2 token introspection can be configured with `HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL` and optionally `HARNESSMESH_MCP_OAUTH_CLIENT_SECRET`.
-
-The archive is shared by all local HarnessMesh MCP sessions for that user. A plain Claude or ChatGPT conversation that is not connected to the HarnessMesh MCP server is not captured automatically. ChatGPT in a separate web conversation also cannot read the local archive unless it is connected through a compatible local or remote MCP integration. In that case, use a connected harness or `knowledge.context` as the bridge instead of copying transcripts manually.
+- race-enabled Go tests;
+- knowledge/archive benchmark coverage;
+- `go vet`;
+- `govulncheck`;
+- CodeQL;
+- Docker builds;
+- tagged-release binaries;
+- SHA-256 checksums;
+- CycloneDX SBOM generation;
+- keyless Cosign signing;
+- GitHub release publication.
 
 ---
 
-## Configuration Profiles
+# Design Invariants
 
-Pre-configured collaboration profiles are provided in `configs/`:
+HarnessMesh is built around a small set of non-negotiable invariants:
 
-- `configs/claude-codex.json`: Claude Code executor, OpenAI Codex reviewer.
-- `configs/antigravity-codex.json`: Google Antigravity executor, OpenAI Codex reviewer.
-- `configs/copilot-codex.json`: GitHub Copilot CLI executor, OpenAI Codex reviewer.
-- `configs/antigravity-multi-review.json`: Antigravity executor, Codex & Claude parallel reviewers.
-- `configs/codex-multi-review.json`: Codex executor, Antigravity & Claude parallel reviewers.
-
-Validate and migrate configurations:
-
-```bash
-# Validate any configuration profile
-bin/harnessmesh config validate configs/antigravity-multi-review.json
-
-# Migrate a v0.1 configuration to v0.2
-bin/harnessmesh config migrate harnessmesh.json harnessmesh.v2.json
-```
+1. **One writer, many reviewers.** Concurrent writers are rejected rather than reconciled after corruption.
+2. **Evidence beats model consensus.** Technical disagreement is resolved using repository evidence and reproducible proofs.
+3. **Context is projected, not blindly copied.** Only bounded, policy-filtered repository context is shared.
+4. **Loops are bounded.** Causal cycle detection, peer depth limits, call limits and budgets prevent uncontrolled agent recursion.
+5. **Routing boundaries stay explicit.** HarnessMesh selects participants; model routers select models.
+6. **External means external.** Browser/remote participants are not silently treated as managed local subprocesses.
+7. **Verified code must be the code that is committed.** MeshCommit binds the commit gate to the verified tree hash.
+8. **History is durable.** Operational state belongs in SQLite; long-term collaboration knowledge belongs in the append-only knowledge archive.
 
 ---
 
-## CLI Reference
+# Documentation
 
-```text
-Usage:
-  harnessmesh collaborate --task "..." [options]
-  harnessmesh mcp serve [--repo <path>] [--config <path>] [--session <id>] [--caller <name>]
-  harnessmesh mcp install <claude|codex|antigravity|copilot> [--scope <project|user>]
-  harnessmesh integrate antigravity [--repo <path>]
-  harnessmesh space <list|show|create|pause|resume|stop> [options]
-  harnessmesh channel <list|create> [options]
-  harnessmesh thread <list|show|reply> [options]
-  harnessmesh inbox <list> [options]
-  harnessmesh subscriptions <list|remove> [options]
-  harnessmesh decide <list|propose|accept> [options]
-  harnessmesh peer ask --peer <name> --question "..." [options]
-  harnessmesh peer review --peer <name> [options]
-  harnessmesh agents <list|show <name>>
-  harnessmesh session <list|show|resume|stop> [options]
-  harnessmesh findings <session-id> [--json]
-  harnessmesh evidence <session-id> [--json]
-  harnessmesh config <validate|migrate|print> [options]
-  harnessmesh doctor [--config <path>]
-  harnessmesh print-config [--config <path>]
-  harnessmesh version
-```
+## Architecture & protocols
 
----
+- [Architecture](docs/ARCHITECTURE.md)
+- [Protocol](docs/PROTOCOL.md)
+- [Model Context Protocol server](docs/mcp.md)
+- [Peer protocol](docs/peer-protocol.md)
+- [Capability discovery](docs/capabilities.md)
+- [Economy & participant routing](docs/economy-routing.md)
+- [MeshChange transactions](docs/change-transactions.md)
 
-## Documentation
+## Collaboration
 
-### Collaboration Fabric (v0.3.0)
-- [Collaboration Spaces Guide](docs/collaboration-spaces.md)
-- [Channels and Threads](docs/channels-and-threads.md)
-- [Event Bus & Coalescing Engine](docs/events-and-coalescing.md)
-- [Participant Inboxes & Activation Modes](docs/inbox-and-activation.md)
-- [Decisions & Evidence](docs/decisions-and-evidence.md)
-- [Human Supervision & Emergency Controls](docs/human-controls.md)
+- [Collaboration spaces](docs/collaboration-spaces.md)
+- [Channels & threads](docs/channels-and-threads.md)
+- [Events & coalescing](docs/events-and-coalescing.md)
+- [Inbox & activation](docs/inbox-and-activation.md)
+- [Decisions & evidence](docs/decisions-and-evidence.md)
+- [Human controls](docs/human-controls.md)
+- [Collaboration patterns](docs/collaboration-patterns.md)
 
-### Core Architecture & Integration
-- [Architecture & Design](docs/ARCHITECTURE.md)
-- [Antigravity & OpenAI Codex Peer Integration](docs/antigravity-integration.md)
-- [Interactive Peer Conversation Protocol](docs/peer-conversation.md)
-- [Model Context Protocol (MCP)](docs/mcp.md)
-- [Peer Protocol Specification](docs/peer-protocol.md)
-- [Security & Context Filtering](docs/security.md)
-- [Context Projection Engine](docs/context-projection.md)
-- [Sessions & Persistence](docs/sessions.md)
-- [Collaboration Patterns](docs/collaboration-patterns.md)
-- [Troubleshooting Guide](docs/troubleshooting.md)
-- Adapter Guides:
-  - [Claude Code Adapter](docs/adapters/claude-code.md)
-  - [OpenAI Codex Adapter](docs/adapters/codex.md)
-  - [Google Antigravity Adapter](docs/adapters/antigravity.md)
-  - [GitHub Copilot CLI Adapter](docs/adapters/copilot-cli.md)
+## Integration & security
 
-### Community
+- [Adapters](docs/adapters.md)
+- [Antigravity integration](docs/antigravity-integration.md)
+- [Context projection](docs/context-projection.md)
+- [Security](docs/security.md)
+- [Sessions & persistence](docs/sessions.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
-- [Contributing Guide](CONTRIBUTING.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
-- [Support](SUPPORT.md)
+## Project
+
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 - [Governance](GOVERNANCE.md)
-- [Security Policy](SECURITY.md)
-- [Release Process](RELEASE.md)
+- [Support](SUPPORT.md)
+- [Release process](RELEASE.md)
 
 ---
 
-## License
+# License
 
-Apache 2.0. See [LICENSE](LICENSE) for details.
+Apache License 2.0. See [LICENSE](LICENSE).
