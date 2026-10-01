@@ -42,6 +42,9 @@ jobs:
       - name: Build
         run: go build ./cmd/harnessmesh
 
+      - name: Production readiness gate (deterministic; no OpenAI inference)
+        run: make production-readiness
+
       - name: Validate examples
         run: |
           python3 -m json.tool configs/harnessmesh.example.json >/dev/null
