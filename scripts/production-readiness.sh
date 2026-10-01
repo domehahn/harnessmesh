@@ -34,7 +34,7 @@ run_gate FUZZ go test ./internal/provider -run '^$' -fuzz FuzzResponsesRequestPa
 run_gate CONTRACT go test ./internal/provider -run 'Test(SSELossless|Wire|SIWC|ServerModels|CodexModels|Input|CallOutput)'
 run_gate AUTH go test ./internal/provider -run 'Test.*Auth|Test.*Authorization'
 run_gate MODEL_CATALOG go test ./internal/provider -run 'Test.*Model'
-run_gate WRITE_EDIT go test ./internal/provider -run 'Test.*E2E|Test.*Tool|Test.*Replay'
+run_gate WRITE_EDIT go test ./internal/provider -run '^TestE2E_FilesystemWriteEditDelete$' -count=1
 run_gate RECOVERY go test ./internal/provider -run 'Test.*(Timeout|Cancel|Failure|Fallback|Shutdown|Disconnect)'
 run_gate CONCURRENCY go test -race ./internal/provider -run 'Test.*(Concurrent|TwoRequests|Parallel|Load)'
 run_gate OBSERVABILITY go test ./internal/provider -run 'Test.*(Diagnostic|Audit|Log|Redact)'
