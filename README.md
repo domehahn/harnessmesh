@@ -14,7 +14,7 @@ Current source version: **v0.1.0**.
 
 ### Native Installation
 
-Voraussetzungen sind Go 1.24 oder neuer, Git und optional Docker Compose.
+Voraussetzungen sind Go 1.25 oder neuer, Git und optional Docker Compose.
 Das Repository klonen und den lokalen Binär-Wrapper bauen:
 
 ```bash
@@ -32,6 +32,36 @@ bin/harnessmesh config validate --config harnessmesh.json
 bin/harnessmesh doctor --config harnessmesh.json
 bin/harnessmesh --help
 ```
+
+### Installation über Go
+
+Für die reine CLI-Installation ist kein Repository-Checkout erforderlich:
+
+```bash
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+harnessmesh version
+```
+
+Go installiert das Programm in `GOBIN` oder standardmäßig nach
+`$(go env GOPATH)/bin`. Falls dieser Ordner noch nicht im `PATH` liegt:
+
+```bash
+export PATH="$(go env GOPATH)/bin:$PATH"
+harnessmesh --help
+```
+
+Für ein reproduzierbares Upgrade kann eine konkrete Version verwendet werden;
+`@latest` folgt dagegen dem neuesten veröffentlichten Modulstand:
+
+```bash
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+# später:
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@latest
+```
+
+Die Go-Installation enthält die CLI, aber keine globale Datenbank oder
+Konfiguration. Diese entstehen erst bei der Verwendung unter
+`~/.harnessmesh` beziehungsweise im jeweiligen Projektverzeichnis.
 
 ### Vereinfachte Docker-Installation für Codex und ChatGPT-Plan-Inferenz
 
@@ -624,6 +654,47 @@ The API exposes collaboration state such as:
 - event-ID deduplication.
 
 The extension itself never calls OpenAI, Codex or ChatGPT directly and cannot bypass HarnessMesh's single-writer enforcement.
+
+### VS Code Marketplace
+
+Die Erweiterung ist für eine Veröffentlichung unter dem Publisher
+`harnessmesh` vorbereitet. Sie stellt die Collaboration-Bridge-Oberfläche
+bereit; sie ersetzt weder die offizielle Codex-Erweiterung noch den
+Codex-kompatiblen Provider. Der Provider wird weiterhin über
+`~/.codex/config.toml` konfiguriert.
+
+#### Lokale VSIX-Installation
+
+```bash
+cd extensions/vscode
+npm install
+npm run compile
+npx @vscode/vsce package
+code --install-extension harnessmesh-vscode-0.1.0.vsix
+```
+
+Alternativ kann die Erweiterung in VS Code über `Run and Debug` als Extension
+Development Host gestartet werden. Der Bridge-Token wird über VS Code
+`SecretStorage` gespeichert und nicht in `settings.json` geschrieben.
+
+#### Veröffentlichung im Marketplace
+
+Dafür benötigt das Projekt einmalig einen verifizierten VS-Code-Marketplace-
+Publisher namens `harnessmesh` und ein dafür ausgestelltes PAT. Das PAT darf
+nicht in Git oder in `package.json` abgelegt werden:
+
+```bash
+cd extensions/vscode
+npm install
+npm run compile
+npx @vscode/vsce package
+npx @vscode/vsce publish --pat "$VSCE_PAT"
+```
+
+Die Marketplace-Veröffentlichung sollte als eigener Extension-Release mit
+der Version aus `extensions/vscode/package.json` erfolgen. CLI-, Docker- und
+VS-Code-Extension-Versionen können dabei unabhängig voneinander veröffentlicht
+werden, sollten für eine gemeinsame Produktversion aber synchronisiert werden.
 
 ---
 
