@@ -34,8 +34,7 @@ production-readiness:
 	./scripts/production-readiness.sh
 
 live-metadata-check:
-	@echo "Metadata-only live checks are opt-in and must be run with a configured provider URL."
-	@echo "This target performs no /responses inference."
+	./scripts/live-metadata-check.sh
 
 live-openai-e2e:
 	@test "$(HARNESSMESH_ALLOW_LIVE_OPENAI_INFERENCE)" = "1" || (echo "Refusing live OpenAI inference: set HARNESSMESH_ALLOW_LIVE_OPENAI_INFERENCE=1 explicitly."; exit 2)

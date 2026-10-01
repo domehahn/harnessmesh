@@ -29,6 +29,7 @@ type AuditRecord struct {
 	CorrelationID string    `json:"correlation_id,omitempty"`
 	Route         string    `json:"route,omitempty"`
 	Method        string    `json:"method,omitempty"`
+	ClientVersion string    `json:"client_version,omitempty"`
 	Client        string    `json:"client,omitempty"`
 	Model         string    `json:"model,omitempty"`
 	Backend       string    `json:"backend,omitempty"`
@@ -40,6 +41,7 @@ type AuditRecord struct {
 	TimedOut      bool      `json:"timed_out,omitempty"`
 	PolicyDenied  bool      `json:"policy_denied,omitempty"`
 	LatencyMS     int64     `json:"latency_ms"`
+	DurationMS    int64     `json:"duration_ms"`
 	StreamStatus  string    `json:"stream_status,omitempty"`
 }
 
@@ -61,10 +63,12 @@ type Server struct {
 	cfg      config.ProviderGatewayConfig
 	audit    AuditSink
 
-	requests   atomic.Uint64
-	errors     atomic.Uint64
-	denials    atomic.Uint64
-	activeReqs atomic.Int64
+	requests     atomic.Uint64
+	errors       atomic.Uint64
+	denials      atomic.Uint64
+	activeReqs   atomic.Int64
+	responses    atomic.Uint64
+	metadataOnly bool
 
 	rateMu     sync.Mutex
 	rateWindow time.Time
@@ -79,6 +83,18 @@ type Server struct {
 func NewServer(cfg config.ProviderGatewayConfig, registry *Registry) *Server {
 	return &Server{registry: registry, cfg: cfg, audit: noopAuditSink{}}
 }
+
+// NewMetadataOnlyServer creates the explicitly test-scoped gateway used by
+// live-metadata-check. It rejects responses before backend resolution or any
+// upstream dial can occur.
+func NewMetadataOnlyServer(cfg config.ProviderGatewayConfig, registry *Registry) *Server {
+	s := NewServer(cfg, registry)
+	s.metadataOnly = true
+	return s
+}
+
+// ResponsesRequests reports requests reaching the responses boundary.
+func (s *Server) ResponsesRequests() uint64 { return s.responses.Load() }
 
 func (s *Server) SetAuditSink(a AuditSink) {
 	if a == nil {
@@ -148,6 +164,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "harnessmesh_provider_requests_total %d\n", s.requests.Load())
 	fmt.Fprintf(w, "harnessmesh_provider_errors_total %d\n", s.errors.Load())
 	fmt.Fprintf(w, "harnessmesh_provider_streams_active %d\n", s.activeReqs.Load())
+	fmt.Fprintf(w, "harnessmesh_provider_responses_requests_total %d\n", s.responses.Load())
 	fmt.Fprintf(w, "harnessmesh_zero_api_billing_policy_denials_total %d\n", s.denials.Load())
 	fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"openai-api\"} %d\n", creditguard.Calls(creditguard.BackendOpenAIAPI))
 	fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"codex\"} %d\n", creditguard.Calls(creditguard.BackendCodex))
@@ -210,11 +227,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 //     itself was wrong. See codex_model_catalog.go for the embedded,
 //     byte-faithful real catalog payload this branch serves.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	requestID := s.requestID()
+	w.Header().Set("X-Request-Id", requestID)
+	clientVersion := r.URL.Query().Get("client_version")
 	if r.URL.Query().Has("client_version") {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("ETag", codexModelCatalogETag)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(codexModelCatalogJSON)
+		s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, Route: r.URL.Path, Method: r.Method, Client: r.UserAgent(), ClientVersion: clientVersion, Result: "ok", Status: http.StatusOK, LatencyMS: time.Since(start).Milliseconds()})
 		return
 	}
 
@@ -227,6 +249,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
+	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, Route: r.URL.Path, Method: r.Method, Client: r.UserAgent(), Result: "ok", Status: http.StatusOK, LatencyMS: time.Since(start).Milliseconds()})
 }
 
 // withAuth enforces bearer-token auth (fail closed if unconfigured),
@@ -285,6 +308,12 @@ func (s *Server) allowRequest(now time.Time) bool {
 
 // handleResponses implements POST /v1/responses.
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
+	s.responses.Add(1)
+	if s.metadataOnly {
+		s.errors.Add(1)
+		writeProviderError(w, http.StatusNotImplemented, fmt.Errorf("metadata-only verification rejects /v1/responses locally"))
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeProviderError(w, http.StatusMethodNotAllowed, &ForbiddenError{Reason: "only POST is supported"})
 		return

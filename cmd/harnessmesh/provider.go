@@ -114,6 +114,7 @@ func providerServe(args []string) error {
 	configPath := fs.String("config", "harnessmesh.json", "config file")
 	listen := fs.String("listen", "", "listen address (default 127.0.0.1:8789 or config.provider.listen)")
 	token := fs.String("token", os.Getenv("HARNESSMESH_PROVIDER_TOKEN"), "provider gateway bearer token")
+	metadataOnly := fs.Bool("metadata-only", false, "test-only: serve models/health and reject /responses (requires HARNESSMESH_METADATA_ONLY_TEST=1)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -159,7 +160,16 @@ func providerServe(args []string) error {
 	if _, err := registry.Resolve(""); err != nil {
 		return fmt.Errorf("resolve default backend: %w", err)
 	}
-	srv := provider.NewServer(gwCfg, registry)
+	var srv *provider.Server
+	if *metadataOnly {
+		if os.Getenv("HARNESSMESH_METADATA_ONLY_TEST") != "1" {
+			return errors.New("--metadata-only requires HARNESSMESH_METADATA_ONLY_TEST=1")
+		}
+		srv = provider.NewMetadataOnlyServer(gwCfg, registry)
+	} else {
+		srv = provider.NewServer(gwCfg, registry)
+	}
+	srv.SetAuditSink(provider.NewJSONAuditSink(os.Stderr))
 
 	mode := "zero_api_billing_mode"
 	if !gwCfg.IsZeroCreditMode() {
