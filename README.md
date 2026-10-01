@@ -1260,7 +1260,6 @@ The following rules define the architecture:
 - [Governance](GOVERNANCE.md)
 - [Release Process](RELEASE.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
-
 ---
 
 # 29. What HarnessMesh Does Not Promise
