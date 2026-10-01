@@ -1,10 +1,10 @@
 module github.com/domehahn/harnessmesh
 
-go 1.24
+go 1.25
 
 require github.com/mattn/go-sqlite3 v1.14.52
 
-require github.com/klauspost/compress v1.18.0
+require github.com/klauspost/compress v1.20.1
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.1
