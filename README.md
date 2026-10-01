@@ -402,6 +402,347 @@ Usage:
 
 ---
 
+## Complete CLI Reference
+
+Alle Befehle verwenden standardmäßig den lokalen SQLite-Store und die
+Konfigurationsdatei harnessmesh.json, sofern kein anderer Pfad angegeben
+wird. Ausgabe mit --json eignet sich für Skripte und CI. IDs in den
+Beispielen werden jeweils von einem vorherigen Befehl geliefert.
+
+### Globale Befehle
+
+| Befehl | Zweck | Beispiel |
+| :--- | :--- | :--- |
+| version | Version ausgeben | bin/harnessmesh version |
+| doctor | Agenten, Store, Integrationen und Routing diagnostizieren | bin/harnessmesh doctor --config harnessmesh.json |
+| print-config | Redigierte Konfiguration ausgeben | bin/harnessmesh print-config --config harnessmesh.json |
+| help / --help | Top-Level-Verwendung anzeigen | bin/harnessmesh --help |
+
+### Workflow und Collaboration
+
+| Befehl | Wichtige Optionen | Beispiel |
+| :--- | :--- | :--- |
+| collaborate | --task oder --task-file, --repo, --config, --executor, --reviewer, --max-rounds, --dry-run | bin/harnessmesh collaborate --task "Review auth" --repo . --config harnessmesh.json |
+| peer converse | --message, --peer, --capability, --outcome, --session, --repo, --config, --caller, --causation-id, --json | bin/harnessmesh peer converse --peer codex --message "Review this diff" --outcome review --json |
+| peer ask | --peer, --question, --session, --repo, --config, --caller, --json | bin/harnessmesh peer ask --peer codex --question "Find regressions" --json |
+| peer review | --peer, --session, --repo, --config, --caller, --focus, --json | bin/harnessmesh peer review --peer codex --focus security,tests --json |
+| peer status | --session, --repo, --config, --json | bin/harnessmesh peer status --session <SESSION_ID> --json |
+| agents list | --config | bin/harnessmesh agents list --config harnessmesh.json |
+| agents show | <name>, --config | bin/harnessmesh agents show codex --config harnessmesh.json |
+| session list | keine | bin/harnessmesh session list |
+| session show | <session-id> | bin/harnessmesh session show <SESSION_ID> |
+| session messages | <session-id> | bin/harnessmesh session messages <SESSION_ID> |
+| session resume | <session-id> | bin/harnessmesh session resume <SESSION_ID> |
+| session stop | <session-id> | bin/harnessmesh session stop <SESSION_ID> |
+| findings | <session-id>, optional --json | bin/harnessmesh findings <SESSION_ID> --json |
+| evidence | <session-id>, optional --json | bin/harnessmesh evidence <SESSION_ID> --json |
+
+### MCP, Bridge und Integrationen
+
+| Befehl | Wichtige Optionen | Beispiel |
+| :--- | :--- | :--- |
+| mcp serve | --repo, --config, --session, --caller, --listen, --endpoint, --token, --tls-cert, --tls-key | bin/harnessmesh mcp serve --listen 127.0.0.1:8787 --token "$HARNESSMESH_MCP_TOKEN" |
+| mcp install | claude, codex, antigravity oder copilot; --scope project oder user | bin/harnessmesh mcp install codex --scope user |
+| bridge serve | --repo, --config, --caller, --listen, --token, --websocket | bin/harnessmesh bridge serve --listen 127.0.0.1:8788 --token "$HARNESSMESH_BRIDGE_TOKEN" |
+| integrate antigravity | --repo, --config, --dry-run | bin/harnessmesh integrate antigravity --repo . --dry-run |
+| integrate chatgpt | --repo, --config, --listen, --token, --install-claude, --dry-run | bin/harnessmesh integrate chatgpt --listen 127.0.0.1:8787 --dry-run |
+| integrate codex-provider | --scope user oder project, --repo, --listen, --model, --token-env-var, --dry-run, --check, --no-backup | bin/harnessmesh integrate codex-provider --scope user --dry-run |
+
+### Collaboration Spaces
+
+| Befehl | Wichtige Optionen | Beispiel |
+| :--- | :--- | :--- |
+| space list | --json | bin/harnessmesh space list --json |
+| space show | <space-id>, optional --json | bin/harnessmesh space show <SPACE_ID> --json |
+| space create | --id, --title, --purpose, --writer, --config | bin/harnessmesh space create --title "Release Review" --writer antigravity |
+| space pause / resume / stop | <space-id> | bin/harnessmesh space pause <SPACE_ID> |
+| channel list | --space, --json | bin/harnessmesh channel list --space <SPACE_ID> --json |
+| channel create | --space, --name, --description | bin/harnessmesh channel create --space <SPACE_ID> --name security |
+| thread list | --space, --channel, --json | bin/harnessmesh thread list --space <SPACE_ID> --channel security --json |
+| thread show | <thread-id> | bin/harnessmesh thread show <THREAD_ID> |
+| thread reply | --space, --channel, --thread, --message, --from | bin/harnessmesh thread reply --space <SPACE_ID> --thread <THREAD_ID> --message "Ack" |
+| inbox list | --space, --participant, --unread, --json | bin/harnessmesh inbox list --space <SPACE_ID> --participant codex --unread --json |
+| subscriptions list | --space, --participant | bin/harnessmesh subscriptions list --space <SPACE_ID> |
+| subscriptions add | --space, --participant, --channels, --events, --scope, --mode | bin/harnessmesh subscriptions add --space <SPACE_ID> --participant codex --channels security --mode active |
+| subscriptions remove | --space, --id oder <subscription-id> | bin/harnessmesh subscriptions remove --space <SPACE_ID> --id <SUBSCRIPTION_ID> |
+| decide list | --space, --json | bin/harnessmesh decide list --space <SPACE_ID> --json |
+| decide propose | --space, --title, --statement, --rationale, --from | bin/harnessmesh decide propose --space <SPACE_ID> --title "Use SQLite" --statement "Keep SQLite as default" |
+| decide accept | --space, --decision, --from | bin/harnessmesh decide accept --space <SPACE_ID> --decision <DECISION_ID> |
+
+### Change Control
+
+| Befehl | Wichtige Optionen | Beispiel |
+| :--- | :--- | :--- |
+| change create | --title, --intent, --space, --branch, --author, --base, --config, --json | bin/harnessmesh change create --title "Refactor API" --intent "Reduce coupling" --json |
+| change list | --space, --status, --json | bin/harnessmesh change list --status prepared --json |
+| change show | <change-id>, optional --json | bin/harnessmesh change show <CHANGE_ID> --json |
+| change prepare | <change-id> | bin/harnessmesh change prepare <CHANGE_ID> |
+| change verify | <change-id>, --obligation, --json | bin/harnessmesh change verify <CHANGE_ID> --obligation <OBLIGATION_ID> --json |
+| change evidence | <change-id>, --obligation, --type, --result, --source, --notes, --json | bin/harnessmesh change evidence <CHANGE_ID> --obligation <OBLIGATION_ID> --result passed --json |
+| change gate | <change-id>, optional --json | bin/harnessmesh change gate <CHANGE_ID> --json |
+| change commit | <change-id>, --message, --author, --json | bin/harnessmesh change commit <CHANGE_ID> --message "Verified change" |
+| change abort | <change-id>, --reason | bin/harnessmesh change abort <CHANGE_ID> --reason "Superseded" |
+
+### Knowledge Archive
+
+| Befehl | Wichtige Optionen | Beispiel |
+| :--- | :--- | :--- |
+| knowledge search | --query, --project-id, --kind, --limit, --offset, --json | bin/harnessmesh knowledge search --query "migration" --project-id demo --json |
+| knowledge import | --text oder --file, --kind, --source, --project-id | bin/harnessmesh knowledge import --file transcript.md --source codex --project-id demo |
+| knowledge remember | --text oder --file, --kind, --source, --project-id | bin/harnessmesh knowledge remember --text "Decision: use WAL" --kind decision --source human |
+| knowledge stats | keine | bin/harnessmesh knowledge stats |
+| knowledge verify | keine | bin/harnessmesh knowledge verify |
+| knowledge index | keine | bin/harnessmesh knowledge index |
+| knowledge export | --file | bin/harnessmesh knowledge export --file /backup/knowledge.hmkz |
+| knowledge restore | --file | bin/harnessmesh knowledge restore --file /backup/knowledge.hmkz |
+| knowledge rotate-key | --key | bin/harnessmesh knowledge rotate-key --key "$NEW_KNOWLEDGE_KEY" |
+| knowledge watch | --file, --interval, --project-id, --source | bin/harnessmesh knowledge watch --file conversation.md --interval 2s |
+| knowledge compact | --before RFC3339 | bin/harnessmesh knowledge compact --before 2025-01-01T00:00:00Z |
+
+### Provider, Routing und Tests
+
+| Befehl | Wichtige Optionen | Beispiel |
+| :--- | :--- | :--- |
+| provider auth chatgpt | --token-path, --timeout | bin/harnessmesh provider auth chatgpt --timeout 10m |
+| provider doctor | --config | bin/harnessmesh provider doctor --config harnessmesh.json |
+| provider serve | --config, --listen, --token, --metadata-only | bin/harnessmesh provider serve --config harnessmesh.json --listen 127.0.0.1:8789 --token "$HARNESSMESH_PROVIDER_TOKEN" |
+| switchyard doctor | --config | bin/harnessmesh switchyard doctor --config harnessmesh.json |
+| switchyard routes | --config | bin/harnessmesh switchyard routes --config harnessmesh.json |
+| switchyard config validate | --config | bin/harnessmesh switchyard config validate --config harnessmesh.json |
+| smoke-test antigravity-codex | --config, --repo | bin/harnessmesh smoke-test antigravity-codex --config configs/antigravity-openai-peer.json --repo . |
+
+### Sicherheits- und Betriebs-Hinweise
+
+- mcp serve, bridge serve und provider serve bleiben aktiv, bis sie mit
+  Ctrl-C beendet werden.
+- Tokens über Umgebungsvariablen setzen; sie nicht in Git, Shell-History oder
+  Konfigurationsdateien einchecken.
+- change commit, knowledge restore, knowledge rotate-key und
+  Integrationsbefehle können Dateien oder den Git-Stand verändern. Für
+  Integrationen zuerst --dry-run oder --check verwenden.
+- knowledge compact löscht Archivdatensätze vor dem angegebenen Zeitpunkt.
+- change commit nur nach erfolgreichem change gate ausführen.
+
+## CLI Cookbook
+
+Die folgenden Beispiele verwenden das beim Build erzeugte Binary
+bin/harnessmesh. Nach make build kann alternativ überall einfach
+harnessmesh verwendet werden. Werte in spitzen Klammern sind Platzhalter.
+
+### Start, Diagnose und Konfiguration
+
+```bash
+make build
+bin/harnessmesh version
+bin/harnessmesh doctor --config configs/antigravity-openai-peer.json
+bin/harnessmesh print-config --config harnessmesh.json
+bin/harnessmesh config validate --config harnessmesh.json
+bin/harnessmesh config migrate harnessmesh.v1.json harnessmesh.v2.json
+bin/harnessmesh config print --config harnessmesh.json
+```
+
+### Klassischer Collaborate-Workflow
+
+```bash
+bin/harnessmesh collaborate \
+  --repo . --config configs/antigravity-openai-peer.json \
+  --task "Prüfe die Authentifizierung und schlage sichere Verbesserungen vor"
+
+bin/harnessmesh collaborate \
+  --task-file ./task.md --executor antigravity --reviewer codex \
+  --max-rounds 3 --dry-run
+```
+
+### MCP und lokale/remote Bridges
+
+```bash
+# Projektbezogene MCP-Konfiguration
+bin/harnessmesh mcp install claude --scope project
+bin/harnessmesh mcp install codex --scope project
+bin/harnessmesh mcp install antigravity --scope project
+bin/harnessmesh mcp install copilot --scope project
+
+# MCP für neue Projekte im Benutzerprofil
+bin/harnessmesh mcp install claude --scope user
+
+# MCP über stdio
+bin/harnessmesh mcp serve --repo . --config harnessmesh.json --caller claude
+
+# Streamable HTTP für einen Remote-Connector
+export HARNESSMESH_MCP_TOKEN="<long-random-token>"
+bin/harnessmesh mcp serve \
+  --repo . --config harnessmesh.json --caller chatgpt-browser \
+  --listen 127.0.0.1:8787 --token "$HARNESSMESH_MCP_TOKEN"
+
+# VS-Code-Bridge für REST/WebSocket
+export HARNESSMESH_BRIDGE_TOKEN="<long-random-token>"
+bin/harnessmesh bridge serve \
+  --repo . --config harnessmesh.json --caller antigravity \
+  --listen 127.0.0.1:8788 --token "$HARNESSMESH_BRIDGE_TOKEN"
+```
+
+### Integrationen
+
+```bash
+bin/harnessmesh integrate antigravity \
+  --repo . --config configs/antigravity-openai-peer.json
+
+bin/harnessmesh integrate chatgpt \
+  --repo . --config configs/chatgpt-claude.json \
+  --listen 127.0.0.1:8787 --dry-run
+
+bin/harnessmesh integrate codex-provider \
+  --scope user --listen 127.0.0.1:8789 \
+  --model harnessmesh-local --dry-run
+```
+
+### Peer-Kommunikation und Reviews
+
+```bash
+bin/harnessmesh peer converse \
+  --peer codex --message "Prüfe diesen API-Entwurf auf Risiken" \
+  --outcome security_analysis --config harnessmesh.json
+
+bin/harnessmesh peer converse \
+  --capability security-review --message "Bewerte die Authentifizierungsänderung" --json
+
+bin/harnessmesh peer ask \
+  --peer codex --question "Welche Regressionen erkennst du in diesem Diff?" \
+  --repo . --config harnessmesh.json --json
+
+bin/harnessmesh peer review \
+  --peer codex --focus security,tests,backwards-compatibility \
+  --repo . --config harnessmesh.json --json
+
+bin/harnessmesh peer status --session <SESSION_ID> --json
+```
+
+### Sessions, Findings und Evidence
+
+```bash
+bin/harnessmesh session list
+bin/harnessmesh session show <SESSION_ID>
+bin/harnessmesh session messages <SESSION_ID>
+bin/harnessmesh session resume <SESSION_ID>
+bin/harnessmesh session stop <SESSION_ID>
+bin/harnessmesh findings <SESSION_ID>
+bin/harnessmesh findings <SESSION_ID> --json
+bin/harnessmesh evidence <SESSION_ID>
+bin/harnessmesh evidence <SESSION_ID> --json
+```
+
+### Persistente Collaboration Spaces, Channels und Threads
+
+```bash
+bin/harnessmesh space create \
+  --id project-review --title "Project Review" \
+  --purpose "Sicherheits- und Architekturprüfung" \
+  --writer antigravity --config harnessmesh.json
+bin/harnessmesh space list --json
+bin/harnessmesh space show <SPACE_ID> --json
+bin/harnessmesh space pause <SPACE_ID>
+bin/harnessmesh space resume <SPACE_ID>
+bin/harnessmesh space stop <SPACE_ID>
+
+bin/harnessmesh channel list --space <SPACE_ID> --json
+bin/harnessmesh channel create --space <SPACE_ID> \
+  --name security --description "Security findings and decisions"
+
+bin/harnessmesh thread list --space <SPACE_ID> --channel security --json
+bin/harnessmesh thread show <THREAD_ID>
+bin/harnessmesh thread reply \
+  --space <SPACE_ID> --channel security --thread <THREAD_ID> \
+  --from human --message "Bitte mit einem reproduzierbaren Test belegen."
+
+bin/harnessmesh inbox list --space <SPACE_ID> --participant codex --unread --json
+bin/harnessmesh subscriptions list --space <SPACE_ID>
+bin/harnessmesh subscriptions add \
+  --space <SPACE_ID> --participant codex \
+  --channels security,findings --events repository.changed,decision.* --mode active
+bin/harnessmesh subscriptions remove --space <SPACE_ID> --id <SUBSCRIPTION_ID>
+```
+
+### Decisions
+
+```bash
+bin/harnessmesh decide propose \
+  --space <SPACE_ID> --title "SQLite als Default-Store" \
+  --statement "SQLite bleibt der lokale Standard für Sessions." \
+  --rationale "Keine externe Infrastruktur für den lokalen Betrieb nötig."
+bin/harnessmesh decide list --space <SPACE_ID> --json
+bin/harnessmesh decide accept --space <SPACE_ID> --decision <DECISION_ID> --from human
+```
+
+### Change Transactions und Proof Gates
+
+change commit schreibt bewusst in das Git-Repository. Die Schritte davor
+ermöglichen einen überprüfbaren, konservativen Ablauf.
+
+```bash
+bin/harnessmesh change create \
+  --title "Provider-Timeout verbessern" \
+  --intent "Transient errors sauber retryen" --author operator --json
+bin/harnessmesh change list --status draft --json
+bin/harnessmesh change show <CHANGE_ID> --json
+bin/harnessmesh change prepare <CHANGE_ID>
+bin/harnessmesh change verify <CHANGE_ID> --json
+bin/harnessmesh change verify <CHANGE_ID> --obligation <OBLIGATION_ID>
+bin/harnessmesh change gate <CHANGE_ID> --json
+bin/harnessmesh change evidence <CHANGE_ID> \
+  --obligation <OBLIGATION_ID> --type security_audit --result passed \
+  --source operator --notes "Peer-Review und Regressionstest bestanden" --json
+bin/harnessmesh change abort <CHANGE_ID> --reason "Anforderung geändert"
+bin/harnessmesh change commit <CHANGE_ID> \
+  --author operator --message "Improve provider timeout handling" --json
+```
+
+### Knowledge Archive
+
+```bash
+bin/harnessmesh knowledge search \
+  --query "sqlite migration rollback" --project-id harnessmesh \
+  --kind decision --json
+bin/harnessmesh knowledge import \
+  --file conversation.md --source claude-code \
+  --project-id harnessmesh --kind transcript
+bin/harnessmesh knowledge remember \
+  --text "Provider-Timeouts müssen fail-closed behandelt werden." \
+  --kind lesson --source operator
+bin/harnessmesh knowledge stats
+bin/harnessmesh knowledge verify
+bin/harnessmesh knowledge index
+bin/harnessmesh knowledge export --file /backup/knowledge.hmkz
+bin/harnessmesh knowledge restore --file /backup/knowledge.hmkz
+export NEW_KNOWLEDGE_KEY="<new-secret>"
+bin/harnessmesh knowledge rotate-key --key "$NEW_KNOWLEDGE_KEY"
+bin/harnessmesh knowledge watch \
+  --file conversation.md --project-id harnessmesh --interval 2s --source codex
+bin/harnessmesh knowledge compact --before 2025-01-01T00:00:00Z
+```
+
+### Provider Gateway und Switchyard
+
+```bash
+bin/harnessmesh provider auth chatgpt
+bin/harnessmesh provider doctor --config harnessmesh.json
+export HARNESSMESH_PROVIDER_TOKEN="<provider-token>"
+bin/harnessmesh provider serve \
+  --config harnessmesh.json --listen 127.0.0.1:8789 \
+  --token "$HARNESSMESH_PROVIDER_TOKEN"
+
+bin/harnessmesh switchyard config validate --config harnessmesh.json
+bin/harnessmesh switchyard routes --config harnessmesh.json
+bin/harnessmesh switchyard doctor --config harnessmesh.json
+```
+
+### Smoke Test und Hilfe
+
+```bash
+bin/harnessmesh smoke-test antigravity-codex \
+  --config configs/antigravity-openai-peer.json --repo .
+bin/harnessmesh --help
+```
+
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE) for details.
