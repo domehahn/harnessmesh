@@ -9,7 +9,7 @@ import (
 
 // This file proves GET /v1/models (the GENERIC, no-"client_version"
 // dialect - see server_codex_models_test.go for the separate, structurally
-// different Codex-dialect dialect at ?client_version=...) matches the
+// different Codex dialect at ?client_version=...) matches the
 // documented OpenAI Model object shape
 // (developers.openai.com/api/reference/resources/models, fetched
 // 2026-09-30: id:string, object:"model", created:number, owned_by:string,

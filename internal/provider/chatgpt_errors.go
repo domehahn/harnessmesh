@@ -82,9 +82,6 @@ func mapResponsesAPIError(status int, body []byte) error {
 	case 503:
 		return &BackendUnavailableError{Backend: "chatgpt-subscription", Reason: "direct routing is unavailable or not enabled"}
 	default:
-		if status >= 500 {
-			return &BackendUnavailableError{Backend: "chatgpt-subscription", Reason: msg}
-		}
 		return &BackendUnavailableError{Backend: "chatgpt-subscription", Reason: msg}
 	}
 }

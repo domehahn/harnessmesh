@@ -12,7 +12,10 @@ fi
 
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root_dir"
-export GOCACHE="${GOCACHE:-/private/tmp/harnessmesh-production-go-cache}"
+tmp_root="${TMPDIR:-/tmp}"
+tmp_root="${tmp_root%/}"
+export GOCACHE="${GOCACHE:-${tmp_root}/harnessmesh-production-go-cache}"
+mkdir -p "$GOCACHE"
 
 failed=0
 run_gate() {
