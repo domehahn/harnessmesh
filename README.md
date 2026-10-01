@@ -8,7 +8,68 @@ It also provides a separate, bounded **model-provider plane** that lets the offi
 
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.
 
-Current source version: **v0.5.0**.
+Current source version: **v0.1.0**.
+
+## Installation und vollständiges Setup
+
+### Native Installation
+
+Voraussetzungen sind Go 1.24 oder neuer, Git und optional Docker Compose.
+Das Repository klonen und den lokalen Binär-Wrapper bauen:
+
+```bash
+git clone https://github.com/domehahn/harnessmesh.git
+cd harnessmesh
+./scripts/setup.sh
+```
+
+`setup.sh` erzeugt bei Bedarf `harnessmesh.json`, baut
+`bin/harnessmesh` und führt keine Zugangsdaten in die Konfiguration ein.
+Anschließend kann die Installation geprüft werden:
+
+```bash
+bin/harnessmesh config validate --config harnessmesh.json
+bin/harnessmesh doctor --config harnessmesh.json
+bin/harnessmesh --help
+```
+
+### Vereinfachte Docker-Installation für Codex und ChatGPT-Plan-Inferenz
+
+Für die Codex-VS-Code-Extension ist der empfohlene lokale Ablauf:
+
+```bash
+./scripts/setup.sh
+./scripts/start-codex-compose.sh
+```
+
+Das Startskript:
+
+- erzeugt einmalig die ignorierte Datei `.env` mit einem zufälligen
+  `HARNESSMESH_PROVIDER_TOKEN`;
+- verwendet standardmäßig `configs/codex-chatgpt.example.json`;
+- integriert den Custom Provider in `~/.codex/config.toml`;
+- führt beim ersten Start den SIWC-Browser-Login auf dem Host aus;
+- verwendet `~/.harnessmesh` für ChatGPT-Credentials, Refresh-Status und
+  HarnessMesh-Daten;
+- startet `harnessmesh-provider` mit Docker Compose;
+- startet VS Code optional mit `HARNESSMESH_OPEN_CODE=1`.
+
+```bash
+HARNESSMESH_OPEN_CODE=1 ./scripts/start-codex-compose.sh .
+```
+
+Das Token wird in Codex über `env_key` aus der Umgebung gelesen und nicht als
+Klartext in `config.toml` gespeichert. Wenn VS Code bereits läuft, muss es
+mit der Umgebung aus `.env` neu gestartet werden:
+
+```bash
+set -a; . ./.env; set +a
+code .
+```
+
+Der Browser-Login ist nur beim ersten Start oder nach dem Löschen der
+SIWC-Credentials erforderlich. Der Callback läuft absichtlich auf dem Host;
+der Container verwendet anschließend denselben Credential-Ordner.
 
 ---
 
@@ -1145,6 +1206,472 @@ harnessmesh config print --config harnessmesh.json
 
 User-facing config output is redacted where sensitive values are involved.
 
+## Configuration File Guide
+
+### Collaboration profiles
+
+Every profile below is a complete JSON configuration for a different
+collaboration topology. Validate any profile before using it:
+
+```bash
+bin/harnessmesh config validate configs/claude-codex.json
+```
+
+| Profile | Intended topology | Executor | Reviewer(s) | Example |
+| :--- | :--- | :--- | :--- | :--- |
+| configs/claude-codex.json | Standard two-agent review | Claude | Codex | bin/harnessmesh collaborate --config configs/claude-codex.json --task "Review the API" |
+| configs/antigravity-codex.json | Antigravity implementation with Codex review | Antigravity | Codex | bin/harnessmesh collaborate --config configs/antigravity-codex.json --task "Implement the feature" |
+| configs/copilot-codex.json | Copilot implementation with Codex review | Copilot CLI | Codex | bin/harnessmesh collaborate --config configs/copilot-codex.json --task "Fix the failing test" |
+| configs/antigravity-multi-review.json | Parallel multi-review | Antigravity | Codex + Claude security reviewer | bin/harnessmesh collaborate --config configs/antigravity-multi-review.json --task "Audit the change" |
+| configs/codex-multi-review.json | Codex implementation with multiple reviewers | Codex | Antigravity + Claude | bin/harnessmesh collaborate --config configs/codex-multi-review.json --task "Refactor the provider" |
+| configs/antigravity-openai-peer.json | Antigravity with an OpenAI peer | Antigravity | OpenAI peer | bin/harnessmesh smoke-test antigravity-codex --config configs/antigravity-openai-peer.json |
+| configs/chatgpt-claude.json | ChatGPT remote participant with local Claude executor | Claude | ChatGPT browser participant | bin/harnessmesh integrate chatgpt --config configs/chatgpt-claude.json --dry-run |
+| configs/harnessmesh.example.json | General Claude/Codex starter profile | Claude | Codex | bin/harnessmesh doctor --config configs/harnessmesh.example.json |
+| configs/codex-provider.example.json | Codex-compatible provider gateway | Provider gateway | — | bin/harnessmesh provider doctor --config configs/codex-provider.example.json |
+| configs/harnessmesh.switchyard.example.json | Legacy Switchyard-enabled profile format | Claude | Codex | bin/harnessmesh switchyard config validate --config configs/harnessmesh.switchyard.example.json |
+| configs/switchyard-example.json | Current Switchyard model-routing profile | Claude | Codex | bin/harnessmesh switchyard routes --config configs/switchyard-example.json |
+| configs/no-switchyard-example.json | Direct-backend profile without Switchyard | Claude | Codex | bin/harnessmesh switchyard config validate --config configs/no-switchyard-example.json |
+
+The profiles are templates, not guaranteed credentials. Replace executable
+paths, model names, endpoints, and environment-variable references for the
+local machine. Keep secrets in environment variables or the native credential
+store rather than adding literal keys to JSON.
+
+### Project configuration: harnessmesh.json
+
+harnessmesh.json is the project-specific runtime configuration. It can
+combine the following sections:
+
+| Section | Controls |
+| :--- | :--- |
+| version | Configuration schema version |
+| agents | Harness adapters, roles, capabilities, and writable/read-only status |
+| workflow | Executor, reviewer, round limits, tests, and timeouts |
+| collaboration | Peer depth, call/token/cost budgets, approvals, retries, and quotas |
+| context | Projection limits and sensitive-path filtering |
+| provider | Codex-compatible provider gateway and backend policy |
+| switchyard | Optional model-routing service |
+| model_routing_backends | Named routing backends and endpoints |
+| change_control | Proof obligations and commit-gate policy |
+| bridge / chatgpt | Local bridge and external ChatGPT participant settings |
+
+Inspect a configuration without exposing sensitive values:
+
+```bash
+bin/harnessmesh config validate harnessmesh.json
+bin/harnessmesh config print --config harnessmesh.json
+bin/harnessmesh doctor --config harnessmesh.json
+```
+
+### MCP configuration: .mcp.json
+
+.mcp.json configures the local MCP client for a project. It is normally
+written by mcp install and points the client at harnessmesh mcp serve.
+Regenerate it instead of hand-editing it:
+
+```bash
+bin/harnessmesh mcp install claude --scope project
+bin/harnessmesh mcp install codex --scope project
+```
+
+User-scoped installations are stored in the harness's user configuration:
+
+```bash
+bin/harnessmesh mcp install claude --scope user
+```
+
+### Docker Compose: compose.yaml
+
+compose.yaml provides four services. Optional services are disabled by default
+and enabled through Compose profiles:
+
+| Service | Profile | Port | Zweck |
+| :--- | :--- | :--- | :--- |
+| harnessmesh | — | — | Read-only configuration/diagnostic container |
+| harnessmesh-mcp | mcp | 127.0.0.1:8787 | Remote Streamable HTTP MCP server |
+| harnessmesh-bridge | bridge | 127.0.0.1:8788 | REST/WebSocket bridge for VS Code |
+| harnessmesh-provider | provider | 127.0.0.1:8789 | Codex-compatible /v1/responses gateway |
+
+#### 1. Repository und Konfiguration vorbereiten
+
+Compose mountet das Repository nach `/workspace`. Für MCP und Bridge wird eine
+Projektkonfiguration erwartet:
+
+```bash
+cp configs/harnessmesh.example.json harnessmesh.json
+bin/harnessmesh config validate --config harnessmesh.json
+```
+
+Für den Provider mit einem lokalen oder Bedrock-Backend:
+
+```bash
+cp configs/codex-provider.example.json harnessmesh.json
+bin/harnessmesh config validate --config harnessmesh.json
+```
+
+Für die vereinfachte ChatGPT-SIWC-Variante ist keine eigene
+`harnessmesh.json` erforderlich:
+
+```bash
+./scripts/setup.sh
+./scripts/start-codex-compose.sh
+```
+
+Das Skript verwendet automatisch
+`configs/codex-chatgpt.example.json`, `.env` und `~/.harnessmesh`.
+
+Backend-URLs müssen aus dem Container erreichbar sein. 127.0.0.1 bezeichnet
+innerhalb des Containers den Container selbst; für einen Dienst auf dem Host
+ist unter Docker Desktop typischerweise host.docker.internal zu verwenden.
+
+#### 2. Image und Standardservice prüfen
+
+```bash
+docker compose build harnessmesh
+docker compose run --rm harnessmesh
+```
+
+Der Standardservice führt print-config aus und gibt eine redigierte
+Konfiguration aus. Die Container laufen read-only, ohne Linux-Capabilities und
+mit einem temporären /tmp-Dateisystem.
+
+#### 3. Remote-MCP starten
+
+```bash
+export HARNESSMESH_MCP_TOKEN="<long-random-token>"
+docker compose --profile mcp up --build -d harnessmesh-mcp
+curl -fsS http://127.0.0.1:8787/healthz
+docker compose logs -f harnessmesh-mcp
+```
+
+Der MCP-Endpunkt ist http://127.0.0.1:8787/mcp. Für Remote-Zugriff muss ein
+TLS-Reverse-Proxy oder ein sicherer Tunnel davorliegen. Den Entwicklungsport
+nicht direkt öffentlich exponieren.
+
+```bash
+docker compose --profile mcp down
+```
+
+#### 4. VS-Code-Bridge starten
+
+```bash
+export HARNESSMESH_BRIDGE_TOKEN="<long-random-token>"
+docker compose --profile bridge up --build -d harnessmesh-bridge
+docker compose logs -f harnessmesh-bridge
+docker compose --profile bridge down
+```
+
+Die Bridge lauscht auf 127.0.0.1:8788. Der Collaboration-State wird im
+benannten Volume harnessmesh-data gespeichert.
+
+#### 5. Provider-Gateway manuell starten
+
+Der manuelle Ablauf ist für lokale/OpenAI-kompatible Backends oder
+administrative Deployments gedacht:
+
+```bash
+export HARNESSMESH_PROVIDER_TOKEN="<long-random-token>"
+docker compose --profile provider up --build -d harnessmesh-provider
+curl -fsS http://127.0.0.1:8789/healthz
+curl -fsS http://127.0.0.1:8789/v1/models \
+  -H "Authorization: Bearer $HARNESSMESH_PROVIDER_TOKEN"
+docker compose logs -f harnessmesh-provider
+```
+
+Das Provider-Gateway verwendet im zero_api_billing_mode nur erlaubte lokale
+oder kompatible Backends und fällt nicht stillschweigend auf OPENAI_API_KEY
+oder Codex-Abrechnung zurück.
+
+#### 6. Gemeinsamer Betrieb und Fehleranalyse
+
+```bash
+docker compose ps
+docker compose --profile mcp --profile bridge --profile provider up --build -d
+docker compose logs --tail=200 harnessmesh-mcp
+docker compose config
+docker compose --profile mcp --profile bridge --profile provider down
+```
+
+Secrets gehören in die Shell-Umgebung oder einen Secret-Manager, nicht in
+compose.yaml oder Git.
+
+### Vollständige Deinstallation und Datenlöschung
+
+Der folgende Ablauf ist destruktiv. Er löscht lokale HarnessMesh-Daten,
+Docker-Container/Volumes, Credentials, Tokens und generierte Projektdateien.
+Er kann nicht rückgängig gemacht werden. Vorher benötigte Reports oder
+Backups außerhalb der folgenden Pfade sichern.
+
+#### Docker-Container, Images und Volumes entfernen
+
+Im Repository ausführen:
+
+```bash
+docker compose --profile mcp --profile bridge --profile provider \
+  down --volumes --remove-orphans --rmi local
+```
+
+Damit werden insbesondere das benannte Volume `harnessmesh-data`, die
+zugehörigen Container und lokal für dieses Compose-Projekt gebaute Images
+entfernt. Der gemountete SIWC-Ordner unter `~/.harnessmesh` ist davon nicht
+betroffen und wird separat gelöscht.
+
+#### Projektdateien entfernen
+
+Nur ausführen, wenn diese Dateien ausschließlich für HarnessMesh verwendet
+werden:
+
+```bash
+rm -f harnessmesh.json .env bin/harnessmesh .mcp.json codex-mcp.json
+rm -rf .harnessmesh
+```
+
+Falls die Integration angelegt wurde und die Dateien nicht anderweitig
+benötigt werden:
+
+```bash
+rm -f .agent/mcp_config.json .agent/rules/harnessmesh.md
+```
+
+#### Globale Daten, Datenbank und Credentials löschen
+
+`~/.harnessmesh` enthält standardmäßig die SQLite-Datenbank
+`harnessmesh.db`, `knowledge.hmkz`, Reports, Laufzeitdaten sowie die SIWC-
+Credentials `chatgpt-siwc-auth.json`, Host-ID und Client-ID. Für eine
+vollständige Löschung:
+
+```bash
+rm -rf "$HOME/.harnessmesh"
+```
+
+Das löscht auch Daten anderer HarnessMesh-Projekte, die denselben globalen
+Ordner verwenden.
+
+#### Codex-Konfiguration bereinigen
+
+`~/.codex/config.toml` nicht blind löschen, weil dort auch andere Codex-
+Einstellungen stehen können. Entferne den HarnessMesh-Eintrag manuell oder
+stelle den von `integrate codex-provider` erzeugten Backup-Stand wieder her:
+
+```bash
+ls -1t "$HOME"/.codex/config.toml.bak-* 2>/dev/null | head
+```
+
+Zu entfernen sind der Block `[model_providers.harnessmesh]` sowie die von
+HarnessMesh gesetzten Werte `model_provider = "harnessmesh"` und das damit
+verbundene HarnessMesh-Modell. Wenn Codex ausschließlich für HarnessMesh
+installiert wurde, können zusätzlich die gesamte Codex-Konfiguration und die
+Codex-Erweiterung nach den jeweiligen Codex-/VS-Code-Anweisungen entfernt
+werden.
+
+#### Prüfen, ob noch HarnessMesh-Reste vorhanden sind
+
+```bash
+docker ps -a --filter name=harnessmesh
+docker volume ls --filter name=harnessmesh
+find "$HOME/.harnessmesh" -maxdepth 2 -print 2>/dev/null
+```
+
+Wenn die letzten beiden Befehle keine Ausgabe liefern und im Projekt keine
+der oben genannten Dateien mehr vorhanden ist, sind Datenbank, Secrets,
+Tokens und Compose-Ressourcen entfernt.
+
+### Codex VS Code Extension mit ChatGPT-Plan-Inferenz
+
+#### Kurzsetup: Container starten und VS Code verbinden
+
+Für den normalen lokalen Betrieb übernimmt dieses Skript die wiederkehrende
+Konfiguration. Es erzeugt einmalig `.env`, integriert den Provider in die
+benutzerspezifische Codex-Konfiguration, startet den Compose-Container und
+führt den ChatGPT-Login bei Bedarf auf dem Host aus:
+
+```bash
+./scripts/setup.sh
+./scripts/start-codex-compose.sh
+```
+
+Beim ersten Lauf öffnet sich der SIWC-Login. Danach werden die Zugangsdaten
+unter `~/.harnessmesh` wiederverwendet. Das Provider-Token liegt in der lokal
+ignorierten `.env` und wird über `env_key = "HARNESSMESH_PROVIDER_TOKEN"`
+von Codex aus der Umgebung gelesen; es wird absichtlich nicht als Klartext in
+`config.toml` gespeichert.
+
+VS Code muss mit derselben Umgebung gestartet werden:
+
+```bash
+set -a; . ./.env; set +a
+code .
+```
+
+Alternativ startet dieser Befehl den Container und VS Code zusammen:
+
+```bash
+HARNESSMESH_OPEN_CODE=1 ./scripts/start-codex-compose.sh .
+```
+
+Der Container verwendet standardmäßig
+`configs/codex-chatgpt.example.json`. Für ein anderes Provider-Profil kann in
+`.env` beispielsweise gesetzt werden:
+
+```dotenv
+HARNESSMESH_PROVIDER_CONFIG=configs/codex-provider.example.json
+```
+
+Dieser Ablauf verwendet die offizielle Sign-in-with-ChatGPT-(SIWC)-Inferenz
+über HarnessMesh als Custom Provider der Codex VS Code Extension:
+
+```text
+Codex VS Code Extension
+        | custom provider
+        v
+HarnessMesh Provider Gateway
+        | chatgpt-subscription / SIWC
+        v
+ChatGPT-Plan-Inferenz
+```
+
+Das ist nicht dasselbe wie ein bereits geöffneter Browser-Chat. SIWC liefert
+keinen Zugriff auf ChatGPT-Verlauf, Memory, Custom Instructions oder den
+Kontext einer bestehenden Unterhaltung. Für ChatGPT als kollaborierenden
+Teilnehmer ist stattdessen die separate MCP-Integration vorgesehen.
+
+#### 1. Provider-Konfiguration
+
+Erstelle oder kopiere eine harnessmesh.json mit einem ChatGPT-Subscription-Backend:
+
+```json
+{
+  "version": 2,
+  "agents": {
+    "placeholder": {
+      "kind": "fake",
+      "role": "executor",
+      "writable": true
+    }
+  },
+  "provider": {
+    "enabled": true,
+    "listen": "127.0.0.1:8789",
+    "zero_api_billing_mode": true,
+    "default_backend": "chatgpt",
+    "backends": {
+      "chatgpt": {
+        "type": "chatgpt-subscription"
+      }
+    }
+  }
+}
+```
+
+Validiere die Datei:
+
+```bash
+bin/harnessmesh config validate --config harnessmesh.json
+```
+
+#### 2. ChatGPT-Plan-Zugriff autorisieren
+
+Führe den Login auf dem Host-System aus:
+
+```bash
+bin/harnessmesh provider auth chatgpt
+```
+
+Öffne die ausgegebene URL, melde dich an und bestätige die ChatGPT-Plan-Nutzung.
+Die Zugangsdaten werden standardmäßig unter
+`~/.harnessmesh/chatgpt-siwc-auth.json` gespeichert.
+
+#### 3. Provider-Gateway starten
+
+Für SIWC wird zunächst der Host-Betrieb empfohlen, weil dort der Browser-
+Callback und der lokale Credential-Store direkt verfügbar sind:
+
+```bash
+export HARNESSMESH_PROVIDER_TOKEN="$(openssl rand -hex 32)"
+bin/harnessmesh provider serve \
+  --config harnessmesh.json \
+  --listen 127.0.0.1:8789 \
+  --token "$HARNESSMESH_PROVIDER_TOKEN"
+```
+
+Prüfe die Bereitschaft:
+
+```bash
+bin/harnessmesh provider doctor --config harnessmesh.json
+curl http://127.0.0.1:8789/readyz
+```
+
+#### 4. Codex VS Code Extension verbinden
+
+Generiere oder aktualisiere die benutzerspezifische Codex-Konfiguration:
+
+```bash
+bin/harnessmesh integrate codex-provider \
+  --scope user \
+  --listen 127.0.0.1:8789 \
+  --model harnessmesh-chatgpt
+```
+
+Exportiere den gleichen Token in der Umgebung, aus der VS Code/Codex gestartet
+wird, und starte die Extension neu:
+
+```bash
+export HARNESSMESH_PROVIDER_TOKEN="<der-provider-token>"
+```
+
+Die relevante Codex-Konfiguration enthält dann:
+
+```toml
+model = "harnessmesh-chatgpt"
+model_provider = "harnessmesh"
+
+[model_providers.harnessmesh]
+name = "HarnessMesh"
+base_url = "http://127.0.0.1:8789/v1"
+wire_api = "responses"
+env_key = "HARNESSMESH_PROVIDER_TOKEN"
+```
+
+#### Docker-Hinweis
+
+Der Compose-Provider ist standardmäßig für lokale oder OpenAI-kompatible
+Backends vorbereitet. Für `chatgpt-subscription` muss der Container zusätzlich
+auf den SIWC-Credential-Store zugreifen können. Die Datei muss wegen möglicher
+Token-Erneuerung beschreibbar sein; der Browser-Login sollte daher zunächst
+auf dem Host erfolgen.
+
+Der einfachste Ablauf ist deshalb:
+
+- Codex VS Code Extension auf dem Host
+- SIWC-Login und Credential-Store auf dem Host
+- HarnessMesh Provider Gateway auf dem Host
+- lokale Inferenz-Backends optional per Docker Compose
+
+Die Compose-Variante für lokale Backends ist im Abschnitt Docker Compose oben
+beschrieben. Weitere SIWC-Limits und Abrechnungssemantik stehen in
+`docs/codex-provider.md`.
+
+### Switchyard route files
+
+configs/switchyard.routes.example.toml is a standalone NVIDIA NeMo
+Switchyard server configuration. It defines LLM clients, targets, and routes
+for routine, coding, architecture, and security work:
+
+```bash
+switchyard-server \
+  --config configs/switchyard.routes.example.toml \
+  --host 127.0.0.1 --port 4000
+
+bin/harnessmesh switchyard doctor \
+  --config configs/switchyard-example.json
+bin/harnessmesh switchyard routes \
+  --config configs/switchyard-example.json
+```
+
+configs/switchyard.routes.toml is the local route configuration when using
+the non-example setup. Never commit literal provider API keys; use the
+configured environment-variable references such as OPENROUTER_API_KEY.
+
 ---
 
 # 26. Build, Test & Release Engineering
@@ -1220,8 +1747,18 @@ The following rules define the architecture:
 - [Events & Coalescing](docs/events-and-coalescing.md)
 - [Inbox & Activation](docs/inbox-and-activation.md)
 - [Decisions & Evidence](docs/decisions-and-evidence.md)
-- [Human Controls](docs/human-controls.md)
-- [Peer Conversation](docs/peer-conversation.md)
+- [Human Supervision & Emergency Controls](docs/human-controls.md)
+
+### Core Architecture & Integration
+- [Antigravity & OpenAI Codex Peer Integration](docs/antigravity-integration.md)
+- [Interactive Peer Conversation Protocol](docs/peer-conversation.md)
+- [Model Context Protocol (MCP)](docs/mcp.md)
+- [ChatGPT Integration (remote MCP bridge)](docs/chatgpt-integration.md)
+- [Codex Provider Gateway (zero-API-billing local/Bedrock inference for the Codex extension)](docs/codex-provider.md)
+- [Peer Protocol Specification](docs/peer-protocol.md)
+- [Security & Context Filtering](docs/security.md)
+- [Context Projection Engine](docs/context-projection.md)
+- [Sessions & Persistence](docs/sessions.md)
 - [Collaboration Patterns](docs/collaboration-patterns.md)
 - [Capabilities](docs/capabilities.md)
 - [Economy Routing](docs/economy-routing.md)

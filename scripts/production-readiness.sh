@@ -12,7 +12,6 @@ fi
 
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root_dir"
-
 tmp_root="${TMPDIR:-/tmp}"
 tmp_root="${tmp_root%/}"
 export GOCACHE="${GOCACHE:-${tmp_root}/harnessmesh-production-go-cache}"
