@@ -1,0 +1,41 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "harnessmesh-codex",
+  "version": "0.1.0",
+  "description": "Connect Codex to HarnessMesh collaboration, review, knowledge and MeshCommit tools.",
+  "author": {
+    "name": "HarnessMesh",
+    "url": "https://github.com/domehahn/harnessmesh"
+  },
+  "homepage": "https://github.com/domehahn/harnessmesh",
+  "repository": "https://github.com/domehahn/harnessmesh",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "mcp",
+    "collaboration",
+    "code-review",
+    "meshcommit"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "HarnessMesh",
+        "shortDescription": "Collaborative coding-agent workspace",
+        "longDescription": "Connect Codex to a local HarnessMesh MCP server for peer collaboration, shared knowledge, reviews, operational status and evidence-gated MeshCommit workflows.",
+        "developerName": "HarnessMesh",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "websiteURL": "https://github.com/domehahn/harnessmesh",
+        "brandColor": "#2563EB",
+        "defaultPrompt": [
+          "Use HarnessMesh to inspect collaboration status and pending reviews.",
+          "Use HarnessMesh knowledge and MeshCommit tools when this repository is configured for them."
+        ]
+      }
+    }
+  }
+}

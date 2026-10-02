@@ -606,7 +606,79 @@ HARNESSMESH_CORS_ALLOWED_ORIGINS
 
 ---
 
-# 10. Collaboration Bridge & VS Code Extension
+# 10. Codex Plugin & Marketplace
+
+HarnessMesh includes a local Codex plugin under
+[`plugins/harnessmesh-codex`](plugins/harnessmesh-codex). The plugin connects
+Codex to the existing local stdio MCP server and adds reusable skills for
+collaboration, reviews and MeshCommit. It does not bundle an LLM or replace
+the HarnessMesh CLI.
+
+## Install the local marketplace
+
+Install HarnessMesh first and make sure `harnessmesh.json` exists in the
+repository you want Codex to work on:
+
+```bash
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+cd /path/to/your/repository
+cp /path/to/harnessmesh/configs/harnessmesh.example.json harnessmesh.json
+harnessmesh config validate --config harnessmesh.json
+```
+
+Register the repository's plugin catalog with Codex:
+
+```bash
+cd /path/to/harnessmesh
+codex plugin marketplace add ./plugins
+codex plugin marketplace list
+```
+
+The catalog contains the `harnessmesh-codex` plugin. Enable it for the target
+repository through the Codex plugin UI or project configuration. The plugin
+starts this local MCP process on demand:
+
+```bash
+harnessmesh mcp serve --caller codex
+```
+
+The process uses the current working directory as the repository and reads
+`harnessmesh.json` by default. For a manual smoke test, run it directly from
+the target repository and confirm that the MCP client can enumerate the
+HarnessMesh tools. Stop it with `Ctrl-C` when finished; Codex normally manages
+the process lifecycle itself.
+
+## Plugin capabilities
+
+The plugin exposes the existing HarnessMesh MCP surface, including:
+
+- collaboration status, inbox, channels, threads and peer communication;
+- evidence-oriented peer reviews, findings and review resolution;
+- durable knowledge search and project context;
+- operational status and approval visibility;
+- evidence-gated MeshCommit change preparation and verification.
+
+The plugin's skills are guidance around these tools. They do not authorize
+destructive changes by themselves, and write operations remain subject to the
+configured HarnessMesh caller, project and single-writer checks.
+
+## Use the plugin from a Git checkout
+
+For a local checkout, refresh the marketplace after changing plugin files:
+
+```bash
+codex plugin marketplace upgrade harnessmesh
+codex plugin marketplace list
+```
+
+The current catalog is intentionally local and repository-backed. A public
+ChatGPT/Codex plugin directory release additionally requires a hosted MCP
+endpoint, authentication suitable for remote clients, verified publisher
+metadata and the OpenAI plugin submission/review process.
+
+---
+
+# 11. Collaboration Bridge & VS Code Extension
 
 The collaboration bridge is a separate REST/WebSocket transport for UI clients. It does **not** perform LLM reasoning itself.
 
@@ -655,6 +727,122 @@ The API exposes collaboration state such as:
 
 The extension itself never calls OpenAI, Codex or ChatGPT directly and cannot bypass HarnessMesh's single-writer enforcement.
 
+### HarnessMesh in VS Code integrieren
+
+Die HarnessMesh-Erweiterung ist die UI für die Collaboration-Bridge. Sie ist
+nicht die offizielle Codex-Erweiterung und führt selbst keine LLM-Inferenz aus.
+Für die Integration werden CLI, Bridge und Erweiterung in dieser Reihenfolge
+gestartet.
+
+#### 1. CLI und Projekt vorbereiten
+
+```bash
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+export PATH="$(go env GOPATH)/bin:$PATH"
+
+cd /path/to/dein/repository
+cp /path/to/harnessmesh/configs/harnessmesh.example.json harnessmesh.json
+harnessmesh config validate --config harnessmesh.json
+```
+
+#### 2. Bridge starten
+
+Native auf dem Host:
+
+```bash
+export HARNESSMESH_BRIDGE_TOKEN="$(openssl rand -hex 32)"
+harnessmesh bridge serve \
+  --repo "$PWD" \
+  --config harnessmesh.json \
+  --listen 127.0.0.1:8788 \
+  --token "$HARNESSMESH_BRIDGE_TOKEN"
+```
+
+Oder mit Docker Compose aus dem HarnessMesh-Repository:
+
+```bash
+export HARNESSMESH_BRIDGE_TOKEN="$(openssl rand -hex 32)"
+docker compose --profile bridge up --build -d harnessmesh-bridge
+```
+
+Die lokale Bridge ist anschließend unter
+`http://127.0.0.1:8788` erreichbar. Prüfe sie vor der Verbindung:
+
+```bash
+curl -fsS http://127.0.0.1:8788/healthz
+```
+
+#### 3. Erweiterung installieren
+
+Wenn die Marketplace-Version veröffentlicht ist, in VS Code nach
+`HarnessMesh` suchen und die Erweiterung des Publishers `harnessmesh`
+installieren. Bis dahin kann die VSIX lokal installiert werden:
+
+```bash
+cd /path/to/harnessmesh/extensions/vscode
+npm install
+npm run compile
+npx @vscode/vsce package
+code --install-extension harnessmesh-vscode-0.1.0.vsix
+```
+
+Danach den Zielordner als Workspace in VS Code öffnen.
+
+#### 4. Token und Workspace verbinden
+
+Öffne die Command Palette (`Cmd+Shift+P` beziehungsweise `Ctrl+Shift+P`)
+und führe diese Befehle aus:
+
+1. `HarnessMesh: Set Bridge Token` — denselben Wert wie
+   `HARNESSMESH_BRIDGE_TOKEN` eingeben;
+2. `HarnessMesh: Select Workspace` — den Workspace auswählen;
+3. `HarnessMesh: Connect to Bridge` — die Verbindung herstellen.
+
+Der Token wird über VS Code `SecretStorage` gespeichert und nicht in
+`settings.json` oder im Repository abgelegt. Der Statusbalken muss danach
+`HarnessMesh: Connected` anzeigen.
+
+#### 5. Optionale VS-Code-Einstellungen
+
+In `.vscode/settings.json` oder den Benutzereinstellungen:
+
+```json
+{
+  "harnessmesh.bridgeUrl": "http://127.0.0.1:8788",
+  "harnessmesh.autoConnect": true
+}
+```
+
+`autoConnect` funktioniert, sobald zuvor ein Token gespeichert wurde. Die
+Ansichten `Participants`, `Tasks`, `Reviews` und `Findings` erscheinen dann in
+der HarnessMesh-Seitenleiste.
+
+#### Codex und HarnessMesh gemeinsam verwenden
+
+Die beiden Erweiterungen haben unterschiedliche Aufgaben:
+
+| Komponente | Aufgabe |
+| :--- | :--- |
+| HarnessMesh VS Code Extension | Collaboration-Status, Tasks, Reviews, Findings und Nachrichten |
+| Offizielle Codex VS Code Extension | IDE-Agent, Repository-Kontext und Modellinteraktion |
+| HarnessMesh Provider Gateway | Optionaler Custom-Provider für Codex über `/v1/responses` |
+
+Für reine Collaboration genügt die HarnessMesh-Erweiterung mit der Bridge.
+Für ChatGPT-Plan-Inferenz über Codex wird zusätzlich der Provider aus dem
+Abschnitt [Codex VS Code Extension mit ChatGPT-Plan-Inferenz](#codex-vs-code-extension-mit-chatgpt-plan-inferenz) benötigt.
+
+#### Fehlerbehebung
+
+- `401 Unauthorized`: Bridge-Token in VS Code und Shell stimmen nicht überein;
+  Token erneut über `HarnessMesh: Set Bridge Token` speichern.
+- `ECONNREFUSED`: Bridge läuft nicht oder `harnessmesh.bridgeUrl` zeigt auf
+  den falschen Port.
+- Keine Workspace-Daten: richtigen Workspace auswählen und prüfen, dass
+  `--repo` auf das geöffnete Repository zeigt.
+- Keine Live-Updates: Bridge neu starten und anschließend in VS Code
+  `HarnessMesh: Disconnect from Bridge` und `HarnessMesh: Connect to Bridge` ausführen.
+
+
 ### VS Code Marketplace
 
 Die Erweiterung ist für eine Veröffentlichung unter dem Publisher
@@ -698,7 +886,7 @@ werden, sollten für eine gemeinsame Produktversion aber synchronisiert werden.
 
 ---
 
-# 11. Codex-Compatible Provider Gateway
+# 12. Codex-Compatible Provider Gateway
 
 HarnessMesh can act as a custom model provider for the **official Codex VS Code extension / Codex CLI**.
 
@@ -749,7 +937,7 @@ Fallback is optional and ordered. Every candidate is rechecked against policy be
 
 ---
 
-# 12. `zero_api_billing_mode`: Exact Guarantee
+# 13. `zero_api_billing_mode`: Exact Guarantee
 
 The canonical provider safety setting is:
 
@@ -793,7 +981,7 @@ HarnessMesh does not turn ChatGPT into a free API, and SIWC usage is not equival
 
 ---
 
-# 13. Sign in with ChatGPT (SIWC)
+# 14. Sign in with ChatGPT (SIWC)
 
 Authenticate the provider gateway for `chatgpt-subscription` with:
 
@@ -823,7 +1011,7 @@ SIWC is an inference credential only. It does not expose existing ChatGPT conver
 
 ---
 
-# 14. Responses Protocol Compatibility
+# 15. Responses Protocol Compatibility
 
 The Codex-facing provider uses the Responses wire and includes contract coverage for real Codex request/replay shapes.
 
@@ -871,7 +1059,7 @@ Sequence numbers and payload fidelity are preserved where the provider acts as a
 
 ---
 
-# 15. Codex Model Catalog Compatibility
+# 16. Codex Model Catalog Compatibility
 
 HarnessMesh serves two model-catalog dialects from the same endpoint:
 
@@ -889,7 +1077,7 @@ Do not invent model metadata when upgrading Codex: run the model-contract tests 
 
 ---
 
-# 16. Codex Provider Setup
+# 17. Codex Provider Setup
 
 Example provider configuration:
 
@@ -949,7 +1137,7 @@ See [`docs/codex-provider.md`](docs/codex-provider.md) for the full configuratio
 
 ---
 
-# 17. Provider Security & Observability
+# 18. Provider Security & Observability
 
 The provider gateway includes:
 
@@ -977,7 +1165,7 @@ The Codex UI may independently request routes such as `/settings/user`, `/wham/u
 
 ---
 
-# 18. Production Readiness
+# 19. Production Readiness
 
 The authoritative deterministic gate is:
 
@@ -1043,7 +1231,7 @@ The deterministic production gate never requires real OpenAI inference or agenti
 
 ---
 
-# 19. Security Model
+# 20. Security Model
 
 Core safety invariants include:
 
@@ -1096,7 +1284,7 @@ See [`docs/security.md`](docs/security.md).
 
 ---
 
-# 20. Persistence & Storage
+# 21. Persistence & Storage
 
 SQLite/WAL is the default transactional backend and stores collaboration/session state such as:
 
@@ -1116,7 +1304,7 @@ A storage `BackendFactory` exists as an extension seam for deployments that prov
 
 ---
 
-# 21. NVIDIA NeMo Switchyard & Model Routing
+# 22. NVIDIA NeMo Switchyard & Model Routing
 
 HarnessMesh supports routing backends:
 
@@ -1146,7 +1334,7 @@ Switchyard is optional. HarnessMesh remains responsible for **which participant*
 
 ---
 
-# 22. Integration Helpers
+# 23. Integration Helpers
 
 ## MCP installers
 
@@ -1185,7 +1373,7 @@ This configures the official Codex client to use the separate provider gateway.
 
 ---
 
-# 23. Diagnostics & Inspection
+# 24. Diagnostics & Inspection
 
 ```bash
 harnessmesh doctor
@@ -1203,7 +1391,7 @@ harnessmesh evidence <session-id>
 
 ---
 
-# 24. CLI Reference
+# 25. CLI Reference
 
 ```text
 harnessmesh collaborate --task "..." [options]
@@ -1250,7 +1438,7 @@ harnessmesh version
 
 ---
 
-# 25. Configuration Profiles
+# 26. Configuration Profiles
 
 Ready-to-use examples in `configs/` include:
 
@@ -1745,7 +1933,7 @@ configured environment-variable references such as OPENROUTER_API_KEY.
 
 ---
 
-# 26. Build, Test & Release Engineering
+# 27. Build, Test & Release Engineering
 
 ## Build
 
@@ -1791,7 +1979,7 @@ CI/release engineering includes combinations of:
 
 ---
 
-# 27. Design Invariants
+# 28. Design Invariants
 
 The following rules define the architecture:
 
@@ -1808,7 +1996,7 @@ The following rules define the architecture:
 
 ---
 
-# 28. Documentation
+# 29. Documentation
 
 ## Architecture and collaboration
 
@@ -1870,7 +2058,7 @@ The following rules define the architecture:
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 ---
 
-# 29. What HarnessMesh Does Not Promise
+# 30. What HarnessMesh Does Not Promise
 
 For clarity:
 
