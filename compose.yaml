@@ -66,8 +66,6 @@ services:
       - /workspace
       - --listen
       - 0.0.0.0:8787
-      - --token
-      - ${HARNESSMESH_MCP_TOKEN:?HARNESSMESH_MCP_TOKEN must be set}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/healthz"]
       interval: 10s
@@ -118,8 +116,6 @@ services:
       - /workspace
       - --listen
       - 0.0.0.0:8788
-      - --token
-      - ${HARNESSMESH_BRIDGE_TOKEN:?HARNESSMESH_BRIDGE_TOKEN must be set}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8788/healthz"]
       interval: 10s
