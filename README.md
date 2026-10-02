@@ -655,6 +655,122 @@ The API exposes collaboration state such as:
 
 The extension itself never calls OpenAI, Codex or ChatGPT directly and cannot bypass HarnessMesh's single-writer enforcement.
 
+### HarnessMesh in VS Code integrieren
+
+Die HarnessMesh-Erweiterung ist die UI für die Collaboration-Bridge. Sie ist
+nicht die offizielle Codex-Erweiterung und führt selbst keine LLM-Inferenz aus.
+Für die Integration werden CLI, Bridge und Erweiterung in dieser Reihenfolge
+gestartet.
+
+#### 1. CLI und Projekt vorbereiten
+
+```bash
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+export PATH="$(go env GOPATH)/bin:$PATH"
+
+cd /path/to/dein/repository
+cp /path/to/harnessmesh/configs/harnessmesh.example.json harnessmesh.json
+harnessmesh config validate --config harnessmesh.json
+```
+
+#### 2. Bridge starten
+
+Native auf dem Host:
+
+```bash
+export HARNESSMESH_BRIDGE_TOKEN="$(openssl rand -hex 32)"
+harnessmesh bridge serve \
+  --repo "$PWD" \
+  --config harnessmesh.json \
+  --listen 127.0.0.1:8788 \
+  --token "$HARNESSMESH_BRIDGE_TOKEN"
+```
+
+Oder mit Docker Compose aus dem HarnessMesh-Repository:
+
+```bash
+export HARNESSMESH_BRIDGE_TOKEN="$(openssl rand -hex 32)"
+docker compose --profile bridge up --build -d harnessmesh-bridge
+```
+
+Die lokale Bridge ist anschließend unter
+`http://127.0.0.1:8788` erreichbar. Prüfe sie vor der Verbindung:
+
+```bash
+curl -fsS http://127.0.0.1:8788/healthz
+```
+
+#### 3. Erweiterung installieren
+
+Wenn die Marketplace-Version veröffentlicht ist, in VS Code nach
+`HarnessMesh` suchen und die Erweiterung des Publishers `harnessmesh`
+installieren. Bis dahin kann die VSIX lokal installiert werden:
+
+```bash
+cd /path/to/harnessmesh/extensions/vscode
+npm install
+npm run compile
+npx @vscode/vsce package
+code --install-extension harnessmesh-vscode-0.1.0.vsix
+```
+
+Danach den Zielordner als Workspace in VS Code öffnen.
+
+#### 4. Token und Workspace verbinden
+
+Öffne die Command Palette (`Cmd+Shift+P` beziehungsweise `Ctrl+Shift+P`)
+und führe diese Befehle aus:
+
+1. `HarnessMesh: Set Bridge Token` — denselben Wert wie
+   `HARNESSMESH_BRIDGE_TOKEN` eingeben;
+2. `HarnessMesh: Select Workspace` — den Workspace auswählen;
+3. `HarnessMesh: Connect to Bridge` — die Verbindung herstellen.
+
+Der Token wird über VS Code `SecretStorage` gespeichert und nicht in
+`settings.json` oder im Repository abgelegt. Der Statusbalken muss danach
+`HarnessMesh: Connected` anzeigen.
+
+#### 5. Optionale VS-Code-Einstellungen
+
+In `.vscode/settings.json` oder den Benutzereinstellungen:
+
+```json
+{
+  "harnessmesh.bridgeUrl": "http://127.0.0.1:8788",
+  "harnessmesh.autoConnect": true
+}
+```
+
+`autoConnect` funktioniert, sobald zuvor ein Token gespeichert wurde. Die
+Ansichten `Participants`, `Tasks`, `Reviews` und `Findings` erscheinen dann in
+der HarnessMesh-Seitenleiste.
+
+#### Codex und HarnessMesh gemeinsam verwenden
+
+Die beiden Erweiterungen haben unterschiedliche Aufgaben:
+
+| Komponente | Aufgabe |
+| :--- | :--- |
+| HarnessMesh VS Code Extension | Collaboration-Status, Tasks, Reviews, Findings und Nachrichten |
+| Offizielle Codex VS Code Extension | IDE-Agent, Repository-Kontext und Modellinteraktion |
+| HarnessMesh Provider Gateway | Optionaler Custom-Provider für Codex über `/v1/responses` |
+
+Für reine Collaboration genügt die HarnessMesh-Erweiterung mit der Bridge.
+Für ChatGPT-Plan-Inferenz über Codex wird zusätzlich der Provider aus dem
+Abschnitt [Codex VS Code Extension mit ChatGPT-Plan-Inferenz](#codex-vs-code-extension-mit-chatgpt-plan-inferenz) benötigt.
+
+#### Fehlerbehebung
+
+- `401 Unauthorized`: Bridge-Token in VS Code und Shell stimmen nicht überein;
+  Token erneut über `HarnessMesh: Set Bridge Token` speichern.
+- `ECONNREFUSED`: Bridge läuft nicht oder `harnessmesh.bridgeUrl` zeigt auf
+  den falschen Port.
+- Keine Workspace-Daten: richtigen Workspace auswählen und prüfen, dass
+  `--repo` auf das geöffnete Repository zeigt.
+- Keine Live-Updates: Bridge neu starten und anschließend in VS Code
+  `HarnessMesh: Disconnect` und `HarnessMesh: Connect to Bridge` ausführen.
+
+
 ### VS Code Marketplace
 
 Die Erweiterung ist für eine Veröffentlichung unter dem Publisher
