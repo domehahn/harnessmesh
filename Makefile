@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension compose-config check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -27,6 +27,16 @@ security:
 build:
 	mkdir -p bin
 	go build -trimpath -ldflags="-X main.version=$(VERSION)" -o bin/harnessmesh ./cmd/harnessmesh
+
+extension:
+	cd extensions/vscode && npm install --no-audit --no-fund && npm run compile
+
+compose-config:
+	HARNESSMESH_MCP_TOKEN=make-mcp-token \
+	HARNESSMESH_BRIDGE_TOKEN=make-bridge-token \
+	HARNESSMESH_PROVIDER_TOKEN=make-provider-token \
+	HARNESSMESH_UID=$$(id -u) HARNESSMESH_GID=$$(id -g) \
+		docker compose config --quiet
 
 check: fmt test vet build
 

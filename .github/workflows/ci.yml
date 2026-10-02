@@ -11,6 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -50,6 +51,25 @@ jobs:
           python3 -m json.tool configs/harnessmesh.example.json >/dev/null
           python3 -m json.tool configs/harnessmesh.switchyard.example.json >/dev/null
           python3 -m json.tool configs/codex-provider.example.json >/dev/null
+          python3 -m json.tool plugins/marketplace.json >/dev/null
+          python3 -m json.tool plugins/.agents/plugins/marketplace.json >/dev/null
+          python3 -m json.tool plugins/harnessmesh-codex/plugin.json >/dev/null
+          python3 -m json.tool plugins/harnessmesh-codex/mcp.json >/dev/null
+
+      - name: Validate Compose and operational scripts
+        run: |
+          HARNESSMESH_MCP_TOKEN=ci-mcp-token \
+          HARNESSMESH_BRIDGE_TOKEN=ci-bridge-token \
+          HARNESSMESH_PROVIDER_TOKEN=ci-provider-token \
+          HARNESSMESH_UID=10001 HARNESSMESH_GID=10001 \
+            docker compose config --quiet
+          sh -n scripts/backup-sqlite.sh scripts/restore-sqlite.sh
+
+      - name: Compile VS Code extension
+        working-directory: extensions/vscode
+        run: |
+          npm install --no-audit --no-fund
+          npm run compile
 
       - name: Docker build
         run: docker build .
