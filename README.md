@@ -1641,7 +1641,40 @@ Das Provider-Gateway verwendet im zero_api_billing_mode nur erlaubte lokale
 oder kompatible Backends und fällt nicht stillschweigend auf OPENAI_API_KEY
 oder Codex-Abrechnung zurück.
 
-#### 6. Gemeinsamer Betrieb und Fehleranalyse
+#### 6. Backups und Restore
+
+Das Volume `harnessmesh-data` enthält die SQLite-Datenbank und das persistente
+Knowledge-Archiv. Ein Online-Backup kann ohne vorheriges Stoppen der Services
+erstellt werden:
+
+```bash
+mkdir -p backups
+HARNESSMESH_UID="$(id -u)" HARNESSMESH_GID="$(id -g)" \
+HARNESSMESH_BACKUP_DIR="$PWD/backups" \
+  docker compose --profile backup run --rm harnessmesh-backup
+ls -la backups/harnessmesh-*/
+```
+
+Für einen Restore zuerst alle Services stoppen. Das Restore verlangt zusätzlich
+eine Umgebungsbestätigung und führt vor dem Überschreiben eine SQLite-
+Integritätsprüfung durch:
+
+```bash
+docker compose --profile mcp --profile bridge --profile provider down
+HARNESSMESH_UID="$(id -u)" HARNESSMESH_GID="$(id -g)" \
+HARNESSMESH_BACKUP_DIR="$PWD/backups" \
+HARNESSMESH_RESTORE_SERVICES_STOPPED=1 \
+  docker compose --profile backup run --rm harnessmesh-restore \
+  /backup/harnessmesh-YYYYmmddTHHMMSSZ --confirm
+```
+
+Vorhandene Datenbank und Knowledge-Datei werden als `*.pre-restore-*`
+gesichert. Nach dem Restore die gewünschten Profile erneut starten und
+`/healthz` sowie `harnessmesh doctor` prüfen. Backups müssen außerhalb des
+Containers verschlüsselt, mit Retention versehen und regelmäßig testweise
+wiederhergestellt werden.
+
+#### 7. Gemeinsamer Betrieb und Fehleranalyse
 
 ```bash
 docker compose ps
