@@ -10,9 +10,14 @@ RUN CGO_ENABLED=1 go test ./... \
  && CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=$(cat VERSION)" -o /out/harnessmesh ./cmd/harnessmesh
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates git tzdata sqlite-libs \
+RUN apk add --no-cache ca-certificates git tzdata sqlite-libs sqlite \
  && addgroup -S harnessmesh \
  && adduser -S -G harnessmesh -u 10001 harnessmesh
 COPY --from=build /out/harnessmesh /usr/local/bin/harnessmesh
+COPY scripts/backup-sqlite.sh /usr/local/bin/harnessmesh-backup
+COPY scripts/restore-sqlite.sh /usr/local/bin/harnessmesh-restore
+RUN chmod 0755 /usr/local/bin/harnessmesh-backup /usr/local/bin/harnessmesh-restore
+WORKDIR /workspace
 USER 10001:10001
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/harnessmesh"]
