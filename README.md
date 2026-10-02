@@ -768,7 +768,7 @@ Abschnitt [Codex VS Code Extension mit ChatGPT-Plan-Inferenz](#codex-vs-code-ext
 - Keine Workspace-Daten: richtigen Workspace auswählen und prüfen, dass
   `--repo` auf das geöffnete Repository zeigt.
 - Keine Live-Updates: Bridge neu starten und anschließend in VS Code
-  `HarnessMesh: Disconnect` und `HarnessMesh: Connect to Bridge` ausführen.
+  `HarnessMesh: Disconnect from Bridge` und `HarnessMesh: Connect to Bridge` ausführen.
 
 
 ### VS Code Marketplace
