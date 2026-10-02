@@ -1,0 +1,20 @@
+{
+  "name": "harnessmesh",
+  "interface": {
+    "displayName": "HarnessMesh Plugins"
+  },
+  "plugins": [
+    {
+      "name": "harnessmesh-codex",
+      "source": {
+        "source": "local",
+        "path": "./harnessmesh-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
