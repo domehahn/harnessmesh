@@ -161,6 +161,38 @@ type Store interface {
 	SaveGateResult(ctx context.Context, result *protocol.GateResult) error
 	GetLatestGateResult(ctx context.Context, changeID string) (*protocol.GateResult, error)
 
+	// Performance observation persistence (ADR 0002 Phase 6,
+	// internal/performance). Deliberately opaque to this package: the
+	// caller supplies the indexed scalar columns plus a full JSON
+	// payload; Store never interprets the payload's shape. Save is an
+	// upsert keyed by id, matching internal/performance's own
+	// idempotency discipline (replaying the same id is a safe update,
+	// not a duplicate row).
+	SavePerformanceObservation(ctx context.Context, id, tenant, taskClass, agentID, status string, createdAt time.Time, payloadJSON string) error
+	GetPerformanceObservation(ctx context.Context, id string) (string, error)
+	QueryPerformanceObservations(ctx context.Context, tenant, taskClass, agentID string) ([]string, error)
+
+	// Phase 10 durable experiment control-plane records. Payloads are opaque
+	// to store; the indexed identity/status columns are used for atomic
+	// admission and budget reservation.
+	SaveExperiment(ctx context.Context, id, tenant, state string, maxExecutions, maxConcurrent, reserved, consumed, released, executed int, payloadJSON string, updatedAt time.Time) error
+	GetExperiment(ctx context.Context, id string) (ExperimentRecord, error)
+	ReserveExperiment(ctx context.Context, id, decisionID string, now time.Time) (bool, error)
+	ReleaseExperiment(ctx context.Context, id, decisionID string, now time.Time) error
+	ConsumeExperiment(ctx context.Context, id, decisionID string, now time.Time) error
+	SaveExperimentAdmission(ctx context.Context, id, decisionID, payloadJSON string, createdAt time.Time) error
+	GetExperimentAdmission(ctx context.Context, id, decisionID string) (string, error)
+	SaveExperimentAudit(ctx context.Context, id, decisionID, event, reason string, at time.Time) error
+	// UpdateExperiment atomically reads an experiment's current row,
+	// passes it to mutate, and persists exactly what mutate returns - all
+	// inside one transaction, so it can never lose a concurrent
+	// ReserveExperiment/ConsumeExperiment/ReleaseExperiment update
+	// underneath it the way a blind SaveExperiment(ctx, id, ..., e.Reserved, ...)
+	// call (built from a caller-held, possibly-stale copy) could. Used
+	// for the Phase-10 summary counters embedded in payload_json, which
+	// are updated far more frequently than the budget ledger itself.
+	UpdateExperiment(ctx context.Context, id string, mutate func(ExperimentRecord) (ExperimentRecord, error)) error
+
 	Close() error
 }
 
@@ -243,6 +275,20 @@ type JobDependency struct {
 	DependsOn string    `json:"depends_on"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type ExperimentRecord struct {
+	ID            string
+	Tenant        string
+	State         string
+	MaxExecutions int
+	MaxConcurrent int
+	Reserved      int
+	Consumed      int
+	Released      int
+	Executed      int
+	PayloadJSON   string
+	UpdatedAt     time.Time
 }
 
 type SQLiteStore struct {
@@ -973,6 +1019,79 @@ func (s *SQLiteStore) migrate() error {
 					FOREIGN KEY (change_id) REFERENCES mesh_changes(id) ON DELETE CASCADE
 				);
 				CREATE INDEX IF NOT EXISTS idx_change_gate_results_change ON change_gate_results(change_id, evaluated_at);
+			`,
+		},
+		{
+			// ADR 0002 Phase 6 (internal/performance): a real,
+			// persistent PerformanceStore backing. The row's indexed
+			// columns (tenant/task_class/agent_id/status) exist only to
+			// make ObservationFilter queries efficient; the full record
+			// is otherwise opaque JSON to this package, exactly like
+			// metadata_json elsewhere in this schema - internal/store
+			// never imports internal/performance's Go types, preserving
+			// the existing one-way dependency direction (performance ->
+			// store, never the reverse).
+			version: 13,
+			sql: `
+				CREATE TABLE IF NOT EXISTS performance_observations (
+					id TEXT PRIMARY KEY,
+					tenant TEXT NOT NULL,
+					task_class TEXT NOT NULL,
+					agent_id TEXT NOT NULL,
+					status TEXT NOT NULL,
+					created_at TIMESTAMP NOT NULL,
+					payload_json TEXT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_performance_observations_tenant ON performance_observations(tenant, task_class, agent_id, status);
+			`,
+		},
+		{
+			version: 14,
+			sql: `
+				CREATE TABLE IF NOT EXISTS experiments (
+					id TEXT PRIMARY KEY,
+					tenant TEXT NOT NULL,
+					state TEXT NOT NULL,
+					reserved INTEGER NOT NULL DEFAULT 0,
+					consumed INTEGER NOT NULL DEFAULT 0,
+					released INTEGER NOT NULL DEFAULT 0,
+					executed INTEGER NOT NULL DEFAULT 0,
+					payload_json TEXT NOT NULL,
+					updated_at TIMESTAMP NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS experiment_reservations (
+					experiment_id TEXT NOT NULL,
+					decision_id TEXT NOT NULL,
+					status TEXT NOT NULL,
+					created_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (experiment_id, decision_id),
+					FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+				);
+				CREATE TABLE IF NOT EXISTS experiment_admissions (
+					experiment_id TEXT NOT NULL,
+					decision_id TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					created_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (experiment_id, decision_id),
+					FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+				);
+				CREATE TABLE IF NOT EXISTS experiment_audit (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					experiment_id TEXT NOT NULL,
+					decision_id TEXT NOT NULL,
+					event TEXT NOT NULL,
+					reason TEXT NOT NULL,
+					at TIMESTAMP NOT NULL,
+					FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_experiment_audit_experiment ON experiment_audit(experiment_id, at);
+			`,
+		},
+		{
+			version: 15,
+			sql: `
+				ALTER TABLE experiments ADD COLUMN max_executions INTEGER NOT NULL DEFAULT 0;
+				ALTER TABLE experiments ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 0;
 			`,
 		},
 	}
@@ -3645,4 +3764,222 @@ func (s *SQLiteStore) GetLatestGateResult(ctx context.Context, changeID string) 
 	_ = json.Unmarshal([]byte(findingsStr), &gr.OpenFindings)
 	_ = json.Unmarshal([]byte(reasonsStr), &gr.Reasons)
 	return &gr, nil
+}
+
+// SavePerformanceObservation upserts one row by id - a replay of the
+// same id (internal/performance's own idempotency key) updates the
+// existing row rather than creating a duplicate, matching the semantics
+// MemoryPerformanceStore already enforces in-process.
+func (s *SQLiteStore) SavePerformanceObservation(ctx context.Context, id, tenant, taskClass, agentID, status string, createdAt time.Time, payloadJSON string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO performance_observations (id, tenant, task_class, agent_id, status, created_at, payload_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			status = excluded.status,
+			payload_json = excluded.payload_json;
+	`, id, tenant, taskClass, agentID, status, createdAt, payloadJSON)
+	return err
+}
+
+func (s *SQLiteStore) GetPerformanceObservation(ctx context.Context, id string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var payload string
+	err := s.db.QueryRowContext(ctx, `SELECT payload_json FROM performance_observations WHERE id = ?;`, id).Scan(&payload)
+	if err != nil {
+		return "", err
+	}
+	return payload, nil
+}
+
+// QueryPerformanceObservations returns every matching row's
+// payload_json. An empty string for tenant/taskClass/agentID matches
+// any value for that column - callers (internal/performance's adapter)
+// are responsible for tenant-scoping discipline before calling this;
+// Store itself has no concept of "tenant required," that policy lives
+// in internal/performance.ObservationFilter.validate.
+func (s *SQLiteStore) QueryPerformanceObservations(ctx context.Context, tenant, taskClass, agentID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query := `SELECT payload_json FROM performance_observations WHERE 1=1`
+	var args []any
+	if tenant != "" {
+		query += ` AND tenant = ?`
+		args = append(args, tenant)
+	}
+	if taskClass != "" {
+		query += ` AND task_class = ?`
+		args = append(args, taskClass)
+	}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		out = append(out, payload)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) SaveExperiment(ctx context.Context, id, tenant, state string, maxExecutions, maxConcurrent, reserved, consumed, released, executed int, payloadJSON string, updatedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO experiments(id,tenant,state,max_executions,max_concurrent,reserved,consumed,released,executed,payload_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET tenant=excluded.tenant,state=excluded.state,max_executions=excluded.max_executions,max_concurrent=excluded.max_concurrent,reserved=excluded.reserved,consumed=excluded.consumed,released=excluded.released,executed=excluded.executed,payload_json=excluded.payload_json,updated_at=excluded.updated_at`, id, tenant, state, maxExecutions, maxConcurrent, reserved, consumed, released, executed, payloadJSON, updatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetExperiment(ctx context.Context, id string) (ExperimentRecord, error) {
+	var r ExperimentRecord
+	err := s.db.QueryRowContext(ctx, `SELECT id,tenant,state,max_executions,max_concurrent,reserved,consumed,released,executed,payload_json,updated_at FROM experiments WHERE id=?`, id).Scan(&r.ID, &r.Tenant, &r.State, &r.MaxExecutions, &r.MaxConcurrent, &r.Reserved, &r.Consumed, &r.Released, &r.Executed, &r.PayloadJSON, &r.UpdatedAt)
+	return r, err
+}
+
+func (s *SQLiteStore) ReserveExperiment(ctx context.Context, id, decisionID string, now time.Time) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	var state string
+	var maxExecutions, maxConcurrent, reserved, consumed int
+	if err = tx.QueryRowContext(ctx, `SELECT state,max_executions,max_concurrent,reserved,consumed FROM experiments WHERE id=?`, id).Scan(&state, &maxExecutions, &maxConcurrent, &reserved, &consumed); err != nil {
+		return false, err
+	}
+	if state != "enabled" {
+		return false, nil
+	}
+	if maxExecutions > 0 && consumed+reserved >= maxExecutions {
+		return false, nil
+	}
+	if maxConcurrent > 0 && reserved >= maxConcurrent {
+		return false, nil
+	}
+	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO experiment_reservations(experiment_id,decision_id,status,created_at) VALUES(?,?,?,?)`, id, decisionID, "reserved", now)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 0 {
+		if err = tx.Commit(); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE experiments SET reserved=reserved+1,updated_at=? WHERE id=?`, now, id); err != nil {
+		return false, err
+	}
+	err = tx.Commit()
+	return true, err
+}
+
+func (s *SQLiteStore) ReleaseExperiment(ctx context.Context, id, decisionID string, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	res, err := tx.ExecContext(ctx, `UPDATE experiment_reservations SET status='released' WHERE experiment_id=? AND decision_id=? AND status='reserved'`, id, decisionID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		_, err = tx.ExecContext(ctx, `UPDATE experiments SET reserved=CASE WHEN reserved>0 THEN reserved-1 ELSE 0 END,released=released+1,updated_at=? WHERE id=?`, now, id)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) ConsumeExperiment(ctx context.Context, id, decisionID string, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	res, err := tx.ExecContext(ctx, `UPDATE experiment_reservations SET status='consumed' WHERE experiment_id=? AND decision_id=? AND status='reserved'`, id, decisionID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("experiment reservation not found: %s/%s", id, decisionID)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE experiments SET reserved=CASE WHEN reserved>0 THEN reserved-1 ELSE 0 END,consumed=consumed+1,executed=executed+1,updated_at=? WHERE id=?`, now, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) SaveExperimentAdmission(ctx context.Context, id, decisionID, payloadJSON string, createdAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO experiment_admissions(experiment_id,decision_id,payload_json,created_at) VALUES(?,?,?,?) ON CONFLICT(experiment_id,decision_id) DO UPDATE SET payload_json=excluded.payload_json`, id, decisionID, payloadJSON, createdAt)
+	return err
+}
+func (s *SQLiteStore) GetExperimentAdmission(ctx context.Context, id, decisionID string) (string, error) {
+	var p string
+	err := s.db.QueryRowContext(ctx, `SELECT payload_json FROM experiment_admissions WHERE experiment_id=? AND decision_id=?`, id, decisionID).Scan(&p)
+	return p, err
+}
+func (s *SQLiteStore) SaveExperimentAudit(ctx context.Context, id, decisionID, event, reason string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO experiment_audit(experiment_id,decision_id,event,reason,at) VALUES(?,?,?,?,?)`, id, decisionID, event, reason, at)
+	return err
+}
+
+func (s *SQLiteStore) UpdateExperiment(ctx context.Context, id string, mutate func(ExperimentRecord) (ExperimentRecord, error)) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	r := ExperimentRecord{ID: id}
+	if err = tx.QueryRowContext(ctx, `SELECT tenant,state,reserved,consumed,released,executed,payload_json,updated_at FROM experiments WHERE id=?`, id).
+		Scan(&r.Tenant, &r.State, &r.Reserved, &r.Consumed, &r.Released, &r.Executed, &r.PayloadJSON, &r.UpdatedAt); err != nil {
+		return err
+	}
+	updated, mutErr := mutate(r)
+	if mutErr != nil {
+		err = mutErr
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE experiments SET state=?,reserved=?,consumed=?,released=?,executed=?,payload_json=?,updated_at=? WHERE id=?`,
+		updated.State, updated.Reserved, updated.Consumed, updated.Released, updated.Executed, updated.PayloadJSON, updated.UpdatedAt, id); err != nil {
+		return err
+	}
+	err = tx.Commit()
+	return err
 }
