@@ -31,6 +31,26 @@ Codex VS Code Extension --(Responses API wire)--> HarnessMesh Provider Gateway -
 ChatGPT                 --(MCP)-----------------> HarnessMesh Collaboration Plane --> reviews/findings/tasks/evidence/decisions
 ```
 
+## Agent Control Plane vs. model routing
+
+Within the collaboration plane, two decisions are deliberately made by different
+layers (see [ADR 0001](decisions/0001-agent-control-plane-switchyard-model-routing.md)):
+
+- **Agent Control Plane** - decides *what work happens and which agent does it*:
+  `internal/economy` (task-difficulty classification, capability/writable/sensitivity
+  filtering, cost-based selection, escalation) together with
+  `collaboration.Engine`'s live participant registry and authorization gates
+  (MeshCommit, `peer.*`, `ApprovalRequest`).
+- **Model routing** - decides *which model/provider serves a given agent's inference
+  turn*, once that agent has already been selected: `internal/modelrouting`
+  (`ModelRoutingBackend`, with `SwitchyardBackend` as the NVIDIA Switchyard
+  implementation).
+
+Agent selection never considers which model a backend will use; model routing never
+selects an agent. `creditguard` enforces the one cross-cutting exception both layers
+must respect: an `execution_mode: external` participant can never reach a metered
+backend, regardless of model-routing config.
+
 ## Participants
 
 Every participant is either:

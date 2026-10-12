@@ -64,14 +64,6 @@ jobs:
           HARNESSMESH_UID=10001 HARNESSMESH_GID=10001 \
             docker compose config --quiet
           sh -n scripts/backup-sqlite.sh scripts/restore-sqlite.sh
-          sh -n scripts/openresponses-compliance.sh scripts/start-chatgpt-mcp.sh scripts/start-chatgpt-compose.sh scripts/stop-chatgpt-compose.sh scripts/start-chatgpt-frp.sh scripts/stop-chatgpt-frp.sh
-          for f in scripts/start-chatgpt-mcp.sh scripts/start-chatgpt-compose.sh scripts/stop-chatgpt-compose.sh scripts/start-chatgpt-frp.sh scripts/stop-chatgpt-frp.sh; do test -x "$f"; done
-          for f in deploy/frp-server.compose.yaml deploy/frps.toml deploy/Caddyfile; do test -f "$f"; done
-
-      - name: Verify OpenResponses integration is opt-in and pin-aware
-        run: |
-          grep -F 'OPENRESPONSES_COMMIT' scripts/openresponses-compliance.sh >/dev/null
-          grep -F 'make openresponses-compliance' docs/openresponses.md >/dev/null
 
       - name: Compile VS Code extension
         working-directory: extensions/vscode
