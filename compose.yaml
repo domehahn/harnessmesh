@@ -27,13 +27,13 @@ services:
   # HARNESSMESH_MCP_TOKEN must be set in the environment - there is no
   # default, and the server refuses to start without it.
   harnessmesh-mcp:
-    profiles: ["mcp"]
+    profiles: ["mcp", "chatgpt", "chatgpt-frp"]
     build:
       context: .
     working_dir: /workspace
     volumes:
       - ${HARNESSMESH_REPO:-.}:/workspace
-      - ./harnessmesh.json:/etc/harnessmesh/harnessmesh.json:ro
+      - ${HARNESSMESH_MCP_CONFIG:-./harnessmesh.json}:/etc/harnessmesh/harnessmesh.json:ro
       - harnessmesh-data:/data
     environment:
       HOME: /data
@@ -72,6 +72,59 @@ services:
       timeout: 3s
       retries: 6
       start_period: 10s
+
+  # Stable remote MCP ingress for ChatGPT. Quick Tunnels are intentionally
+  # not used here because Cloudflare documents that they do not support SSE.
+  harnessmesh-chatgpt-tunnel:
+    profiles: ["chatgpt"]
+    image: ${HARNESSMESH_CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2026.3.0}
+    restart: unless-stopped
+    depends_on:
+      harnessmesh-mcp:
+        condition: service_healthy
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - ${HARNESSMESH_CLOUDFLARED_TUNNEL_TOKEN:-}
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: ${HARNESSMESH_TUNNEL_MEMORY_LIMIT:-128m}
+    cpus: ${HARNESSMESH_TUNNEL_CPUS:-0.5}
+
+  # Self-hosted alternative to Cloudflare: the frpc client forwards the MCP
+  # service to an operator-controlled frps server. Caddy on that server
+  # terminates HTTPS and forwards to frps' remote TCP port.
+  harnessmesh-frpc:
+    profiles: ["chatgpt-frp"]
+    image: ${HARNESSMESH_FRPC_IMAGE:-fatedier/frpc:v0.61.2}
+    restart: unless-stopped
+    depends_on:
+      harnessmesh-mcp:
+        condition: service_healthy
+    volumes:
+      - ${HARNESSMESH_FRPC_CONFIG:-.harnessmesh/frpc.toml}:/etc/frp/frpc.toml:ro
+    command:
+      - frpc
+      - -c
+      - /etc/frp/frpc.toml
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: ${HARNESSMESH_FRPC_MEMORY_LIMIT:-128m}
+    cpus: ${HARNESSMESH_FRPC_CPUS:-0.5}
 
   # Local REST+WebSocket bridge for the VS Code extension. Not started by
   # default; enable explicitly with `docker compose --profile bridge up`.

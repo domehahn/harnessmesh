@@ -1,0 +1,3 @@
+{$HARNESSMESH_MCP_DOMAIN} {
+    reverse_proxy frps:8787
+}

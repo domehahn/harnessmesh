@@ -916,6 +916,7 @@ The provider plane is independent of MCP collaboration. It does not create space
 | `GET /v1/status` | Authenticated provider status |
 | `GET /v1/models` | Generic or Codex-native model catalog |
 | `POST /v1/responses` | Authenticated Responses-compatible inference endpoint |
+| `POST /v1/chat/completions` | Authenticated legacy adapter to `/v1/responses` (non-streaming) |
 
 The default provider listen address is `127.0.0.1:8789`. Public binding requires explicit configuration rather than silently exposing the gateway.
 
@@ -2046,7 +2047,11 @@ The following rules define the architecture:
 - [Interactive Peer Conversation Protocol](docs/peer-conversation.md)
 - [Model Context Protocol (MCP)](docs/mcp.md)
 - [ChatGPT Integration (remote MCP bridge)](docs/chatgpt-integration.md)
+- [ChatGPT MCP with Docker Compose](docs/chatgpt-compose.md)
+- [ChatGPT MCP with self-hosted frp](docs/chatgpt-frp.md)
+- [ChatGPT MCP bootstrap](docs/chatgpt-mcp-bootstrap.md)
 - [Codex Provider Gateway (zero-API-billing local/Bedrock inference for the Codex extension)](docs/codex-provider.md)
+- [OpenResponses compatibility and compliance testing](docs/openresponses.md)
 - [Peer Protocol Specification](docs/peer-protocol.md)
 - [Security & Context Filtering](docs/security.md)
 - [Context Projection Engine](docs/context-projection.md)
