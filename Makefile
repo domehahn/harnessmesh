@@ -43,6 +43,24 @@ check: fmt test vet build
 production-readiness:
 	./scripts/production-readiness.sh
 
+openresponses-compliance:
+	./scripts/openresponses-compliance.sh
+
+chatgpt-mcp-bootstrap:
+	./scripts/start-chatgpt-mcp.sh
+
+chatgpt-compose-up:
+	./scripts/start-chatgpt-compose.sh
+
+chatgpt-compose-down:
+	./scripts/stop-chatgpt-compose.sh
+
+chatgpt-frp-up:
+	./scripts/start-chatgpt-frp.sh
+
+chatgpt-frp-down:
+	./scripts/stop-chatgpt-frp.sh
+
 live-metadata-check:
 	./scripts/live-metadata-check.sh
 

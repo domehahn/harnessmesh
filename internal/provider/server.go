@@ -116,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/status", s.withAuth(s.handleStatus))
 	mux.HandleFunc("/v1/models", s.withAuth(s.handleModels))
 	mux.HandleFunc("/v1/responses", s.withAuth(s.handleResponses))
+	mux.HandleFunc("/v1/chat/completions", s.withAuth(s.handleChatCompletions))
 	return mux
 }
 

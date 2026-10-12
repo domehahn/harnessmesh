@@ -27,13 +27,13 @@ services:
   # HARNESSMESH_MCP_TOKEN must be set in the environment - there is no
   # default, and the server refuses to start without it.
   harnessmesh-mcp:
-    profiles: ["mcp"]
+    profiles: ["mcp", "chatgpt", "chatgpt-frp"]
     build:
       context: .
     working_dir: /workspace
     volumes:
       - ${HARNESSMESH_REPO:-.}:/workspace
-      - ./harnessmesh.json:/etc/harnessmesh/harnessmesh.json:ro
+      - ${HARNESSMESH_MCP_CONFIG:-./harnessmesh.json}:/etc/harnessmesh/harnessmesh.json:ro
       - harnessmesh-data:/data
     environment:
       HOME: /data
