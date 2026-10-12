@@ -38,7 +38,6 @@ if [ -f "$target_knowledge" ]; then
 fi
 
 cp "$source_db" "$target_db"
-rm -f "$target_db-wal" "$target_db-shm"
 if [ -f "$source_knowledge" ]; then
   cp "$source_knowledge" "$target_knowledge"
 fi
