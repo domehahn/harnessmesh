@@ -4,5 +4,9 @@
 bin
 .env
 harnessmesh.json
+backups
+coverage
+dist
+node_modules
 *.log
 .DS_Store
