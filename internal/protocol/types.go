@@ -272,6 +272,29 @@ const (
 	FindingResolved     FindingStatus = "resolved"
 	FindingDismissed    FindingStatus = "dismissed"
 	FindingSuperseded   FindingStatus = "superseded"
+
+	// The six values below are additive, introduced by ADR 0002 Phase 4
+	// (docs/decisions/0002-supervisor-agent-with-deterministic-control-plane.md)
+	// for internal/review's evidence-driven arbitration layer. They
+	// express an independent-review VERDICT on a correlated claim,
+	// distinct from the six conversational-lifecycle values above
+	// (open/acknowledged/disputed/resolved/dismissed/superseded, which
+	// internal/collaboration's peer.submit_finding/challenge/resolve flow
+	// continues to own unchanged). internal/review does not currently
+	// write these values onto a live FindingPayload.Status - it tracks
+	// them on its own ReviewGroup record (see internal/review/types.go)
+	// and reuses this enum only so the vocabulary already matches if a
+	// later phase wires ReviewGroup verdicts back onto FindingPayload via
+	// collaboration.Engine.Resolve. Adding these constants does not
+	// change the behavior of engine.go's two existing FindingStatus
+	// switches (neither has a default case, and neither is ever passed
+	// one of these six new values today).
+	FindingUnconfirmed   FindingStatus = "unconfirmed"
+	FindingSupported     FindingStatus = "supported"
+	FindingContested     FindingStatus = "contested"
+	FindingNeedsEvidence FindingStatus = "needs_evidence"
+	FindingVerified      FindingStatus = "verified"
+	FindingRejected      FindingStatus = "rejected"
 )
 
 type FindingPayload struct {
