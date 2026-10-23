@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/auth"
 	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
@@ -79,7 +80,19 @@ func APIHandler(st store.Store) http.Handler {
 			return
 		}
 		key := strings.TrimSpace(r.Header.Get("X-HarnessMesh-API-Key"))
-		who, err := (identity.Service{Store: identityStore}).AuthenticateAPIKey(r.Context(), key)
+		var who tenant.Identity
+		var err error
+		if key != "" {
+			who, err = (identity.Service{Store: identityStore}).AuthenticateAPIKey(r.Context(), key)
+		} else {
+			bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			info, ok := auth.IntrospectToken(r.Context(), os.Getenv("HARNESSMESH_DASHBOARD_OAUTH_INTROSPECTION_URL"), bearer, os.Getenv("HARNESSMESH_DASHBOARD_OAUTH_CLIENT_SECRET"))
+			if !ok || strings.TrimSpace(info.Tenant) == "" || strings.TrimSpace(info.Subject) == "" {
+				err = tenant.ErrUnauthenticated
+			} else {
+				who = tenant.Identity{Subject: info.Subject, Tenant: info.Tenant, Roles: info.Roles}
+			}
+		}
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

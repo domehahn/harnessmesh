@@ -68,6 +68,26 @@ func TestDashboardAPIIsTenantScopedAndCanSubmitJob(t *testing.T) {
 	if summary.Tenant != "tenant-a" || len(summary.Jobs) != 1 {
 		t.Fatalf("unexpected summary: %+v", summary)
 	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/optimization", nil)
+	r.Header.Set("X-HarnessMesh-API-Key", key)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("optimization status=%d body=%s", w.Code, w.Body.String())
+	}
+	var optimization struct {
+		Tenant  string `json:"tenant"`
+		Credits struct {
+			Available bool `json:"available"`
+		} `json:"credits"`
+		ByAgent []any `json:"by_agent"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &optimization); err != nil {
+		t.Fatal(err)
+	}
+	if optimization.Tenant != "tenant-a" || optimization.Credits.Available {
+		t.Fatalf("unexpected optimization projection: %+v", optimization)
+	}
 	r = httptest.NewRequest(http.MethodPost, "/api/v1/dashboard/approvals/approval-1", bytes.NewBufferString(`{"status":"approved"}`))
 	r.Header.Set("X-HarnessMesh-API-Key", key)
 	w = httptest.NewRecorder()
