@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/auth"
+	"github.com/domehahn/harnessmesh/internal/governance"
 	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
@@ -456,6 +457,7 @@ func APIHandler(st store.Store) http.Handler {
 				Failed      int64   `json:"failed"`
 				SuccessRate float64 `json:"success_rate"`
 				SampleCount int64   `json:"sample_count"`
+				TrustScore  float64 `json:"trust_score"`
 			}
 			byAgent := map[string]*usageBucket{}
 			byModel := map[string]*usageBucket{}
@@ -506,7 +508,7 @@ func APIHandler(st store.Store) http.Handler {
 				if samples > 0 {
 					rate = float64(item.Successful) / float64(samples)
 				}
-				quality = append(quality, qualityBucket{Agent: item.Agent, Successful: item.Successful, Failed: item.Failed, SuccessRate: rate, SampleCount: samples})
+				quality = append(quality, qualityBucket{Agent: item.Agent, Successful: item.Successful, Failed: item.Failed, SuccessRate: rate, SampleCount: samples, TrustScore: governance.TrustScore(governance.TrustSignals{SuccessRate: rate, SampleCount: int(samples)})})
 			}
 			connections := make([]map[string]any, 0, len(health))
 			mcp := probeTransport(ctx, "HARNESSMESH_MCP_HEALTH_URL", "HARNESSMESH_MCP_TOKEN")
