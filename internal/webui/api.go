@@ -281,6 +281,77 @@ func APIHandler(st store.Store) http.Handler {
 				return
 			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "observation_count": len(observations), "job_count": len(jobs), "billing_mode": "zero_api_billing", "metered_api_calls": 0})
+		case "/optimization":
+			sessions, e := st.ListSessionsForTenant(ctx, who.Tenant)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			type usageBucket struct {
+				Key          string  `json:"key"`
+				InputTokens  int64   `json:"input_tokens"`
+				OutputTokens int64   `json:"output_tokens"`
+				CostUSD      float64 `json:"cost_usd"`
+				DurationMS   int64   `json:"duration_ms"`
+				Requests     int     `json:"requests"`
+			}
+			byAgent := map[string]*usageBucket{}
+			byModel := map[string]*usageBucket{}
+			bySession := map[string]*usageBucket{}
+			add := func(target map[string]*usageBucket, key string, item store.UsageRecord) {
+				if key == "" {
+					key = "unknown"
+				}
+				bucket := target[key]
+				if bucket == nil {
+					bucket = &usageBucket{Key: key}
+					target[key] = bucket
+				}
+				bucket.InputTokens += item.InputTokens
+				bucket.OutputTokens += item.OutputTokens
+				bucket.CostUSD += item.MonetaryCostUSD
+				bucket.DurationMS += item.DurationMS
+				bucket.Requests++
+			}
+			for _, session := range sessions {
+				usage, usageErr := st.GetUsage(ctx, session.ID)
+				if usageErr != nil {
+					http.Error(w, usageErr.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				for _, item := range usage {
+					add(byAgent, item.Participant, item)
+					add(byModel, item.Model, item)
+					add(bySession, item.SessionID, item)
+				}
+			}
+			toList := func(values map[string]*usageBucket) []usageBucket {
+				out := make([]usageBucket, 0, len(values))
+				for _, value := range values {
+					out = append(out, *value)
+				}
+				return out
+			}
+			health, e := st.ListAgentHealth(ctx)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			connections := make([]map[string]any, 0, len(health))
+			for _, item := range health {
+				connections = append(connections, map[string]any{
+					"agent": item.Agent, "adapter": item.Adapter, "status": item.Status,
+					"invocations": item.TotalInvocations, "successful": item.Successful,
+					"failed": item.Failed, "quota_reset_at": item.QuotaResetAt,
+					"mcp": "unknown", "bridge": "unknown",
+				})
+			}
+			writeJSON(w, map[string]any{
+				"tenant": who.Tenant, "connections": connections,
+				"by_agent": toList(byAgent), "by_model": toList(byModel), "by_session": toList(bySession),
+				"credits":      map[string]any{"available": false, "reason": "provider quota API not configured", "used_percent": nil, "next_available_at": nil},
+				"optimization": map[string]any{"status": "observational", "recommendation": "Collect more completed usage and quality outcomes before changing routing", "automatic_changes": false},
+			})
 		default:
 			http.NotFound(w, r)
 		}
