@@ -152,30 +152,30 @@ func (a *ClaudeCodeAdapter) Invoke(parent context.Context, req InvokeRequest) (I
 		var out claudeJSON
 		if jsonErr := json.Unmarshal([]byte(run.Stdout), &out); jsonErr == nil && out.Result != "" {
 			return InvokeResult{
-				AgentName:  a.Name(),
-				SessionID:  out.SessionID,
-				RawOutput:  raw,
-				DurationMS: run.DurationMS,
-			}, &protocol.HarnessInvocationFailedError{
-				Agent:  a.Name(),
-				Err:    err,
-				Stderr: out.Result,
-			}
+					AgentName:  a.Name(),
+					SessionID:  out.SessionID,
+					RawOutput:  raw,
+					DurationMS: run.DurationMS,
+				}, &protocol.HarnessInvocationFailedError{
+					Agent:  a.Name(),
+					Err:    err,
+					Stderr: out.Result,
+				}
 		}
 		diagnostic := strings.TrimSpace(run.Stderr)
 		if diagnostic == "" {
 			diagnostic = strings.TrimSpace(run.Stdout)
 		}
 		return InvokeResult{
-			AgentName:  a.Name(),
-			SessionID:  req.SessionID,
-			RawOutput:  raw,
-			DurationMS: run.DurationMS,
-		}, &protocol.HarnessInvocationFailedError{
-			Agent:  a.Name(),
-			Err:    err,
-			Stderr: tailString(diagnostic, 4000),
-		}
+				AgentName:  a.Name(),
+				SessionID:  req.SessionID,
+				RawOutput:  raw,
+				DurationMS: run.DurationMS,
+			}, &protocol.HarnessInvocationFailedError{
+				Agent:  a.Name(),
+				Err:    err,
+				Stderr: tailString(diagnostic, 4000),
+			}
 	}
 
 	var out claudeJSON
