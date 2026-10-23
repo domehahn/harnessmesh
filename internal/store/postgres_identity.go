@@ -24,6 +24,9 @@ func (s *PostgresSaaSStore) Migrate(ctx context.Context) error {
 CREATE TABLE IF NOT EXISTS durable_jobs (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, kind TEXT NOT NULL, payload_json JSONB NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, next_run_at TIMESTAMPTZ NOT NULL, lease_owner TEXT NOT NULL DEFAULT '', lease_until TIMESTAMPTZ NULL, last_error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_durable_jobs_claim ON durable_jobs(status, next_run_at, lease_until);
 CREATE INDEX IF NOT EXISTS idx_durable_jobs_tenant ON durable_jobs(tenant, status);
+CREATE TABLE IF NOT EXISTS job_events (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, tenant TEXT NOT NULL, type TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', payload_json JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_job_events_tenant ON job_events(tenant, created_at);
 CREATE TABLE IF NOT EXISTS control_leases (name TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE IF NOT EXISTS principals (subject TEXT PRIMARY KEY, email TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL);

@@ -5,6 +5,7 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -26,6 +27,10 @@ type JobStore interface {
 type LeaseStore interface {
 	AcquireLease(context.Context, string, string, time.Duration) (bool, error)
 	ReleaseLease(context.Context, string, string) error
+}
+
+type EventStore interface {
+	AppendJobEvent(context.Context, *store.JobEvent) error
 }
 
 type Runtime struct {
@@ -54,7 +59,11 @@ func (r Runtime) Submit(ctx context.Context, job *store.DurableJob) error {
 	if job.MaxAttempts <= 0 {
 		job.MaxAttempts = r.MaxAttempts
 	}
-	return r.Store.CreateJob(ctx, job)
+	if err := r.Store.CreateJob(ctx, job); err != nil {
+		return err
+	}
+	r.recordEvent(ctx, job, "submitted", "job accepted by durable runtime", nil)
+	return nil
 }
 
 // RunOnce claims and executes up to limit jobs. It returns the number claimed;
@@ -75,8 +84,10 @@ func (r Runtime) RunOnce(ctx context.Context, limit int, handler Handler) (int, 
 		return 0, err
 	}
 	for _, job := range jobs {
+		r.recordEvent(ctx, &job, "claimed", fmt.Sprintf("worker %s claimed attempt %d", r.Owner, job.Attempts), nil)
 		if r.AuthorizeTenant != nil && !r.AuthorizeTenant(job.Tenant) {
 			_ = r.Store.UpdateJob(ctx, job.ID, "dead", time.Now().UTC(), "tenant authorization denied")
+			r.recordEvent(ctx, &job, "dead", "tenant authorization denied", nil)
 			continue
 		}
 		err := handler(ctx, job)
@@ -84,6 +95,7 @@ func (r Runtime) RunOnce(ctx context.Context, limit int, handler Handler) (int, 
 			if updateErr := r.Store.UpdateJob(ctx, job.ID, "completed", time.Now().UTC(), ""); updateErr != nil {
 				return len(jobs), updateErr
 			}
+			r.recordEvent(ctx, &job, "completed", "job handler completed successfully", nil)
 			continue
 		}
 		next := time.Now().UTC().Add(r.retryDelay(job.Attempts))
@@ -94,8 +106,26 @@ func (r Runtime) RunOnce(ctx context.Context, limit int, handler Handler) (int, 
 		if updateErr := r.Store.UpdateJob(ctx, job.ID, status, next, fmt.Sprintf("%v", err)); updateErr != nil {
 			return len(jobs), updateErr
 		}
+		r.recordEvent(ctx, &job, status, err.Error(), map[string]any{"next_run_at": next})
 	}
 	return len(jobs), nil
+}
+
+func (r Runtime) recordEvent(ctx context.Context, job *store.DurableJob, eventType, message string, payload any) {
+	if job == nil {
+		return
+	}
+	events, ok := r.Store.(EventStore)
+	if !ok {
+		return
+	}
+	raw := []byte(`{}`)
+	if payload != nil {
+		if encoded, err := json.Marshal(payload); err == nil {
+			raw = encoded
+		}
+	}
+	_ = events.AppendJobEvent(ctx, &store.JobEvent{JobID: job.ID, Tenant: job.Tenant, Type: eventType, Message: message, Payload: raw})
 }
 
 // Run keeps polling until ctx is cancelled. Each poll claims work through the

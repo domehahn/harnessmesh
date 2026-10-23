@@ -46,6 +46,13 @@ func TestRuntimePersistsRetryAndCompletion(t *testing.T) {
 	if j.Status != "completed" {
 		t.Fatalf("expected completed job: %+v", j)
 	}
+	events, err := st.ListJobEvents(context.Background(), "job-1", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 4 || events[0].Type != "submitted" || events[len(events)-1].Type != "completed" {
+		t.Fatalf("expected durable execution history, got %+v", events)
+	}
 }
 
 func TestRuntimeRechecksTenantBeforeExecution(t *testing.T) {
