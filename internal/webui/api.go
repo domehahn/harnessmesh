@@ -420,11 +420,12 @@ func APIHandler(st store.Store) http.Handler {
 					"mcp": "unknown", "bridge": "unknown",
 				})
 			}
+			credits := providerQuota(ctx)
 			writeJSON(w, map[string]any{
 				"tenant": who.Tenant, "connections": connections,
 				"by_agent": toList(byAgent), "by_model": toList(byModel), "by_session": toList(bySession),
 				"quality":      quality,
-				"credits":      map[string]any{"available": false, "reason": "provider quota API not configured", "used_percent": nil, "next_available_at": nil},
+				"credits":      credits,
 				"optimization": map[string]any{"status": "observational", "recommendation": "Collect more completed usage and quality outcomes before changing routing", "automatic_changes": false},
 			})
 		default:

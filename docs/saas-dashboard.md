@@ -41,7 +41,10 @@ Dashboard API requests are rate limited per client; tune the limit with
 - `GET /api/v1/dashboard/usage`
 - `GET /api/v1/dashboard/optimization` returns tenant-scoped usage buckets by
   agent, model and session, persisted token/cost/duration data, agent health,
-  and an explicit provider-quota availability state.
+  quality samples, and an explicit provider-quota availability state. Set
+  `HARNESSMESH_PROVIDER_QUOTA_URL` to an operator-owned provider quota endpoint
+  returning `used_percent`, `next_available_at`, `remaining` and `limit`.
+  Optionally set `HARNESSMESH_PROVIDER_QUOTA_TOKEN` for bearer authentication.
 - `GET /api/v1/dashboard/health`
 
 Every response is derived from the authenticated tenant context. Tenant IDs in
