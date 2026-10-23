@@ -67,8 +67,9 @@ Dashboard API requests are rate limited per client; tune the limit with
   connects an external agent participant with an adapter and activity mode.
 - `POST /api/v1/dashboard/spaces/{id}/participants/{participant}/mode` changes
   a participant's activity mode with owner authorization.
-- `GET /api/v1/dashboard/spaces/{id}/messages?channel=general` returns the
-  tenant-scoped collaboration transcript for the selected channel.
+- `GET /api/v1/dashboard/spaces/{id}/messages?channel=general&limit=100` returns
+  the tenant-scoped collaboration transcript for the selected channel. The
+  limit is bounded to 500.
 - `POST /api/v1/dashboard/spaces/{id}/messages` publishes an operator message
   through the Collaboration Engine with `{ "channel", "message", "to", "mentions" }`.
 

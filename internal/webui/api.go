@@ -200,7 +200,13 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 					channelID = "general"
 				}
 				threadID := r.URL.Query().Get("thread")
-				messages, e := orchestrator.GetMessages(ctx, id, channelID, threadID, 100)
+				limit := 100
+				if raw := r.URL.Query().Get("limit"); raw != "" {
+					if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed > 0 && parsed <= 500 {
+						limit = parsed
+					}
+				}
+				messages, e := orchestrator.GetMessages(ctx, id, channelID, threadID, limit)
 				if e != nil {
 					http.Error(w, e.Error(), http.StatusServiceUnavailable)
 					return
