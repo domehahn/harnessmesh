@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/creditguard"
+	"github.com/domehahn/harnessmesh/internal/governance"
 )
 
 type WorkspaceConfig struct {
@@ -526,6 +527,35 @@ type AgentConfig struct {
 	// NetworkMode is "none" for production agents; empty/"host" preserves
 	// compatibility for non-production profiles.
 	NetworkMode string `json:"network_mode,omitempty"`
+	// Contract is the explicit safety and capability boundary advertised to
+	// routing and tool-admission layers. Legacy configs remain valid.
+	Contract governance.AgentContract `json:"contract,omitempty"`
+}
+
+func (a AgentConfig) GovernanceContract(agent string) governance.AgentContract {
+	c := a.Contract
+	if strings.TrimSpace(c.Agent) == "" {
+		c.Agent = agent
+	}
+	if len(c.Capabilities) == 0 {
+		if a.Capabilities.ReadRepository {
+			c.Capabilities = append(c.Capabilities, "read_repository")
+		}
+		if a.Capabilities.WriteRepository || a.Writable {
+			c.Capabilities = append(c.Capabilities, "write_repository")
+		}
+		if a.Capabilities.Review {
+			c.Capabilities = append(c.Capabilities, "review")
+		}
+	}
+	if c.Filesystem == "" {
+		if a.Writable || a.Capabilities.WriteRepository {
+			c.Filesystem = "write"
+		} else {
+			c.Filesystem = "read"
+		}
+	}
+	return c
 }
 
 func (a AgentConfig) IsExternal() bool {
