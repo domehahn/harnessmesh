@@ -8,6 +8,7 @@
 services:
   harnessmesh-console:
     profiles: ["console"]
+    init: true
     build:
       context: ./frontend
     ports:
