@@ -27,7 +27,12 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: gofmt
-        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+        run: |
+          formatted_files="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
+          if [ -n "$formatted_files" ]; then
+            printf '%s\n' "$formatted_files"
+            exit 1
+          fi
 
       - name: Test
         run: go test -race ./...
