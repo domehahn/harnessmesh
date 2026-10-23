@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -22,7 +23,20 @@ import (
 
 // APIHandler exposes read-only, tenant-scoped control-plane projections for
 // the dashboard. Mutations remain on the audited MCP/CLI paths.
-func APIHandler(st store.Store) http.Handler {
+type Orchestrator interface {
+	ListSpaces(context.Context) ([]*protocol.CollaborationSpace, error)
+	GetSpace(context.Context, string) (*protocol.CollaborationSpace, error)
+	CreateSpace(context.Context, string, string, string, string, string, map[string]protocol.SpaceParticipant) (*protocol.CollaborationSpace, error)
+	PauseSpace(context.Context, string) error
+	ResumeSpace(context.Context, string) error
+	StopSpace(context.Context, string) error
+	AddParticipant(context.Context, string, *protocol.SpaceParticipant) error
+	UpdateParticipantMode(context.Context, string, string, protocol.ParticipantActivityMode) error
+}
+
+func APIHandler(st store.Store) http.Handler { return APIHandlerWithOrchestrator(st, nil) }
+
+func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator) http.Handler {
 	const maxRateLimitClients = 10000
 	var rateMu sync.Mutex
 	windows := map[string]struct {
@@ -102,6 +116,141 @@ func APIHandler(st store.Store) http.Handler {
 		}
 		ctx := tenant.WithIdentity(r.Context(), who)
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/dashboard")
+		if strings.HasPrefix(path, "/spaces") {
+			if orchestrator == nil {
+				http.Error(w, "orchestrator unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			spacePath := strings.Trim(strings.TrimPrefix(path, "/spaces"), "/")
+			parts := strings.Split(spacePath, "/")
+			belongs := func(space *protocol.CollaborationSpace) bool {
+				if space == nil || space.Metadata == nil {
+					return false
+				}
+				value, _ := space.Metadata["tenant"].(string)
+				return value == who.Tenant
+			}
+			if spacePath == "" {
+				if r.Method == http.MethodGet {
+					spaces, e := orchestrator.ListSpaces(ctx)
+					if e != nil {
+						http.Error(w, e.Error(), http.StatusServiceUnavailable)
+						return
+					}
+					filtered := make([]*protocol.CollaborationSpace, 0, len(spaces))
+					for _, space := range spaces {
+						if belongs(space) {
+							filtered = append(filtered, space)
+						}
+					}
+					writeJSON(w, map[string]any{"tenant": who.Tenant, "spaces": filtered})
+					return
+				}
+				if r.Method != http.MethodPost {
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+				var req struct {
+					ID           string                               `json:"id"`
+					WorkspaceID  string                               `json:"workspace_id"`
+					Title        string                               `json:"title"`
+					Purpose      string                               `json:"purpose"`
+					Writer       string                               `json:"writer_participant"`
+					Participants map[string]protocol.SpaceParticipant `json:"participants"`
+				}
+				if json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&req) != nil || strings.TrimSpace(req.Title) == "" {
+					http.Error(w, "invalid space request", http.StatusBadRequest)
+					return
+				}
+				space, e := orchestrator.CreateSpace(ctx, req.ID, req.WorkspaceID, req.Title, req.Purpose, req.Writer, req.Participants)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, space)
+				return
+			}
+			id := parts[0]
+			space, e := orchestrator.GetSpace(ctx, id)
+			if e != nil || !belongs(space) {
+				http.Error(w, "space not found", http.StatusNotFound)
+				return
+			}
+			if len(parts) == 1 && r.Method == http.MethodGet {
+				writeJSON(w, space)
+				return
+			}
+			if len(parts) >= 2 && parts[1] == "lifecycle" {
+				if r.Method != http.MethodPost {
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+				var req struct {
+					Action string `json:"action"`
+				}
+				if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req) != nil {
+					http.Error(w, "invalid lifecycle request", http.StatusBadRequest)
+					return
+				}
+				var actionErr error
+				switch req.Action {
+				case "pause":
+					actionErr = orchestrator.PauseSpace(ctx, id)
+				case "resume":
+					actionErr = orchestrator.ResumeSpace(ctx, id)
+				case "stop":
+					actionErr = orchestrator.StopSpace(ctx, id)
+				default:
+					http.Error(w, "unknown lifecycle action", http.StatusBadRequest)
+					return
+				}
+				if actionErr != nil {
+					http.Error(w, actionErr.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, map[string]any{"ok": true, "action": req.Action})
+				return
+			}
+			if len(parts) >= 2 && parts[1] == "participants" {
+				if r.Method != http.MethodPost {
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+				var req struct {
+					ID       string                           `json:"id"`
+					Adapter  string                           `json:"adapter"`
+					Mode     protocol.ParticipantActivityMode `json:"mode"`
+					Writable bool                             `json:"writable"`
+				}
+				if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req) != nil || strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.Adapter) == "" {
+					http.Error(w, "invalid participant request", http.StatusBadRequest)
+					return
+				}
+				if req.Mode == "" {
+					req.Mode = protocol.ParticipantModeOnDemand
+				}
+				if e := orchestrator.AddParticipant(ctx, id, &protocol.SpaceParticipant{ID: req.ID, Adapter: req.Adapter, Mode: req.Mode, ExecutionMode: protocol.ExecutionModeExternal, Writable: req.Writable, Roles: []string{}, Capabilities: []string{}, JoinedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); e != nil {
+					http.Error(w, e.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, map[string]any{"ok": true, "participant": req.ID})
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
 		if path == "/members" {
 			directory, ok := st.(store.DirectoryStore)
 			if !ok {

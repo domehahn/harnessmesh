@@ -150,7 +150,7 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 		mux.Handle("/api/v1/identity/", identity.NewHandler(identityStore))
 	}
 	mux.Handle("/dashboard/", webui.Handler())
-	mux.Handle("/api/v1/dashboard/", webui.APIHandler(s.engine.Store()))
+	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService()))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)

@@ -38,6 +38,8 @@ async function mockDashboard(page: import("@playwright/test").Page) {
     if (path === "/usage") return route.fulfill({ json: { observation_count: 4, job_count: 2, metered_api_calls: 0 } });
     if (path === "/optimization") return route.fulfill({ json: { by_model: [], transports: {}, connections: [], quality: [], credits: { available: false, reason: "not configured" }, optimization: { status: "observe", recommendation: "Collect more data", automatic_changes: false }, routing: { selected: "", reason: "No candidate", candidates: [] } } });
     if (path === "/incident") return route.fulfill({ json: { unhealthy_agents: [], failed_jobs: [], dead_jobs: [], requires_attention: false } });
+    if (path === "/spaces") return route.fulfill({ json: { tenant: "tenant-e2e", spaces: [{ id: "space-1", title: "Review room", lifecycle_state: "active", participants: {} }] } });
+    if (path.startsWith("/spaces/")) return route.fulfill({ json: { ok: true } });
     if (path === "/simulation") {
       return route.fulfill({ json: route.request().method() === "POST" ? { result: { passed: true, scenario_id: "tool-denied" } } : { scenarios: [{ id: "tool-denied", name: "Tool denied", fault: "tool_denied", description: "safe", expected: "deny" }] } });
     }
@@ -78,4 +80,16 @@ test("opens approval detail and audit history", async ({ page }) => {
   await expect(page.getByText("APPROVAL DETAIL")).toBeVisible();
   await expect(page.getByText("Audit history")).toBeVisible();
   await expect(page.getByText("created")).toBeVisible();
+});
+
+test("creates and controls a visual collaboration space", async ({ page }) => {
+  await mockDashboard(page);
+  await page.goto("/#orchestrator");
+  await connect(page);
+  await expect(page.getByText("Review room")).toBeVisible();
+  await page.getByLabel("Space title").fill("Architecture room");
+  await page.getByRole("button", { name: "Create space" }).click();
+  await page.getByLabel("Agent ID space-1").fill("claude-code");
+  await page.getByRole("button", { name: "Connect" }).last().click();
+  await expect(page.getByText("claude-code connected to Review room")).toBeVisible();
 });

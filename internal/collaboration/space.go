@@ -8,6 +8,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
+	"github.com/domehahn/harnessmesh/internal/tenant"
 )
 
 // DefaultChannels returns the canonical default channels for any collaboration space.
@@ -156,6 +157,9 @@ func (s *SpaceService) CreateSpace(ctx context.Context, id, workspaceID, title, 
 		Metadata:     make(map[string]any),
 		CreatedAt:    now,
 		UpdatedAt:    now,
+	}
+	if identity, err := tenant.FromContext(ctx); err == nil {
+		space.Metadata["tenant"] = identity.Tenant
 	}
 
 	if err := s.store.SaveSpace(ctx, space); err != nil {

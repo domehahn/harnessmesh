@@ -17,6 +17,7 @@ is running. The production React console is served by the `console` Compose
 profile and provides the same tenant-scoped control plane with:
 
 - tenant overview, sessions and jobs with detail views;
+- visual Orchestrator spaces with participant connection and pause/resume/stop controls;
 - persistent job events, causal session timelines and redacted run-bundle export;
 - approval decisions, bulk actions and immutable approval audit history;
 - usage, input/output token accounting, configured cost, model quality and trust scores;

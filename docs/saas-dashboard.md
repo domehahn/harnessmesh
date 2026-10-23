@@ -58,6 +58,11 @@ Dashboard API requests are rate limited per client; tune the limit with
   and immutable status-transition audit history.
 - `GET /api/v1/dashboard/sessions/{id}/bundle` downloads a deterministic ZIP
   run bundle. Sensitive credentials are redacted before the bundle is written.
+- `GET/POST /api/v1/dashboard/spaces` lists or creates tenant-owned visual
+  collaboration spaces.
+- `GET /api/v1/dashboard/spaces/{id}` reads a space; `POST` to
+  `/lifecycle` pauses, resumes or stops it, and `POST` to `/participants`
+  connects an external agent participant with an adapter and activity mode.
 
 Every response is derived from the authenticated tenant context. Tenant IDs in
 URLs or request bodies are not trusted for authorization.
@@ -81,6 +86,11 @@ through URL fragments (`#sessions`, `#jobs`, `#approvals`, `#optimization`,
 `#monitoring` and `#simulation`). The optimization view is deliberately
 observational: routing recommendations and provider quota projections do not
 mutate production routing automatically.
+
+The Orchestrator view is the visual control surface for collaboration spaces.
+It does not execute arbitrary local binaries from the browser: managed agents
+still connect through the configured MCP/Bridge transport, while the UI owns
+space lifecycle, participant membership and tenant-scoped monitoring.
 
 The dashboard read and simulation contracts are also represented in
 [`docs/api/openapi.json`](api/openapi.json), including both API-key and OIDC
