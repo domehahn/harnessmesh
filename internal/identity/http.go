@@ -23,7 +23,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = r.WithContext(tenant.WithIdentity(r.Context(), identity))
-	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/identity"), "/")
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/identity")
+	if path == r.URL.Path {
+		// Keep compatibility for callers mounting this handler below /v1.
+		path = strings.TrimPrefix(r.URL.Path, "/v1/identity")
+	}
+	path = strings.Trim(path, "/")
 	if path == "me" && r.Method == http.MethodGet {
 		writeJSON(w, http.StatusOK, identity)
 		return
