@@ -1,0 +1,92 @@
+package webui
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/domehahn/harnessmesh/internal/identity"
+	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/store"
+	"github.com/domehahn/harnessmesh/internal/tenant"
+)
+
+func TestDashboardAPIIsTenantScopedAndCanSubmitJob(t *testing.T) {
+	db, err := store.OpenSQLite(t.TempDir() + "/dashboard.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.CreateTenant(ctx, &store.TenantRecord{ID: "tenant-a", Slug: "a", Name: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertPrincipal(ctx, &store.PrincipalRecord{Subject: "user-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetMembership(ctx, &store.MembershipRecord{TenantID: "tenant-a", Subject: "user-a", Role: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	key, _, err := (identity.Service{Store: db}).IssueAPIKey(ctx, "tenant-a", "user-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityContext := tenant.WithIdentity(ctx, tenant.Identity{Subject: "user-a", Tenant: "tenant-a", Roles: map[string]bool{"owner": true}})
+	if err := db.SaveApproval(identityContext, &protocol.ApprovalRequest{ID: "approval-1", Agent: "reviewer", Reason: "test", Status: protocol.ApprovalPending, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	h := APIHandler(db)
+	body := bytes.NewBufferString(`{"kind":"agent.task","payload":{"task":"test"}}`)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/dashboard/jobs", body)
+	r.Header.Set("X-HarnessMesh-API-Key", key)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit status=%d body=%s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/summary", nil)
+	r.Header.Set("X-HarnessMesh-API-Key", key)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("summary status=%d", w.Code)
+	}
+	if w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("dashboard API security headers missing: %v", w.Header())
+	}
+	var summary struct {
+		Tenant string             `json:"tenant"`
+		Jobs   []store.DurableJob `json:"jobs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Tenant != "tenant-a" || len(summary.Jobs) != 1 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+	r = httptest.NewRequest(http.MethodPost, "/api/v1/dashboard/approvals/approval-1", bytes.NewBufferString(`{"status":"approved"}`))
+	r.Header.Set("X-HarnessMesh-API-Key", key)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("approval status=%d body=%s", w.Code, w.Body.String())
+	}
+	approved, err := db.GetApproval(identityContext, "approval-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.Status != protocol.ApprovalApproved || approved.DecidedBy != "user-a" || approved.DecidedAt == nil {
+		t.Fatalf("approval was not recorded: %+v", approved)
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/summary", nil)
+	r.Header.Set("X-HarnessMesh-API-Key", "invalid")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid key status=%d", w.Code)
+	}
+}

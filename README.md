@@ -10,6 +10,15 @@ It also provides a separate, bounded **model-provider plane** that lets the offi
 
 Current source version: **v0.1.0**.
 
+## SaaS dashboard
+
+The embedded control-plane UI is available at `/dashboard` when the MCP server
+is running. Connect with a tenant API key; the dashboard provides tenant
+overview, sessions, jobs, approvals, usage/billing visibility and monitoring.
+Dashboard API routes are tenant-scoped and rate limited. See
+[`docs/production-operations.md`](docs/production-operations.md) for deployment
+and security configuration.
+
 ## External MCP integrations
 
 External MCP servers are controlled through the fail-closed registry described
