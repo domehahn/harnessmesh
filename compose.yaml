@@ -142,11 +142,11 @@ services:
     working_dir: /workspace
     volumes:
       - ${HARNESSMESH_REPO:-.}:/workspace
-      - ${HARNESSMESH_PROVIDER_CONFIG:-configs/codex-chatgpt.example.json}:/etc/harnessmesh/harnessmesh.json:ro
+      - ${HARNESSMESH_PROVIDER_CONFIG:-./configs/codex-chatgpt.example.json}:/etc/harnessmesh/harnessmesh.json:ro
       # The loopback OAuth callback runs on the host. Sharing this directory
       # lets the container reuse the host-authorized SIWC credential and
       # refresh it when necessary.
-      - ${HARNESSMESH_SIWC_HOME:-.harnessmesh}:/data/.harnessmesh
+      - ${HARNESSMESH_SIWC_HOME:-./.harnessmesh}:/data/.harnessmesh
     environment:
       HOME: /data
       HARNESSMESH_PROVIDER_TOKEN: ${HARNESSMESH_PROVIDER_TOKEN:?HARNESSMESH_PROVIDER_TOKEN must be set}
