@@ -91,7 +91,8 @@ jobs:
           HARNESSMESH_PROVIDER_TOKEN=ci-provider-token \
           HARNESSMESH_UID=10001 HARNESSMESH_GID=10001 \
             docker compose -f compose.yaml -f compose.production.yaml \
-              --profile mcp --profile console config --quiet
+              --profile mcp --profile bridge --profile provider \
+              --profile console --profile postgres --profile backup config --quiet
 
       - name: Backup and restore smoke test
         run: HARNESSMESH_RESTORE_RTO_SECONDS=30 make backup-restore-smoke
