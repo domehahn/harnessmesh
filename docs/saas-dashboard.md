@@ -50,6 +50,14 @@ Dashboard API requests are rate limited per client; tune the limit with
   probes. Optional MCP and Bridge tokens are sent as bearer credentials;
   absent endpoints are reported as `not_configured`, never as healthy.
 - `GET /api/v1/dashboard/health`
+- `GET /api/v1/dashboard/incident` returns the tenant-scoped incident posture,
+  failed jobs, dead letters and unhealthy agent records.
+- `GET /api/v1/dashboard/simulation` returns deterministic safety scenarios;
+  `POST` evaluates an observation without invoking an external agent or model.
+- `GET /api/v1/dashboard/approvals/{id}` returns the approval decision context
+  and immutable status-transition audit history.
+- `GET /api/v1/dashboard/sessions/{id}/bundle` downloads a deterministic ZIP
+  run bundle. Sensitive credentials are redacted before the bundle is written.
 
 Every response is derived from the authenticated tenant context. Tenant IDs in
 URLs or request bodies are not trusted for authorization.
@@ -67,6 +75,12 @@ URLs or request bodies are not trusted for authorization.
 
 Approval decisions record the authenticated subject and decision timestamp.
 Job execution remains asynchronous and is handled by the durable worker path.
+
+The React console polls tenant data every 15 seconds and supports deep links
+through URL fragments (`#sessions`, `#jobs`, `#approvals`, `#optimization`,
+`#monitoring` and `#simulation`). The optimization view is deliberately
+observational: routing recommendations and provider quota projections do not
+mutate production routing automatically.
 
 ## Usage and cost boundary
 

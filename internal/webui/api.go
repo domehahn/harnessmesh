@@ -441,6 +441,20 @@ func APIHandler(st store.Store) http.Handler {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
 				return
 			}
+			// Keep collection fields iterable for empty tenants; clients should not
+			// need a special case for JSON null.
+			if sessions == nil {
+				sessions = []*store.Session{}
+			}
+			if jobs == nil {
+				jobs = []store.DurableJob{}
+			}
+			if approvals == nil {
+				approvals = []protocol.ApprovalRequest{}
+			}
+			if health == nil {
+				health = []protocol.AgentHealth{}
+			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "subject": who.Subject, "sessions": sessions, "jobs": jobs, "pending_approvals": approvals, "agent_health": health})
 		case "/sessions":
 			v, e := st.ListSessionsForTenant(ctx, who.Tenant)

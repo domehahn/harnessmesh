@@ -97,6 +97,11 @@ before the first rollout and after runtime changes.
 See [target-runtime-qualification.md](target-runtime-qualification.md) for
 the complete release checklist and failure policy.
 
+The dashboard Simulation Lab is a deterministic release-safety aid, not a load
+test. Run `make simulation` in CI and use the authenticated console view to
+inspect the same fault contracts. Run-bundle exports are redacted evidence
+artifacts; retain them according to the deployment's audit policy.
+
 ## Daily checks
 
 For PostgreSQL provisioning, apply repository migrations before starting the
