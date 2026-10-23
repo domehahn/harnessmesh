@@ -54,13 +54,14 @@ URLs or request bodies are not trusted for authorization.
 Approval decisions record the authenticated subject and decision timestamp.
 Job execution remains asynchronous and is handled by the durable worker path.
 
-## Billing boundary
+## Usage and cost boundary
 
 Usage visibility is available, including observation and job counts and the
-zero-API-billing status. No payment provider is contacted and no invoice data
-is fabricated. A billing provider can be attached to the read projection once
-the product selects a provider and defines plan, entitlement and invoice
-semantics.
+zero-API-billing status. HarnessMesh is deliberately not a billing system: it
+does not accept payments, manage subscriptions, create invoices, process
+payment methods, perform plan changes or handle payment-failure webhooks. The
+projection is limited to tenant-scoped usage, configured cost estimates,
+budgets and operational limits.
 
 ## Production frontend container
 

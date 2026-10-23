@@ -110,3 +110,32 @@ func TestDashboardAPIIsTenantScopedAndCanSubmitJob(t *testing.T) {
 		t.Fatalf("invalid key status=%d", w.Code)
 	}
 }
+
+func TestDashboardAPIAcceptsOAuthIntrospection(t *testing.T) {
+	db, err := store.OpenSQLite(t.TempDir() + "/oauth-dashboard.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.CreateTenant(context.Background(), &store.TenantRecord{ID: "tenant-keycloak", Slug: "keycloak", Name: "Keycloak"}); err != nil {
+		t.Fatal(err)
+	}
+	introspection := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.FormValue("token") != "oidc-access-token" {
+			http.Error(w, "invalid introspection request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":true,"sub":"keycloak-user","tenant":"tenant-keycloak","roles":["owner"],"exp":4102444800}`))
+	}))
+	defer introspection.Close()
+	t.Setenv("HARNESSMESH_DASHBOARD_OAUTH_INTROSPECTION_URL", introspection.URL)
+	t.Setenv("HARNESSMESH_DASHBOARD_OAUTH_CLIENT_SECRET", "client-secret")
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/summary", nil)
+	r.Header.Set("Authorization", "Bearer oidc-access-token")
+	w := httptest.NewRecorder()
+	APIHandler(db).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("oauth dashboard status=%d body=%s", w.Code, w.Body.String())
+	}
+}

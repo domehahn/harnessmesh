@@ -52,6 +52,7 @@ if [[ -f frontend/package-lock.json ]]; then
   run_gate FRONTEND_TYPECHECK npm --prefix frontend run typecheck
   run_gate FRONTEND_BUILD npm --prefix frontend run build
   run_gate FRONTEND_SMOKE npm --prefix frontend run test:smoke
+  run_gate FRONTEND_E2E npm --prefix frontend run test:e2e
   run_gate FRONTEND_AUDIT npm --prefix frontend audit --audit-level=high
 fi
 
