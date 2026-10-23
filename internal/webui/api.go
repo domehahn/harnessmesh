@@ -14,6 +14,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/governance"
 	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/runbundle"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/tenant"
 )
@@ -345,7 +346,9 @@ func APIHandler(st store.Store) http.Handler {
 			return
 		}
 		if strings.HasPrefix(path, "/sessions/") {
-			id := strings.TrimPrefix(path, "/sessions/")
+			sessionPath := strings.TrimPrefix(path, "/sessions/")
+			export := strings.HasSuffix(sessionPath, "/bundle")
+			id := strings.TrimSuffix(sessionPath, "/bundle")
 			session, e := st.GetSessionForTenant(ctx, id, who.Tenant)
 			if e != nil {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
@@ -368,6 +371,26 @@ func APIHandler(st store.Store) http.Handler {
 			events, e := st.GetEvents(ctx, id)
 			if e != nil {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if export && r.Method == http.MethodGet {
+				files := map[string][]byte{}
+				for name, value := range map[string]any{"session.json": session, "messages.json": messages, "findings.json": findings, "timeline.json": events} {
+					encoded, marshalErr := json.Marshal(value)
+					if marshalErr != nil {
+						http.Error(w, marshalErr.Error(), http.StatusInternalServerError)
+						return
+					}
+					files[name] = runbundle.Redact(encoded)
+				}
+				bundle, _, buildErr := runbundle.Build("session-"+id, who.Tenant, id, files, time.Now().UTC())
+				if buildErr != nil {
+					http.Error(w, buildErr.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/zip")
+				w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.harnessmesh-run.zip"`)
+				_, _ = w.Write(bundle)
 				return
 			}
 			writeJSON(w, map[string]any{"session": session, "messages": messages, "findings": findings, "timeline": events})
