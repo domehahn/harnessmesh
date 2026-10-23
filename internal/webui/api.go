@@ -412,12 +412,14 @@ func APIHandler(st store.Store) http.Handler {
 				quality = append(quality, qualityBucket{Agent: item.Agent, Successful: item.Successful, Failed: item.Failed, SuccessRate: rate, SampleCount: samples})
 			}
 			connections := make([]map[string]any, 0, len(health))
+			mcp := probeTransport(ctx, "HARNESSMESH_MCP_HEALTH_URL", "HARNESSMESH_MCP_TOKEN")
+			bridge := probeTransport(ctx, "HARNESSMESH_BRIDGE_HEALTH_URL", "HARNESSMESH_BRIDGE_TOKEN")
 			for _, item := range health {
 				connections = append(connections, map[string]any{
 					"agent": item.Agent, "adapter": item.Adapter, "status": item.Status,
 					"invocations": item.TotalInvocations, "successful": item.Successful,
 					"failed": item.Failed, "quota_reset_at": item.QuotaResetAt,
-					"mcp": "unknown", "bridge": "unknown",
+					"mcp": mcp["status"], "bridge": bridge["status"],
 				})
 			}
 			credits := providerQuota(ctx)
@@ -425,6 +427,7 @@ func APIHandler(st store.Store) http.Handler {
 				"tenant": who.Tenant, "connections": connections,
 				"by_agent": toList(byAgent), "by_model": toList(byModel), "by_session": toList(bySession),
 				"quality":      quality,
+				"transports":   map[string]any{"mcp": mcp, "bridge": bridge},
 				"credits":      credits,
 				"optimization": map[string]any{"status": "observational", "recommendation": "Collect more completed usage and quality outcomes before changing routing", "automatic_changes": false},
 			})

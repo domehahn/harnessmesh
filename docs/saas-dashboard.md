@@ -45,6 +45,10 @@ Dashboard API requests are rate limited per client; tune the limit with
   `HARNESSMESH_PROVIDER_QUOTA_URL` to an operator-owned provider quota endpoint
   returning `used_percent`, `next_available_at`, `remaining` and `limit`.
   Optionally set `HARNESSMESH_PROVIDER_QUOTA_TOKEN` for bearer authentication.
+  Set `HARNESSMESH_MCP_HEALTH_URL` and `HARNESSMESH_BRIDGE_HEALTH_URL` to the
+  respective authenticated `/readyz` endpoints to expose live transport
+  probes. Optional MCP and Bridge tokens are sent as bearer credentials;
+  absent endpoints are reported as `not_configured`, never as healthy.
 - `GET /api/v1/dashboard/health`
 
 Every response is derived from the authenticated tenant context. Tenant IDs in
