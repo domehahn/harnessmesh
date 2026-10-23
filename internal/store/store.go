@@ -28,6 +28,7 @@ type ParticipantInfo struct {
 
 type Session struct {
 	ID                string                     `json:"id"`
+	TenantID          string                     `json:"tenant_id,omitempty"`
 	RepoRoot          string                     `json:"repo_root"`
 	Task              string                     `json:"task"`
 	Status            string                     `json:"status"`
@@ -43,7 +44,9 @@ type Session struct {
 type Store interface {
 	SaveSession(ctx context.Context, session *Session) error
 	GetSession(ctx context.Context, id string) (*Session, error)
+	GetSessionForTenant(ctx context.Context, id, tenantID string) (*Session, error)
 	ListSessions(ctx context.Context) ([]*Session, error)
+	ListSessionsForTenant(ctx context.Context, tenantID string) ([]*Session, error)
 	UpdateSessionStatus(ctx context.Context, id, status, stopReason string) error
 	UpdateSessionBudget(ctx context.Context, id string, budget protocol.BudgetStatus) error
 	UpdateParticipantHarnessSession(ctx context.Context, sessionID, agentName, harnessSessionID string) error
@@ -128,6 +131,11 @@ type Store interface {
 	ReleaseLease(ctx context.Context, name, owner string) error
 	SaveJobDependency(ctx context.Context, dependency *JobDependency) error
 	ListJobDependencies(ctx context.Context, jobID string) ([]JobDependency, error)
+	CreateJob(ctx context.Context, job *DurableJob) error
+	GetJob(ctx context.Context, id string) (*DurableJob, error)
+	ListJobs(ctx context.Context, tenant, status string, limit int) ([]DurableJob, error)
+	ClaimJobs(ctx context.Context, now time.Time, owner string, limit int, lease time.Duration) ([]DurableJob, error)
+	UpdateJob(ctx context.Context, id, status string, nextRun time.Time, lastError string) error
 
 	SaveDecision(ctx context.Context, d *protocol.Decision) error
 	GetDecision(ctx context.Context, spaceID, id string) (*protocol.Decision, error)
@@ -275,6 +283,72 @@ type JobDependency struct {
 	DependsOn string    `json:"depends_on"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// DurableJob is a tenant-scoped, restart-safe unit of work. Payload is opaque
+// to the store so runtime implementations can evolve without migrations.
+type DurableJob struct {
+	ID          string          `json:"id"`
+	Tenant      string          `json:"tenant"`
+	Kind        string          `json:"kind"`
+	Payload     json.RawMessage `json:"payload"`
+	Status      string          `json:"status"`
+	Attempts    int             `json:"attempts"`
+	MaxAttempts int             `json:"max_attempts"`
+	NextRunAt   time.Time       `json:"next_run_at"`
+	LeaseOwner  string          `json:"lease_owner,omitempty"`
+	LeaseUntil  time.Time       `json:"lease_until,omitempty"`
+	LastError   string          `json:"last_error,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+}
+
+type TenantRecord struct {
+	ID        string    `json:"id"`
+	Slug      string    `json:"slug"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type PrincipalRecord struct {
+	Subject   string    `json:"subject"`
+	Email     string    `json:"email,omitempty"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type MembershipRecord struct {
+	TenantID  string    `json:"tenant_id"`
+	Subject   string    `json:"subject"`
+	Role      string    `json:"role"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type APIKeyRecord struct {
+	ID        string     `json:"id"`
+	TenantID  string     `json:"tenant_id"`
+	Subject   string     `json:"subject"`
+	Prefix    string     `json:"prefix"`
+	Hash      string     `json:"-"`
+	Status    string     `json:"status"`
+	CreatedAt time.Time  `json:"created_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+}
+
+// IdentityStore is the persistence seam for the SaaS directory. It is kept
+// separate from the large collaboration Store contract so local deployments
+// and future PostgreSQL implementations can adopt it incrementally.
+type IdentityStore interface {
+	CreateTenant(context.Context, *TenantRecord) error
+	GetTenant(context.Context, string) (*TenantRecord, error)
+	UpsertPrincipal(context.Context, *PrincipalRecord) error
+	SetMembership(context.Context, *MembershipRecord) error
+	GetMembership(context.Context, string, string) (*MembershipRecord, error)
+	CreateAPIKey(context.Context, *APIKeyRecord) error
+	GetAPIKeyByHash(context.Context, string) (*APIKeyRecord, error)
+	RevokeAPIKey(context.Context, string) error
 }
 
 type ExperimentRecord struct {
@@ -1094,6 +1168,77 @@ func (s *SQLiteStore) migrate() error {
 				ALTER TABLE experiments ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 0;
 			`,
 		},
+		{
+			version: 16,
+			sql: `
+				CREATE TABLE IF NOT EXISTS durable_jobs (
+					id TEXT PRIMARY KEY,
+					tenant TEXT NOT NULL,
+					kind TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					status TEXT NOT NULL DEFAULT 'pending',
+					attempts INTEGER NOT NULL DEFAULT 0,
+					max_attempts INTEGER NOT NULL DEFAULT 3,
+					next_run_at TIMESTAMP NOT NULL,
+					lease_owner TEXT NOT NULL DEFAULT '',
+					lease_until TIMESTAMP,
+					last_error TEXT NOT NULL DEFAULT '',
+					created_at TIMESTAMP NOT NULL,
+					updated_at TIMESTAMP NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_durable_jobs_claim ON durable_jobs(status, next_run_at, lease_until);
+				CREATE INDEX IF NOT EXISTS idx_durable_jobs_tenant ON durable_jobs(tenant, status);
+			`,
+		},
+		{
+			version: 17,
+			sql: `
+				CREATE TABLE IF NOT EXISTS tenants (
+					id TEXT PRIMARY KEY,
+					slug TEXT NOT NULL UNIQUE,
+					name TEXT NOT NULL,
+					status TEXT NOT NULL DEFAULT 'active',
+					created_at TIMESTAMP NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS principals (
+					subject TEXT PRIMARY KEY,
+					email TEXT NOT NULL DEFAULT '',
+					status TEXT NOT NULL DEFAULT 'active',
+					created_at TIMESTAMP NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS tenant_memberships (
+					tenant_id TEXT NOT NULL,
+					subject TEXT NOT NULL,
+					role TEXT NOT NULL,
+					status TEXT NOT NULL DEFAULT 'active',
+					created_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (tenant_id, subject),
+					FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+					FOREIGN KEY (subject) REFERENCES principals(subject) ON DELETE CASCADE
+				);
+				CREATE TABLE IF NOT EXISTS api_keys (
+					id TEXT PRIMARY KEY,
+					tenant_id TEXT NOT NULL,
+					subject TEXT NOT NULL,
+					prefix TEXT NOT NULL,
+					hash TEXT NOT NULL UNIQUE,
+					status TEXT NOT NULL DEFAULT 'active',
+					created_at TIMESTAMP NOT NULL,
+					revoked_at TIMESTAMP,
+					FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+					FOREIGN KEY (subject) REFERENCES principals(subject) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_memberships_subject ON tenant_memberships(subject, status);
+				CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id, status);
+			`,
+		},
+		{
+			version: 18,
+			sql: `
+				ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+				CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id, created_at);
+			`,
+		},
 	}
 
 	_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys = OFF;")
@@ -1103,6 +1248,20 @@ func (s *SQLiteStore) migrate() error {
 
 	for _, m := range migrations {
 		if m.version > currentVersion {
+			// Some legacy collaboration fixtures intentionally contain only
+			// space/channel tables and no sessions table. Tenant session
+			// migration is safely skipped for those databases; a normal
+			// installation always has sessions from migration 1.
+			if m.version == 18 {
+				var sessionsTable string
+				_ = s.db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'`).Scan(&sessionsTable)
+				if sessionsTable == "" {
+					if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, m.version, time.Now().UTC()); err != nil {
+						return err
+					}
+					continue
+				}
+			}
 			tx, err := s.db.BeginTx(ctx, nil)
 			if err != nil {
 				return err
@@ -1148,16 +1307,17 @@ func (s *SQLiteStore) SaveSession(ctx context.Context, session *Session) error {
 	session.UpdatedAt = time.Now().UTC()
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, repo_root, task, status, stop_reason, writer_participant, created_at, updated_at, budget_json, metadata_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, tenant_id, repo_root, task, status, stop_reason, writer_participant, created_at, updated_at, budget_json, metadata_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			status = excluded.status,
 			stop_reason = excluded.stop_reason,
 			writer_participant = excluded.writer_participant,
+			tenant_id = excluded.tenant_id,
 			updated_at = excluded.updated_at,
 			budget_json = excluded.budget_json,
 			metadata_json = excluded.metadata_json;
-	`, session.ID, session.RepoRoot, session.Task, session.Status, session.StopReason, session.WriterParticipant, session.CreatedAt, session.UpdatedAt, string(budgetJSON), string(metaJSON))
+	`, session.ID, session.TenantID, session.RepoRoot, session.Task, session.Status, session.StopReason, session.WriterParticipant, session.CreatedAt, session.UpdatedAt, string(budgetJSON), string(metaJSON))
 	if err != nil {
 		return err
 	}
@@ -1188,13 +1348,13 @@ func (s *SQLiteStore) GetSession(ctx context.Context, id string) (*Session, erro
 	defer s.mu.RUnlock()
 
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, repo_root, task, status, stop_reason, writer_participant, created_at, updated_at, budget_json, metadata_json
+		SELECT id, tenant_id, repo_root, task, status, stop_reason, writer_participant, created_at, updated_at, budget_json, metadata_json
 		FROM sessions WHERE id = ?;
 	`, id)
 
 	var sess Session
 	var budgetJSON, metaJSON string
-	err := row.Scan(&sess.ID, &sess.RepoRoot, &sess.Task, &sess.Status, &sess.StopReason, &sess.WriterParticipant, &sess.CreatedAt, &sess.UpdatedAt, &budgetJSON, &metaJSON)
+	err := row.Scan(&sess.ID, &sess.TenantID, &sess.RepoRoot, &sess.Task, &sess.Status, &sess.StopReason, &sess.WriterParticipant, &sess.CreatedAt, &sess.UpdatedAt, &budgetJSON, &metaJSON)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, &protocol.SessionNotFoundError{SessionID: id}
@@ -1228,12 +1388,23 @@ func (s *SQLiteStore) GetSession(ctx context.Context, id string) (*Session, erro
 	return &sess, nil
 }
 
+func (s *SQLiteStore) GetSessionForTenant(ctx context.Context, id, tenantID string) (*Session, error) {
+	sess, err := s.GetSession(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if tenantID == "" || sess.TenantID != tenantID {
+		return nil, &protocol.SessionNotFoundError{SessionID: id}
+	}
+	return sess, nil
+}
+
 func (s *SQLiteStore) ListSessions(ctx context.Context) ([]*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, repo_root, task, status, stop_reason, writer_participant, created_at, updated_at, budget_json, metadata_json
+		SELECT id, tenant_id, repo_root, task, status, stop_reason, writer_participant, created_at, updated_at, budget_json, metadata_json
 		FROM sessions ORDER BY created_at DESC;
 	`)
 	if err != nil {
@@ -1245,7 +1416,7 @@ func (s *SQLiteStore) ListSessions(ctx context.Context) ([]*Session, error) {
 	for rows.Next() {
 		var sess Session
 		var budgetJSON, metaJSON string
-		if err := rows.Scan(&sess.ID, &sess.RepoRoot, &sess.Task, &sess.Status, &sess.StopReason, &sess.WriterParticipant, &sess.CreatedAt, &sess.UpdatedAt, &budgetJSON, &metaJSON); err != nil {
+		if err := rows.Scan(&sess.ID, &sess.TenantID, &sess.RepoRoot, &sess.Task, &sess.Status, &sess.StopReason, &sess.WriterParticipant, &sess.CreatedAt, &sess.UpdatedAt, &budgetJSON, &metaJSON); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(budgetJSON), &sess.Budget)
@@ -2829,6 +3000,23 @@ func (s *SQLiteStore) ListRetries(ctx context.Context, limit int) ([]RetryItem, 
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) ListSessionsForTenant(ctx context.Context, tenantID string) ([]*Session, error) {
+	if tenantID == "" {
+		return nil, errors.New("tenant id is required")
+	}
+	sessions, err := s.ListSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*Session, 0, len(sessions))
+	for _, sess := range sessions {
+		if sess.TenantID == tenantID {
+			out = append(out, sess)
+		}
+	}
+	return out, nil
+}
+
 func nullableTime(t time.Time) any {
 	if t.IsZero() {
 		return nil
@@ -3101,6 +3289,161 @@ func (s *SQLiteStore) ListJobDependencies(ctx context.Context, jobID string) ([]
 			return nil, err
 		}
 		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) CreateJob(ctx context.Context, job *DurableJob) error {
+	if job == nil || job.ID == "" || job.Tenant == "" || job.Kind == "" {
+		return errors.New("job id, tenant, and kind are required")
+	}
+	if job.Status == "" {
+		job.Status = "pending"
+	}
+	if job.MaxAttempts <= 0 {
+		job.MaxAttempts = 3
+	}
+	if job.NextRunAt.IsZero() {
+		job.NextRunAt = time.Now().UTC()
+	}
+	if job.CreatedAt.IsZero() {
+		job.CreatedAt = time.Now().UTC()
+	}
+	job.UpdatedAt = job.CreatedAt
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO durable_jobs(id,tenant,kind,payload_json,status,attempts,max_attempts,next_run_at,lease_owner,lease_until,last_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Tenant, job.Kind, string(job.Payload), job.Status, job.Attempts, job.MaxAttempts, job.NextRunAt, job.LeaseOwner, nullableTime(job.LeaseUntil), job.LastError, job.CreatedAt, job.UpdatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetJob(ctx context.Context, id string) (*DurableJob, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var j DurableJob
+	var payload string
+	var lease sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT id,tenant,kind,payload_json,status,attempts,max_attempts,next_run_at,lease_owner,lease_until,last_error,created_at,updated_at FROM durable_jobs WHERE id=?`, id).Scan(&j.ID, &j.Tenant, &j.Kind, &payload, &j.Status, &j.Attempts, &j.MaxAttempts, &j.NextRunAt, &j.LeaseOwner, &lease, &j.LastError, &j.CreatedAt, &j.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	j.Payload = json.RawMessage(payload)
+	if lease.Valid {
+		j.LeaseUntil = lease.Time
+	}
+	return &j, nil
+}
+
+func (s *SQLiteStore) ListJobs(ctx context.Context, tenant, status string, limit int) ([]DurableJob, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	query := `SELECT id,tenant,kind,payload_json,status,attempts,max_attempts,next_run_at,lease_owner,lease_until,last_error,created_at,updated_at FROM durable_jobs WHERE 1=1`
+	args := []any{}
+	if tenant != "" {
+		query += ` AND tenant=?`
+		args = append(args, tenant)
+	}
+	if status != "" {
+		query += ` AND status=?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at LIMIT ?`
+	args = append(args, limit)
+	return scanJobs(s.db.QueryContext(ctx, query, args...))
+}
+
+func (s *SQLiteStore) ClaimJobs(ctx context.Context, now time.Time, owner string, limit int, lease time.Duration) ([]DurableJob, error) {
+	if owner == "" {
+		return nil, errors.New("job lease owner is required")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 1
+	}
+	if lease <= 0 {
+		lease = time.Minute
+	}
+	s.mu.Lock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM durable_jobs WHERE status IN ('pending','retry') AND next_run_at<=? AND (lease_until IS NULL OR lease_until<=?) ORDER BY next_run_at,created_at LIMIT ?`, now, now, limit)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			s.mu.Unlock()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	until := now.Add(lease)
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE durable_jobs SET status='running',attempts=attempts+1,lease_owner=?,lease_until=?,updated_at=? WHERE id=?`, owner, until, now, id); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
+	claimed := make([]DurableJob, 0, len(ids))
+	for _, id := range ids {
+		j, err := s.GetJob(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if j != nil {
+			claimed = append(claimed, *j)
+		}
+	}
+	return claimed, nil
+}
+
+func (s *SQLiteStore) UpdateJob(ctx context.Context, id, status string, nextRun time.Time, lastError string) error {
+	if id == "" || status == "" {
+		return errors.New("job id and status are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `UPDATE durable_jobs SET status=?,next_run_at=?,lease_owner='',lease_until=NULL,last_error=?,updated_at=? WHERE id=?`, status, nextRun, lastError, now, id)
+	return err
+}
+
+func scanJobs(rows *sql.Rows, err error) ([]DurableJob, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DurableJob
+	for rows.Next() {
+		var j DurableJob
+		var payload string
+		var lease sql.NullTime
+		if err := rows.Scan(&j.ID, &j.Tenant, &j.Kind, &payload, &j.Status, &j.Attempts, &j.MaxAttempts, &j.NextRunAt, &j.LeaseOwner, &lease, &j.LastError, &j.CreatedAt, &j.UpdatedAt); err != nil {
+			return nil, err
+		}
+		j.Payload = json.RawMessage(payload)
+		if lease.Valid {
+			j.LeaseUntil = lease.Time
+		}
+		out = append(out, j)
 	}
 	return out, rows.Err()
 }

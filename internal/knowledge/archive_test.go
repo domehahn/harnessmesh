@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,6 +92,27 @@ func TestArchiveEncryptionProjectIsolationAndCompaction(t *testing.T) {
 		t.Fatal(err)
 	} else if len(got) != 0 {
 		t.Fatalf("expected old record to be compacted, got %+v", got)
+	}
+}
+
+func TestArchiveEncryptionKeyFile(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "knowledge.key")
+	if err := os.WriteFile(keyFile, []byte("file-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HARNESSMESH_KNOWLEDGE_KEY", "")
+	t.Setenv("HARNESSMESH_KNOWLEDGE_KEY_FILE", keyFile)
+	a, err := Open(filepath.Join(t.TempDir(), "knowledge.hmkz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	stats, err := a.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stats.Encrypted {
+		t.Fatal("expected key-file configured archive to be encrypted")
 	}
 }
 

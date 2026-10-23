@@ -10,6 +10,23 @@ It also provides a separate, bounded **model-provider plane** that lets the offi
 
 Current source version: **v0.1.0**.
 
+## External MCP integrations
+
+External MCP servers are controlled through the fail-closed registry described
+in [`docs/mcp-registry.md`](docs/mcp-registry.md). The repository also provides
+local code intelligence without uploading source code:
+
+```bash
+bin/harnessmesh mcp registry validate --config harnessmesh.json
+bin/harnessmesh mcp registry check --config harnessmesh.json \
+  --server serena --tool find_symbol --policy developer-readonly
+bin/harnessmesh code search --repo . --query authentication
+bin/harnessmesh code impact --repo . --query Config
+```
+
+Restart-safe agent work can be submitted as tenant-scoped durable jobs; see
+[`docs/durable-jobs.md`](docs/durable-jobs.md).
+
 ## Installation und vollständiges Setup
 
 ### Native Installation
@@ -399,7 +416,9 @@ Knowledge functions include:
 - optional provider-generated embeddings through the embedding-provider interface;
 - persistent vector index with project filtering and cosine ranking.
 
-Common credential patterns are redacted before archive persistence. Set `HARNESSMESH_KNOWLEDGE_KEY` to enable AES-256-GCM encryption at rest.
+Common credential patterns are redacted before archive persistence. Set
+`HARNESSMESH_KNOWLEDGE_KEY` (or mount it through
+`HARNESSMESH_KNOWLEDGE_KEY_FILE`) to enable AES-256-GCM encryption at rest.
 
 ### Knowledge CLI
 
@@ -1301,7 +1320,7 @@ SQLite/WAL is the default transactional backend and stores collaboration/session
 
 The knowledge archive remains a separate append-only historical store.
 
-A storage `BackendFactory` exists as an extension seam for deployments that provide other backends. SQLite is the implemented default; the README does not imply a bundled production PostgreSQL implementation.
+A storage `BackendFactory` exists as an extension seam for deployments that provide other backends. SQLite is the implemented default. PostgreSQL control-plane slices for SaaS identity, durable jobs, sessions, spaces/channels/threads, collaboration records, approvals, decisions, MeshCommit proof state and experiment/performance records are available through `store.PostgresRepositorySet`; the complete legacy `store.Store` replacement and production wiring remain incremental work.
 
 ---
 
@@ -2106,7 +2125,8 @@ For clarity:
 - It does not guarantee that SIWC is free or outside ChatGPT/Codex plan allowances.
 - It does not silently use `OPENAI_API_KEY` merely because one exists.
 - It does not claim future Codex model-catalog compatibility without contract/live-metadata verification.
-- It does not ship a complete PostgreSQL/object-store backend merely because a storage extension seam exists.
+- It does not claim that the incremental PostgreSQL control-plane slices are already a drop-in replacement for the complete legacy `store.Store` or an object-store backend.
+- PostgreSQL provisioning is explicit via `harnessmesh postgres migrate`; the normal local CLI continues to use SQLite until the application deployment selects and wires the PostgreSQL adapter.
 - It does not turn the collaboration bridge or VS Code extension into an LLM runtime; those are state/UI transports.
 - It does not require real OpenAI inference in the deterministic production-readiness gate.
 

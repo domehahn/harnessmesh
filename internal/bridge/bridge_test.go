@@ -84,6 +84,10 @@ func doReq(t *testing.T, h http.Handler, method, path, token string, body any) *
 func TestBridge_RequiresBearerToken(t *testing.T) {
 	s, _, _ := setupTestBridge(t)
 	h := s.Handler()
+	ready := doReq(t, h, http.MethodGet, "/readyz", "", nil)
+	if ready.Code != http.StatusOK {
+		t.Fatalf("expected ready bridge, got %d: %s", ready.Code, ready.Body.String())
+	}
 
 	rec := doReq(t, h, http.MethodGet, "/api/v1/workspaces", "", nil)
 	if rec.Code != http.StatusUnauthorized {

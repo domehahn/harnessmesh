@@ -55,15 +55,27 @@ jobs:
           python3 -m json.tool plugins/.agents/plugins/marketplace.json >/dev/null
           python3 -m json.tool plugins/harnessmesh-codex/plugin.json >/dev/null
           python3 -m json.tool plugins/harnessmesh-codex/mcp.json >/dev/null
+          python3 -m json.tool configs/harnessmesh-single-node-production.example.json >/dev/null
+          python3 -m json.tool docs/api/openapi.json >/dev/null
 
       - name: Validate Compose and operational scripts
         run: |
           HARNESSMESH_MCP_TOKEN=ci-mcp-token \
           HARNESSMESH_BRIDGE_TOKEN=ci-bridge-token \
           HARNESSMESH_PROVIDER_TOKEN=ci-provider-token \
+          HARNESSMESH_ADMIN_TOKEN=ci-admin-token \
           HARNESSMESH_UID=10001 HARNESSMESH_GID=10001 \
             docker compose config --quiet
-          sh -n scripts/backup-sqlite.sh scripts/restore-sqlite.sh
+          HARNESSMESH_MCP_TOKEN=ci-mcp-token-012345678901234567890123456789 \
+          HARNESSMESH_BRIDGE_TOKEN=ci-bridge-token-012345678901234567890123456789 \
+          HARNESSMESH_PROVIDER_TOKEN=ci-provider-token-012345678901234567890123456789 \
+          HARNESSMESH_ADMIN_TOKEN=ci-admin-token-012345678901234567890123456789 \
+          HARNESSMESH_UID=10001 HARNESSMESH_GID=10001 \
+            docker compose -f compose.yaml -f compose.production.yaml config --quiet
+          sh -n scripts/backup-sqlite.sh scripts/restore-sqlite.sh scripts/backup-restore-smoke.sh scripts/staging-load-smoke.sh
+
+      - name: Backup and restore smoke test
+        run: HARNESSMESH_RESTORE_RTO_SECONDS=30 make backup-restore-smoke
 
       - name: Compile VS Code extension
         working-directory: extensions/vscode

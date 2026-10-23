@@ -99,3 +99,20 @@ harnessmesh provider doctor --config harnessmesh.json
 curl -s http://127.0.0.1:8789/readyz
 curl -s http://127.0.0.1:8789/metrics | grep metered_backend
 ```
+
+## Backup and restore drill
+
+Backups contain a SQLite snapshot, the optional Knowledge archive, a manifest,
+and SHA-256 checksums. Run the backup job on a schedule and perform a restore
+drill into an isolated data directory at least once per release cycle:
+
+```bash
+docker compose --profile backup run --rm harnessmesh-backup
+HARNESSMESH_RESTORE_SERVICES_STOPPED=1 \
+  docker compose --profile backup run --rm harnessmesh-restore \
+  /backup/harnessmesh-YYYYmmddTHHMMSSZ --confirm
+```
+
+The restore command refuses to run while services are marked as running,
+verifies the backup checksums when present, validates SQLite integrity, and
+keeps pre-restore copies in the data directory.

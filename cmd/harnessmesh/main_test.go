@@ -7,6 +7,38 @@ import (
 	"testing"
 )
 
+func TestSecretEnvValueReadsMountedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("  mounted-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HARNESSMESH_TEST_TOKEN", "")
+	t.Setenv("HARNESSMESH_TEST_TOKEN_FILE", path)
+	got, err := secretEnvValue("HARNESSMESH_TEST_TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "mounted-token" {
+		t.Fatalf("got %q, want mounted-token", got)
+	}
+}
+
+func TestSecretEnvValuePrefersDirectValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("file-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HARNESSMESH_TEST_TOKEN", "direct-token")
+	t.Setenv("HARNESSMESH_TEST_TOKEN_FILE", path)
+	got, err := secretEnvValue("HARNESSMESH_TEST_TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "direct-token" {
+		t.Fatalf("got %q, want direct-token", got)
+	}
+}
+
 // Scenario F: Merge-safe Claude Code .mcp.json installation.
 func TestScenarioF_MergeSafeClaudeMCPInstall(t *testing.T) {
 	tmpDir := t.TempDir()

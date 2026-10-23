@@ -17,10 +17,21 @@ type WorkspaceConfig struct {
 	SingleWriter bool `json:"single_writer"`
 }
 
+type SecurityConfig struct {
+	// RequireAgentSandbox makes managed agents fail config validation unless
+	// both executable and workspace allowlists are configured. It is intended
+	// for production profiles; the default remains false for compatibility.
+	RequireAgentSandbox bool `json:"require_agent_sandbox,omitempty"`
+	// RequireAgentNetworkIsolation requires managed agents to run with
+	// network_mode "none" through the configured OS sandbox.
+	RequireAgentNetworkIsolation bool `json:"require_agent_network_isolation,omitempty"`
+}
+
 type Config struct {
 	Version              int                                  `json:"version,omitempty"`
 	SchemaVersion        int                                  `json:"schema_version,omitempty"`
 	Workspace            WorkspaceConfig                      `json:"workspace"`
+	Security             SecurityConfig                       `json:"security,omitempty"`
 	Collaboration        CollaborationConfig                  `json:"collaboration"`
 	Workflow             WorkflowConfig                       `json:"workflow"`
 	Selection            SelectionConfig                      `json:"selection,omitempty"`
@@ -33,6 +44,40 @@ type Config struct {
 	ChatGPT              ChatGPTBridgeConfig                  `json:"chatgpt,omitempty"`
 	Bridge               BridgeConfig                         `json:"bridge,omitempty"`
 	Provider             ProviderGatewayConfig                `json:"provider,omitempty"`
+	MCP                  MCPRegistryConfig                    `json:"mcp,omitempty"`
+}
+
+// MCPRegistryConfig is the declarative, fail-closed inventory of external MCP
+// servers. HarnessMesh never starts an unregistered server or forwards a tool
+// call that is not covered by its policy.
+type MCPRegistryConfig struct {
+	DefaultDeny bool                       `json:"default_deny,omitempty"`
+	Servers     map[string]MCPServerConfig `json:"servers,omitempty"`
+	Policies    map[string]MCPPolicyConfig `json:"policies,omitempty"`
+}
+
+type MCPServerConfig struct {
+	Type              string   `json:"type"` // local, remote
+	Enabled           bool     `json:"enabled"`
+	Endpoint          string   `json:"endpoint,omitempty"`
+	TokenEnv          string   `json:"token_env,omitempty"`
+	Command           string   `json:"command,omitempty"`
+	Args              []string `json:"args,omitempty"`
+	AllowedTools      []string `json:"allowed_tools,omitempty"`
+	AllowedDomains    []string `json:"allowed_domains,omitempty"`
+	Capabilities      []string `json:"capabilities,omitempty"`
+	NetworkMode       string   `json:"network_mode,omitempty"`
+	RequiresApproval  bool     `json:"requires_approval,omitempty"`
+	TimeoutSeconds    int      `json:"timeout_seconds,omitempty"`
+	MaxRequestsMinute int      `json:"max_requests_per_minute,omitempty"`
+}
+
+type MCPPolicyConfig struct {
+	Servers              []string `json:"servers,omitempty"`
+	AllowedTools         []string `json:"allowed_tools,omitempty"`
+	DeniedTools          []string `json:"denied_tools,omitempty"`
+	AllowedDomains       []string `json:"allowed_domains,omitempty"`
+	RequireApprovalWrite bool     `json:"require_approval_for_write,omitempty"`
 }
 
 // ProviderGatewayConfig configures HarnessMesh's Codex-compatible model
@@ -41,9 +86,10 @@ type Config struct {
 // separate from the collaboration plane: it never performs collaboration
 // operations, and the collaboration plane never depends on it.
 type ProviderGatewayConfig struct {
-	Enabled bool   `json:"enabled,omitempty"`
-	Listen  string `json:"listen,omitempty"` // default 127.0.0.1:8789
-	Token   string `json:"token,omitempty"`
+	Enabled   bool   `json:"enabled,omitempty"`
+	Listen    string `json:"listen,omitempty"` // default 127.0.0.1:8789
+	Token     string `json:"token,omitempty"`
+	TokenFile string `json:"-"`
 
 	// ZeroAPIBillingMode, when true (the default), forbids routing any request
 	// through a metered backend (openai-api, codex). zero_credit_mode remains
@@ -449,30 +495,37 @@ type AgentModelRoutingConfig struct {
 }
 
 type AgentConfig struct {
-	Kind              string                   `json:"kind,omitempty"`
-	Adapter           string                   `json:"adapter,omitempty"`
-	Role              string                   `json:"role,omitempty"` // "executor", "reviewer", "peer"
-	Roles             []string                 `json:"roles,omitempty"`
-	Writable          bool                     `json:"writable"`
-	Capabilities      AgentCapabilities        `json:"capabilities"`
-	Economy           EconomyProfile           `json:"economy,omitempty"`
-	ModelRouting      *AgentModelRoutingConfig `json:"model_routing,omitempty"`
-	IsLocal           bool                     `json:"is_local,omitempty"`
-	Binary            string                   `json:"binary,omitempty"`
-	Command           string                   `json:"command"`
-	Model             string                   `json:"model"`
-	Mode              string                   `json:"mode"`
-	MaxTurns          int                      `json:"max_turns"`
-	MaxBudgetUSD      float64                  `json:"max_budget_usd"`
-	TimeoutMinutes    int                      `json:"timeout_minutes"`
-	ExtraArgs         []string                 `json:"extra_args"`
-	Env               map[string]string        `json:"env"`
-	WorkingDir        string                   `json:"working_dir"`
-	AllowedPaths      []string                 `json:"allowed_paths,omitempty"`
-	DeniedPaths       []string                 `json:"denied_paths,omitempty"`
-	UseSwitchyard     bool                     `json:"use_switchyard"`
-	SwitchyardRouteID string                   `json:"switchyard_route_id"`
-	ExecutionMode     string                   `json:"execution_mode,omitempty"` // "managed", "external"
+	Kind           string                   `json:"kind,omitempty"`
+	Adapter        string                   `json:"adapter,omitempty"`
+	Role           string                   `json:"role,omitempty"` // "executor", "reviewer", "peer"
+	Roles          []string                 `json:"roles,omitempty"`
+	Writable       bool                     `json:"writable"`
+	Capabilities   AgentCapabilities        `json:"capabilities"`
+	Economy        EconomyProfile           `json:"economy,omitempty"`
+	ModelRouting   *AgentModelRoutingConfig `json:"model_routing,omitempty"`
+	IsLocal        bool                     `json:"is_local,omitempty"`
+	Binary         string                   `json:"binary,omitempty"`
+	Command        string                   `json:"command"`
+	Model          string                   `json:"model"`
+	Mode           string                   `json:"mode"`
+	MaxTurns       int                      `json:"max_turns"`
+	MaxBudgetUSD   float64                  `json:"max_budget_usd"`
+	TimeoutMinutes int                      `json:"timeout_minutes"`
+	ExtraArgs      []string                 `json:"extra_args"`
+	Env            map[string]string        `json:"env"`
+	WorkingDir     string                   `json:"working_dir"`
+	// AllowedCommands limits which executable names an adapter may launch.
+	// An empty list preserves the legacy unrestricted-command behavior; production
+	// profiles should set an explicit allowlist for managed agents.
+	AllowedCommands   []string `json:"allowed_commands,omitempty"`
+	AllowedPaths      []string `json:"allowed_paths,omitempty"`
+	DeniedPaths       []string `json:"denied_paths,omitempty"`
+	UseSwitchyard     bool     `json:"use_switchyard"`
+	SwitchyardRouteID string   `json:"switchyard_route_id"`
+	ExecutionMode     string   `json:"execution_mode,omitempty"` // "managed", "external"
+	// NetworkMode is "none" for production agents; empty/"host" preserves
+	// compatibility for non-production profiles.
+	NetworkMode string `json:"network_mode,omitempty"`
 }
 
 func (a AgentConfig) IsExternal() bool {
@@ -645,6 +698,25 @@ func Parse(raw []byte) (*Config, error) {
 					return nil, err
 				}
 			}
+		}
+		if cfg.Security.RequireAgentSandbox && a.IsManaged() {
+			if len(a.AllowedCommands) == 0 {
+				return nil, fmt.Errorf("agent %q: security.require_agent_sandbox requires allowed_commands", name)
+			}
+			if len(a.AllowedPaths) == 0 {
+				return nil, fmt.Errorf("agent %q: security.require_agent_sandbox requires allowed_paths", name)
+			}
+		}
+		if a.NetworkMode == "" {
+			a.NetworkMode = "host"
+		} else {
+			a.NetworkMode = strings.ToLower(strings.TrimSpace(a.NetworkMode))
+		}
+		if a.NetworkMode != "host" && a.NetworkMode != "none" {
+			return nil, fmt.Errorf("agent %q: invalid network_mode %q (must be 'host' or 'none')", name, a.NetworkMode)
+		}
+		if cfg.Security.RequireAgentNetworkIsolation && a.IsManaged() && a.NetworkMode != "none" {
+			return nil, fmt.Errorf("agent %q: security.require_agent_network_isolation requires network_mode=none", name)
 		}
 
 		if a.Role == "" {

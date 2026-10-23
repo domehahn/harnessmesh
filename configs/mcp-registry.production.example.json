@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "security": {
+    "require_agent_sandbox": true,
+    "require_agent_network_isolation": true
+  },
+  "mcp": {
+    "default_deny": true,
+    "servers": {
+      "serena": {
+        "type": "local",
+        "enabled": false,
+        "command": "serena",
+        "allowed_tools": ["find_symbol", "find_references", "read_file"],
+        "network_mode": "none",
+        "requires_approval": false,
+        "max_requests_per_minute": 60
+      },
+      "agentmail": {
+        "type": "remote",
+        "enabled": false,
+        "endpoint": "https://mail.example.invalid/mcp",
+        "token_env": "HARNESSMESH_AGENTMAIL_TOKEN",
+        "allowed_tools": ["list_messages", "get_message", "create_draft"],
+        "allowed_domains": ["mail.example.invalid"],
+        "requires_approval": true,
+        "timeout_seconds": 15,
+        "max_requests_per_minute": 30
+      }
+    },
+    "policies": {
+      "developer-readonly": {
+        "servers": ["serena"],
+        "allowed_tools": ["find_symbol", "find_references", "read_file"]
+      },
+      "event-operator": {
+        "servers": ["agentmail"],
+        "allowed_tools": ["list_messages", "get_message", "create_draft"],
+        "require_approval_for_write": true
+      }
+    }
+  }
+}

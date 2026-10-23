@@ -23,6 +23,7 @@ type SandboxPolicy struct {
 	AllowedPaths    []string
 	DeniedPaths     []string
 	MaxOutputBytes  int
+	NetworkMode     string // "host" (default) or "none"
 }
 
 func (p SandboxPolicy) Validate(dir, command string) error {
@@ -72,6 +73,38 @@ func matchesPath(value, pattern string) bool {
 func RunWithPolicy(ctx context.Context, dir string, env map[string]string, stdin string, policy SandboxPolicy, name string, args ...string) (Result, error) {
 	if err := policy.Validate(dir, name); err != nil {
 		return Result{}, err
+	}
+	if policy.NetworkMode == "none" {
+		wrapper, err := exec.LookPath("bwrap")
+		if err != nil {
+			return Result{}, fmt.Errorf("network-isolated execution requires bubblewrap (bwrap): %w", err)
+		}
+		// Bubblewrap creates a private network namespace while retaining a
+		// read-only view of the image and a writable view only of the agent's
+		// configured working directory. If the OS sandbox is unavailable,
+		// execution fails closed instead of silently using host networking.
+		absDir, err := filepath.Abs(dir)
+		if err != nil {
+			return Result{}, fmt.Errorf("resolve network-isolated working directory: %w", err)
+		}
+		wrappedArgs := []string{
+			"--die-with-parent", "--new-session", "--unshare-net",
+			"--tmpfs", "/",
+			"--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+		}
+		// Keep the runtime and configuration read-only, but do not expose
+		// arbitrary application data (including mounted secret volumes).
+		for _, path := range []string{"/usr", "/bin", "/sbin", "/lib", "/etc"} {
+			if _, statErr := os.Stat(path); statErr == nil {
+				wrappedArgs = append(wrappedArgs, "--ro-bind", path, path)
+			}
+		}
+		wrappedArgs = append(wrappedArgs,
+			"--dir", "/workspace", "--bind", absDir, "/workspace",
+			"--chdir", "/workspace", "--", name,
+		)
+		wrappedArgs = append(wrappedArgs, args...)
+		return Run(ctx, dir, env, stdin, wrapper, wrappedArgs...)
 	}
 	return Run(ctx, dir, env, stdin, name, args...)
 }

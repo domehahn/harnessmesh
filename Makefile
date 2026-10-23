@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build extension compose-config check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension compose-config backup-restore-smoke staging-load-smoke runtime-isolation-check check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -37,6 +37,15 @@ compose-config:
 	HARNESSMESH_PROVIDER_TOKEN=make-provider-token \
 	HARNESSMESH_UID=$$(id -u) HARNESSMESH_GID=$$(id -g) \
 		docker compose config --quiet
+
+backup-restore-smoke:
+	./scripts/backup-restore-smoke.sh
+
+staging-load-smoke:
+	./scripts/staging-load-smoke.sh
+
+runtime-isolation-check:
+	./scripts/runtime-isolation-check.sh
 
 check: fmt test vet build
 

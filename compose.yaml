@@ -67,7 +67,7 @@ services:
       - --listen
       - 0.0.0.0:8787
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/readyz"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -117,7 +117,7 @@ services:
       - --listen
       - 0.0.0.0:8788
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8788/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8788/readyz"]
       interval: 10s
       timeout: 3s
       retries: 6

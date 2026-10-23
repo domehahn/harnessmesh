@@ -146,36 +146,36 @@ func (a *ClaudeCodeAdapter) Invoke(parent context.Context, req InvokeRequest) (I
 		dir = a.cfg.WorkingDir
 	}
 	env := agentEnv(a.cfg, a.switchyard)
-	run, err := executil.RunWithPolicy(ctx, dir, env, "", executil.SandboxPolicy{AllowedPaths: a.cfg.AllowedPaths, DeniedPaths: a.cfg.DeniedPaths}, binary, args...)
+	run, err := executil.RunWithPolicy(ctx, dir, env, "", executil.SandboxPolicy{AllowedCommands: a.cfg.AllowedCommands, AllowedPaths: a.cfg.AllowedPaths, DeniedPaths: a.cfg.DeniedPaths, NetworkMode: a.cfg.NetworkMode}, binary, args...)
 	if err != nil {
 		raw := strings.TrimSpace(run.Stdout + "\n" + run.Stderr)
 		var out claudeJSON
 		if jsonErr := json.Unmarshal([]byte(run.Stdout), &out); jsonErr == nil && out.Result != "" {
 			return InvokeResult{
-					AgentName:  a.Name(),
-					SessionID:  out.SessionID,
-					RawOutput:  raw,
-					DurationMS: run.DurationMS,
-				}, &protocol.HarnessInvocationFailedError{
-					Agent:  a.Name(),
-					Err:    err,
-					Stderr: out.Result,
-				}
+				AgentName:  a.Name(),
+				SessionID:  out.SessionID,
+				RawOutput:  raw,
+				DurationMS: run.DurationMS,
+			}, &protocol.HarnessInvocationFailedError{
+				Agent:  a.Name(),
+				Err:    err,
+				Stderr: out.Result,
+			}
 		}
 		diagnostic := strings.TrimSpace(run.Stderr)
 		if diagnostic == "" {
 			diagnostic = strings.TrimSpace(run.Stdout)
 		}
 		return InvokeResult{
-				AgentName:  a.Name(),
-				SessionID:  req.SessionID,
-				RawOutput:  raw,
-				DurationMS: run.DurationMS,
-			}, &protocol.HarnessInvocationFailedError{
-				Agent:  a.Name(),
-				Err:    err,
-				Stderr: tailString(diagnostic, 4000),
-			}
+			AgentName:  a.Name(),
+			SessionID:  req.SessionID,
+			RawOutput:  raw,
+			DurationMS: run.DurationMS,
+		}, &protocol.HarnessInvocationFailedError{
+			Agent:  a.Name(),
+			Err:    err,
+			Stderr: tailString(diagnostic, 4000),
+		}
 	}
 
 	var out claudeJSON

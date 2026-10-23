@@ -1,0 +1,106 @@
+# Production hardening overlay.
+# Use together with compose.yaml:
+#   docker compose -f compose.yaml -f compose.production.yaml --profile mcp up -d
+#
+# The production config requires managed agents to use Bubblewrap's private
+# network namespace (`network_mode: none`). Control-plane egress remains
+# deployment-configurable for OAuth/tunnels and local inference backends.
+services:
+  harnessmesh-postgres:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${HARNESSMESH_POSTGRES_DB:-harnessmesh}
+      POSTGRES_USER: ${HARNESSMESH_POSTGRES_USER:-harnessmesh}
+      POSTGRES_PASSWORD: ${HARNESSMESH_POSTGRES_PASSWORD:?HARNESSMESH_POSTGRES_PASSWORD must be set}
+    volumes:
+      - harnessmesh-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  harnessmesh-postgres-migrate:
+    profiles: ["postgres"]
+    build:
+      context: .
+    environment:
+      HARNESSMESH_POSTGRES_DSN: postgres://${HARNESSMESH_POSTGRES_USER:-harnessmesh}:${HARNESSMESH_POSTGRES_PASSWORD:?HARNESSMESH_POSTGRES_PASSWORD must be set}@harnessmesh-postgres:5432/${HARNESSMESH_POSTGRES_DB:-harnessmesh}?sslmode=disable
+    depends_on:
+      harnessmesh-postgres:
+        condition: service_healthy
+    command: ["postgres", "migrate"]
+    restart: "no"
+
+  harnessmesh-mcp:
+    user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
+    read_only: true
+    pids_limit: ${HARNESSMESH_MCP_PIDS_LIMIT:-256}
+    mem_limit: ${HARNESSMESH_MCP_MEMORY_LIMIT:-512m}
+    cpus: ${HARNESSMESH_MCP_CPUS:-2.0}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    environment:
+      HARNESSMESH_REQUIRE_STRONG_TOKENS: "1"
+      HARNESSMESH_ADMIN_TOKEN: "${HARNESSMESH_ADMIN_TOKEN:?HARNESSMESH_ADMIN_TOKEN must be set in production}"
+
+  harnessmesh-bridge:
+    user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
+    read_only: true
+    pids_limit: ${HARNESSMESH_BRIDGE_PIDS_LIMIT:-128}
+    mem_limit: ${HARNESSMESH_BRIDGE_MEMORY_LIMIT:-256m}
+    cpus: ${HARNESSMESH_BRIDGE_CPUS:-1.0}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    environment:
+      HARNESSMESH_REQUIRE_STRONG_TOKENS: "1"
+
+  harnessmesh-provider:
+    user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
+    read_only: true
+    pids_limit: ${HARNESSMESH_PROVIDER_PIDS_LIMIT:-128}
+    mem_limit: ${HARNESSMESH_PROVIDER_MEMORY_LIMIT:-512m}
+    cpus: ${HARNESSMESH_PROVIDER_CPUS:-2.0}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    environment:
+      HARNESSMESH_REQUIRE_STRONG_TOKENS: "1"
+
+  harnessmesh-backup:
+    user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
+    read_only: true
+    pids_limit: ${HARNESSMESH_BACKUP_PIDS_LIMIT:-64}
+    mem_limit: ${HARNESSMESH_BACKUP_MEMORY_LIMIT:-128m}
+    cpus: ${HARNESSMESH_BACKUP_CPUS:-1.0}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  harnessmesh-restore:
+    user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
+    read_only: true
+    pids_limit: ${HARNESSMESH_RESTORE_PIDS_LIMIT:-64}
+    mem_limit: ${HARNESSMESH_RESTORE_MEMORY_LIMIT:-256m}
+    cpus: ${HARNESSMESH_RESTORE_CPUS:-1.0}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  harnessmesh-postgres-data:
