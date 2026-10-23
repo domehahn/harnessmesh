@@ -18,7 +18,7 @@ services:
     build:
       context: ./frontend
     ports:
-      - "127.0.0.1:3000:80"
+      - "127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-3000}:80"
     depends_on:
       harnessmesh-mcp:
         condition: service_healthy
@@ -27,6 +27,7 @@ services:
     cpus: ${HARNESSMESH_CONSOLE_CPUS:-0.5}
     read_only: true
     cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "SETGID", "SETUID"]
     tmpfs:
       - /var/cache/nginx:size=32m,mode=1777
       - /var/run:size=8m,mode=1777
