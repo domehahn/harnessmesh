@@ -14,8 +14,20 @@ embedded dashboard remains available as a dependency-free fallback.
 
 Enter an API key issued for an active tenant membership. The browser sends it
 as `X-HarnessMesh-API-Key` and stores it only in `sessionStorage`. Logout removes
-the key immediately. Dashboard API requests are rate limited per client; tune
-the limit with `HARNESSMESH_DASHBOARD_RATE_LIMIT`.
+the key immediately. For Keycloak/OIDC deployments, configure the dashboard
+RFC 7662 introspection boundary and send an access token as `Authorization:
+Bearer ...`:
+
+```sh
+export HARNESSMESH_DASHBOARD_OAUTH_INTROSPECTION_URL="https://keycloak.example/realms/harnessmesh/protocol/openid-connect/token/introspect"
+export HARNESSMESH_DASHBOARD_OAUTH_CLIENT_SECRET="<confidential-client-secret>"
+```
+
+Keycloak remains responsible for login, MFA, token expiry and role claims.
+HarnessMesh requires an active token with `sub` and a tenant claim (`tenant`,
+`org_id` or `organization`) and maps Keycloak roles to tenant authorization.
+Dashboard API requests are rate limited per client; tune the limit with
+`HARNESSMESH_DASHBOARD_RATE_LIMIT`.
 
 ## Read APIs
 
