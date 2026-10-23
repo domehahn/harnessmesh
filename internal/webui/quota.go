@@ -19,6 +19,29 @@ type quotaSnapshot struct {
 	Limit         *float64 `json:"limit,omitempty"`
 }
 
+func probeTransport(ctx context.Context, endpointEnv, tokenEnv string) map[string]any {
+	endpoint := strings.TrimSpace(os.Getenv(endpointEnv))
+	if endpoint == "" {
+		return map[string]any{"status": "not_configured", "endpoint_configured": false}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return map[string]any{"status": "invalid_endpoint", "endpoint_configured": true}
+	}
+	if token := strings.TrimSpace(os.Getenv(tokenEnv)); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Do(request)
+	if err != nil {
+		return map[string]any{"status": "unavailable", "endpoint_configured": true}
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return map[string]any{"status": "unhealthy", "endpoint_configured": true, "http_status": response.StatusCode}
+	}
+	return map[string]any{"status": "healthy", "endpoint_configured": true, "checked_at": time.Now().UTC()}
+}
+
 // providerQuota reads an operator-configured provider quota endpoint. The
 // endpoint is deliberately generic: HarnessMesh observes provider allowance
 // data but never creates, changes, or bills an account.
