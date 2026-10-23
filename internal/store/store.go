@@ -369,6 +369,13 @@ type IdentityStore interface {
 	RevokeAPIKey(context.Context, string) error
 }
 
+// DirectoryStore is the optional administrative read/write surface for a
+// tenant's members and API keys. Secrets are never returned by list methods.
+type DirectoryStore interface {
+	ListMemberships(context.Context, string) ([]MembershipRecord, error)
+	ListAPIKeys(context.Context, string) ([]APIKeyRecord, error)
+}
+
 type ExperimentRecord struct {
 	ID            string
 	Tenant        string

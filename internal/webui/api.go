@@ -99,6 +99,103 @@ func APIHandler(st store.Store) http.Handler {
 		}
 		ctx := tenant.WithIdentity(r.Context(), who)
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/dashboard")
+		if path == "/members" {
+			directory, ok := st.(store.DirectoryStore)
+			if !ok {
+				http.Error(w, "directory backend unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if r.Method == http.MethodGet {
+				if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+				members, e := directory.ListMemberships(ctx, who.Tenant)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "members": members})
+				return
+			}
+			if r.Method == http.MethodPost {
+				if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+				var req struct {
+					Subject string `json:"subject"`
+					Role    string `json:"role"`
+				}
+				if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req) != nil || strings.TrimSpace(req.Subject) == "" {
+					http.Error(w, "invalid member request", http.StatusBadRequest)
+					return
+				}
+				if req.Role == "" {
+					req.Role = "member"
+				}
+				if e := identityStore.UpsertPrincipal(ctx, &store.PrincipalRecord{Subject: req.Subject}); e != nil {
+					http.Error(w, e.Error(), http.StatusConflict)
+					return
+				}
+				member := &store.MembershipRecord{TenantID: who.Tenant, Subject: req.Subject, Role: req.Role}
+				if e := identityStore.SetMembership(ctx, member); e != nil {
+					http.Error(w, e.Error(), http.StatusConflict)
+					return
+				}
+				writeJSON(w, member)
+				return
+			}
+		}
+		if path == "/keys" {
+			directory, ok := st.(store.DirectoryStore)
+			if !ok {
+				http.Error(w, "directory backend unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			if r.Method == http.MethodGet {
+				keys, e := directory.ListAPIKeys(ctx, who.Tenant)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "keys": keys})
+				return
+			}
+			if r.Method == http.MethodPost {
+				var req struct {
+					Subject string `json:"subject"`
+				}
+				if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req) != nil || strings.TrimSpace(req.Subject) == "" {
+					http.Error(w, "invalid key request", http.StatusBadRequest)
+					return
+				}
+				secret, record, e := (identity.Service{Store: identityStore}).IssueAPIKey(ctx, who.Tenant, req.Subject)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, map[string]any{"api_key": secret, "record": record})
+				return
+			}
+		}
+		if strings.HasPrefix(path, "/keys/") && strings.HasSuffix(path, "/revoke") && r.Method == http.MethodPost {
+			if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			id := strings.TrimSuffix(strings.TrimPrefix(path, "/keys/"), "/revoke")
+			if e := identityStore.RevokeAPIKey(ctx, id); e != nil {
+				http.Error(w, e.Error(), http.StatusConflict)
+				return
+			}
+			writeJSON(w, map[string]any{"id": id, "status": "revoked"})
+			return
+		}
 		if r.Method == http.MethodPost && path == "/jobs" {
 			var req struct {
 				ID          string          `json:"id"`

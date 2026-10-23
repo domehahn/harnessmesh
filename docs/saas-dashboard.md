@@ -56,6 +56,11 @@ URLs or request bodies are not trusted for authorization.
 
 ## Write APIs
 
+- `GET/POST /api/v1/dashboard/members` lists or manages tenant members. Owner
+  role is required.
+- `GET/POST /api/v1/dashboard/keys` lists keys or issues one for an existing
+  member. The secret is returned only on creation and owner role is required.
+- `POST /api/v1/dashboard/keys/{id}/revoke` revokes a tenant API key.
 - `POST /api/v1/dashboard/jobs` submits a durable job.
 - `POST /api/v1/dashboard/approvals/{id}` accepts `{ "status": "approved" }`
   or `{ "status": "rejected" }`.
