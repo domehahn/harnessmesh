@@ -50,7 +50,9 @@ jobs:
         run: go build ./cmd/harnessmesh
 
       - name: Production readiness gate (deterministic; no OpenAI inference)
-        run: make production-readiness
+        run: |
+          npx --prefix frontend playwright install --with-deps chromium
+          make production-readiness
 
       - name: Validate examples
         run: |
