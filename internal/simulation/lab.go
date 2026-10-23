@@ -24,11 +24,11 @@ type Scenario struct {
 }
 
 type Observation struct {
-	RetryScheduled bool
-	ApprovalRaised bool
-	Execution      string
-	ReplayStatus   string
-	ProviderState  string
+	RetryScheduled bool   `json:"retry_scheduled"`
+	ApprovalRaised bool   `json:"approval_raised"`
+	Execution      string `json:"execution"`
+	ReplayStatus   string `json:"replay_status"`
+	ProviderState  string `json:"provider_state"`
 }
 
 type Result struct {

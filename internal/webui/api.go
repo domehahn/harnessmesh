@@ -15,6 +15,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/runbundle"
+	"github.com/domehahn/harnessmesh/internal/simulation"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/tenant"
 )
@@ -471,6 +472,36 @@ func APIHandler(st store.Store) http.Handler {
 				}
 			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "failed_jobs": failed, "dead_jobs": dead, "unhealthy_agents": unhealthy, "requires_attention": len(failed)+len(dead)+len(unhealthy) > 0})
+		case "/simulation":
+			if r.Method == http.MethodGet {
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "scenarios": simulation.Catalog()})
+				return
+			}
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var request struct {
+				ScenarioID  string                 `json:"scenario_id"`
+				Observation simulation.Observation `json:"observation"`
+			}
+			if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&request) != nil {
+				http.Error(w, "invalid simulation request", http.StatusBadRequest)
+				return
+			}
+			var selected *simulation.Scenario
+			for _, scenario := range simulation.Catalog() {
+				if scenario.ID == request.ScenarioID {
+					copy := scenario
+					selected = &copy
+					break
+				}
+			}
+			if selected == nil {
+				http.Error(w, "unknown simulation scenario", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "scenario": selected, "result": simulation.Evaluate(*selected, request.Observation)})
 		case "/usage":
 			observations, e := st.QueryPerformanceObservations(ctx, who.Tenant, "", "")
 			if e != nil {
