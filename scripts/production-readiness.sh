@@ -44,6 +44,17 @@ run_gate OBSERVABILITY go test ./internal/provider -run 'Test.*(Diagnostic|Audit
 run_gate REDACTION go test ./internal/provider -run 'Test.*(Sensitive|Secret|Redact|Credential)'
 run_gate ZERO_API_BILLING go test ./internal/provider ./internal/config -run 'Test.*(ZeroCredit|ZeroAPIBilling|Metered|Policy)'
 
+# The React console is part of the production deployment when the console
+# profile is enabled. Keep its dependency graph and distributable covered by
+# the same deterministic gate as the control plane.
+if [[ -f frontend/package-lock.json ]]; then
+  run_gate FRONTEND_INSTALL npm --prefix frontend ci --no-audit --no-fund
+  run_gate FRONTEND_TYPECHECK npm --prefix frontend run typecheck
+  run_gate FRONTEND_BUILD npm --prefix frontend run build
+  run_gate FRONTEND_SMOKE npm --prefix frontend run test:smoke
+  run_gate FRONTEND_AUDIT npm --prefix frontend audit --audit-level=high
+fi
+
 if (( failed == 0 )); then
   echo "PRODUCTION_READY=PASS"
 else

@@ -30,6 +30,16 @@ docker compose -f compose.yaml -f compose.production.yaml \
   --profile mcp up -d
 ```
 
+To deploy the React SaaS console together with MCP, enable the `console`
+profile. The console is bound to loopback and should be published only through
+the deployment's TLS reverse proxy:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile console up -d
+curl -fsS http://127.0.0.1:3000/
+```
+
 For Docker/Kubernetes secret mounts, use `HARNESSMESH_MCP_TOKEN_FILE`,
 `HARNESSMESH_BRIDGE_TOKEN_FILE`, or `HARNESSMESH_PROVIDER_TOKEN_FILE`. The
 separate admin token remains required as `HARNESSMESH_ADMIN_TOKEN` by the
@@ -41,6 +51,17 @@ introspection via `HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL` and
 `HARNESSMESH_BRIDGE_OAUTH_INTROSPECTION_URL`. Bridge can require a scope with
 `HARNESSMESH_BRIDGE_REQUIRED_SCOPE`; MCP can require one with
 `HARNESSMESH_MCP_REQUIRED_SCOPE`. Introspection failures fail closed.
+
+The SaaS dashboard is served at `/dashboard`. Dashboard API requests require
+`X-HarnessMesh-API-Key` and are rate limited per client. Tune the default limit
+of 120 requests per minute with:
+
+```sh
+export HARNESSMESH_DASHBOARD_RATE_LIMIT=240
+```
+
+The browser keeps the API key only in session storage; the logout control
+removes it immediately.
 
 Verify:
 
@@ -154,3 +175,23 @@ Before a production release, require:
 - production config validation with strong tokens and sandbox requirements;
 - documented rollback version and verified backup;
 - an operator available for the first real task after rollout.
+
+## Launch acceptance checklist
+
+Complete these items before opening the service to customer traffic:
+
+- [ ] DNS and TLS terminate at the approved edge; loopback ports are not public.
+- [ ] Strong, unique MCP, Bridge, Provider, Admin, database, and API-key
+      credentials are stored in the deployment secret manager.
+- [ ] PostgreSQL migrations and a backup/restore drill have succeeded for the
+      exact release image.
+- [ ] The `mcp`, `console`, and any enabled provider/bridge services report
+      healthy and ready status.
+- [ ] The React console loads through the edge and tenant API-key access is
+      verified with a non-production test tenant.
+- [ ] A job submission, approval decision, session read, and usage read have
+      each been exercised end-to-end.
+- [ ] Prometheus/Grafana alerts have been tested, including readiness failure,
+      error growth, dead letters, rate-limit denials, and backup staleness.
+- [ ] Runtime isolation has passed on the target host and the rollback image,
+      migration plan, and on-call owner are recorded.

@@ -6,6 +6,24 @@
 # network namespace (`network_mode: none`). Control-plane egress remains
 # deployment-configurable for OAuth/tunnels and local inference backends.
 services:
+  harnessmesh-console:
+    profiles: ["console"]
+    build:
+      context: ./frontend
+    ports:
+      - "127.0.0.1:3000:80"
+    depends_on:
+      harnessmesh-mcp:
+        condition: service_healthy
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /var/cache/nginx:size=32m,mode=1777
+      - /var/run:size=8m,mode=1777
+    restart: unless-stopped
+
   harnessmesh-postgres:
     profiles: ["postgres"]
     image: postgres:16-alpine

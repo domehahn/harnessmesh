@@ -27,6 +27,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/telemetry"
 	"github.com/domehahn/harnessmesh/internal/tenant"
+	"github.com/domehahn/harnessmesh/internal/webui"
 )
 
 // Supported MCP protocol (spec revision) versions. defaultProtocolVersion is
@@ -148,6 +149,8 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 	if identityStore, ok := s.engine.Store().(store.IdentityStore); ok {
 		mux.Handle("/api/v1/identity/", identity.NewHandler(identityStore))
 	}
+	mux.Handle("/dashboard/", webui.Handler())
+	mux.Handle("/api/v1/dashboard/", webui.APIHandler(s.engine.Store()))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
