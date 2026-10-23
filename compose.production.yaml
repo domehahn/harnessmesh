@@ -33,6 +33,7 @@ services:
       - /var/cache/nginx:size=32m,mode=1777
       - /var/run:size=8m,mode=1777
     logging: *production-logging
+    stop_grace_period: 10s
     restart: unless-stopped
 
   harnessmesh-postgres:
@@ -50,6 +51,7 @@ services:
       timeout: 5s
       retries: 12
     logging: *production-logging
+    stop_grace_period: 30s
     restart: unless-stopped
 
   harnessmesh-postgres-migrate:
@@ -81,6 +83,8 @@ services:
       HARNESSMESH_REQUIRE_STRONG_TOKENS: "1"
       HARNESSMESH_ADMIN_TOKEN: "${HARNESSMESH_ADMIN_TOKEN:?HARNESSMESH_ADMIN_TOKEN must be set in production}"
     logging: *production-logging
+    stop_grace_period: 30s
+    restart: unless-stopped
 
   harnessmesh-bridge:
     user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
@@ -97,6 +101,8 @@ services:
     environment:
       HARNESSMESH_REQUIRE_STRONG_TOKENS: "1"
     logging: *production-logging
+    stop_grace_period: 30s
+    restart: unless-stopped
 
   harnessmesh-provider:
     user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
@@ -113,6 +119,8 @@ services:
     environment:
       HARNESSMESH_REQUIRE_STRONG_TOKENS: "1"
     logging: *production-logging
+    stop_grace_period: 30s
+    restart: unless-stopped
 
   harnessmesh-backup:
     user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
