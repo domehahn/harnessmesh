@@ -277,6 +277,31 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 				return
 			}
 			if len(parts) >= 2 && parts[1] == "participants" {
+				if len(parts) >= 4 && parts[3] == "mode" && r.Method == http.MethodPost {
+					if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+						http.Error(w, "forbidden", http.StatusForbidden)
+						return
+					}
+					var req struct {
+						Mode protocol.ParticipantActivityMode `json:"mode"`
+					}
+					if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req) != nil {
+						http.Error(w, "invalid participant mode", http.StatusBadRequest)
+						return
+					}
+					switch req.Mode {
+					case protocol.ParticipantModeActive, protocol.ParticipantModePassive, protocol.ParticipantModeOnDemand, protocol.ParticipantModePaused:
+					default:
+						http.Error(w, "invalid participant mode", http.StatusBadRequest)
+						return
+					}
+					if e := orchestrator.UpdateParticipantMode(ctx, id, parts[2], req.Mode); e != nil {
+						http.Error(w, e.Error(), http.StatusBadRequest)
+						return
+					}
+					writeJSON(w, map[string]any{"ok": true, "participant": parts[2], "mode": req.Mode})
+					return
+				}
 				if r.Method != http.MethodPost {
 					w.WriteHeader(http.StatusMethodNotAllowed)
 					return
