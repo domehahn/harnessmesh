@@ -36,10 +36,7 @@ services:
       - /var/cache/nginx:size=32m,mode=1777
       - /var/run:size=8m,mode=1777
     logging: *production-logging
-<<<<<<< HEAD
     stop_grace_period: 10s
-=======
->>>>>>> ff761a8 (hardening: bound production container logs)
     restart: unless-stopped
 
   harnessmesh-postgres:
@@ -57,10 +54,7 @@ services:
       timeout: 5s
       retries: 12
     logging: *production-logging
-<<<<<<< HEAD
     stop_grace_period: 30s
-=======
->>>>>>> ff761a8 (hardening: bound production container logs)
     restart: unless-stopped
 
   harnessmesh-postgres-migrate:
@@ -89,7 +83,6 @@ services:
     environment:
       HARNESSMESH_REQUIRE_STRONG_TOKENS: "1"
       HARNESSMESH_ADMIN_TOKEN: "${HARNESSMESH_ADMIN_TOKEN:?HARNESSMESH_ADMIN_TOKEN must be set in production}"
-<<<<<<< HEAD
       HARNESSMESH_POSTGRES_DSN: "${HARNESSMESH_POSTGRES_DSN:-}"
       HARNESSMESH_SECRET_BACKEND: "${HARNESSMESH_SECRET_BACKEND:-vault}"
       HARNESSMESH_SECRET_KEY: "${HARNESSMESH_SECRET_KEY:-}"
@@ -99,9 +92,6 @@ services:
     logging: *production-logging
     stop_grace_period: 30s
     restart: unless-stopped
-=======
-    logging: *production-logging
->>>>>>> ff761a8 (hardening: bound production container logs)
 
   harnessmesh-bridge:
     user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
@@ -116,7 +106,6 @@ services:
     environment:
       HARNESSMESH_REQUIRE_STRONG_TOKENS: "1"
     logging: *production-logging
-<<<<<<< HEAD
     stop_grace_period: 30s
     restart: unless-stopped
 
@@ -132,8 +121,6 @@ services:
     logging: *production-logging
     stop_grace_period: 30s
     restart: unless-stopped
-=======
->>>>>>> ff761a8 (hardening: bound production container logs)
 
   harnessmesh-provider:
     user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
