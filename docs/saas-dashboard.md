@@ -63,6 +63,8 @@ Dashboard API requests are rate limited per client; tune the limit with
 - `GET /api/v1/dashboard/spaces/{id}` reads a space; `POST` to
   `/lifecycle` pauses, resumes or stops it, and `POST` to `/participants`
   connects an external agent participant with an adapter and activity mode.
+- `GET /api/v1/dashboard/spaces/{id}/messages?channel=general` returns the
+  tenant-scoped collaboration transcript for the selected channel.
 
 Every response is derived from the authenticated tenant context. Tenant IDs in
 URLs or request bodies are not trusted for authorization.

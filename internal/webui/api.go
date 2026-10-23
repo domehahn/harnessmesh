@@ -32,6 +32,7 @@ type Orchestrator interface {
 	StopSpace(context.Context, string) error
 	AddParticipant(context.Context, string, *protocol.SpaceParticipant) error
 	UpdateParticipantMode(context.Context, string, string, protocol.ParticipantActivityMode) error
+	GetMessages(context.Context, string, string, string, int) ([]*protocol.PeerEnvelope, error)
 }
 
 func APIHandler(st store.Store) http.Handler { return APIHandlerWithOrchestrator(st, nil) }
@@ -182,6 +183,23 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator) http.
 			}
 			if len(parts) == 1 && r.Method == http.MethodGet {
 				writeJSON(w, space)
+				return
+			}
+			if len(parts) >= 2 && parts[1] == "messages" && r.Method == http.MethodGet {
+				channelID := r.URL.Query().Get("channel")
+				if channelID == "" {
+					channelID = "general"
+				}
+				threadID := r.URL.Query().Get("thread")
+				messages, e := orchestrator.GetMessages(ctx, id, channelID, threadID, 100)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				if messages == nil {
+					messages = []*protocol.PeerEnvelope{}
+				}
+				writeJSON(w, map[string]any{"space_id": id, "channel": channelID, "messages": messages})
 				return
 			}
 			if len(parts) >= 2 && parts[1] == "lifecycle" {

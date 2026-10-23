@@ -191,6 +191,10 @@ func (s *SpaceService) ListSpaces(ctx context.Context) ([]*protocol.Collaboratio
 	return s.store.ListSpaces(ctx)
 }
 
+func (s *SpaceService) GetMessages(ctx context.Context, spaceID, channelID, threadID string, limit int) ([]*protocol.PeerEnvelope, error) {
+	return s.store.GetSpaceMessages(ctx, spaceID, channelID, threadID, limit)
+}
+
 func (s *SpaceService) PauseSpace(ctx context.Context, id string) error {
 	return s.store.UpdateSpaceLifecycle(ctx, id, protocol.SpaceStatePaused)
 }
