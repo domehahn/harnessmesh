@@ -5,6 +5,7 @@ harnessmesh.json
 .env
 *.log
 .DS_Store
+node_modules/
 .idea/
 .vscode/
 coverage.out
