@@ -36,6 +36,101 @@ bin/harnessmesh code impact --repo . --query Config
 Restart-safe agent work can be submitted as tenant-scoped durable jobs; see
 [`docs/durable-jobs.md`](docs/durable-jobs.md).
 
+## Lokale Multi-Agent-Demo beobachten
+
+Der folgende Ablauf startet die Control Plane, die Bridge und die React-Konsole
+lokal. Damit kannst du Sessions, Jobs, Approvals und Agent-Health in der UI
+sehen und gleichzeitig die Kommunikation über Logs und Prometheus-Metriken
+beobachten.
+
+```bash
+make build
+export HARNESSMESH_MCP_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_BRIDGE_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_PROVIDER_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_ADMIN_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile bridge --profile console up --build -d
+```
+
+Für den React-Login einmalig einen lokalen Tenant und API-Key anlegen. Der
+ausgegebene Key wird nur einmal angezeigt:
+
+```bash
+bin/harnessmesh tenant create --id tenant-demo --slug demo --name "Local Demo"
+bin/harnessmesh tenant member --id tenant-demo --subject demo-user --role owner
+bin/harnessmesh tenant key --id tenant-demo --subject demo-user
+```
+
+Diesen Key in der Console unter `http://127.0.0.1:3000` eingeben.
+
+Danach sind die lokalen Beobachtungspunkte:
+
+| Oberfläche/Endpoint | Zweck |
+| --- | --- |
+| `http://127.0.0.1:3000` | React-SaaS-Konsole; API-Key des lokalen Tenant-Setups eingeben |
+| `http://127.0.0.1:8787/healthz` | MCP-Control-Plane-Health |
+| `http://127.0.0.1:8787/readyz` | MCP-Readiness |
+| `http://127.0.0.1:8787/metrics` | Requests, Fehler, Rate Limits und Agent-Signale |
+| `http://127.0.0.1:8788` | lokale REST-/WebSocket-Bridge für UI-Clients |
+
+Die laufende Agent-Kommunikation siehst du parallel im Terminal:
+
+```bash
+docker compose logs -f harnessmesh-mcp harnessmesh-bridge
+docker compose ps
+curl -fsS http://127.0.0.1:8787/metrics
+```
+
+Für einen reproduzierbaren Collaboration-Lauf kannst du anschließend einen
+Task mit der vorhandenen Multi-Agent-Konfiguration starten, zum Beispiel:
+
+```bash
+bin/harnessmesh collaborate \
+  --config configs/claude-codex.json \
+  --task "Analysiere den aktuellen Projektstand und erstelle einen Review-Plan"
+```
+
+Die erzeugten Sessions, Nachrichten, Findings, Approvals und Jobs erscheinen
+anschließend in der Konsole. Die Kommunikation bleibt tenant-scoped und wird
+nicht aus Browserdaten simuliert.
+
+### Den verwendeten Tunnel sehen
+
+Der Compose-Stack öffnet absichtlich keinen öffentlichen Tunnel. Für einen
+temporären ChatGPT-MCP-Tunnel startet der Bootstrap-Wrapper den MCP-Prozess
+und zeigt die öffentliche URL im Terminal:
+
+```bash
+make build
+HARNESSMESH_TUNNEL=auto ./scripts/start-chatgpt-mcp.sh
+```
+
+Dabei wird bei verfügbarer `ngrok`-Installation die Tunnel-URL ausgegeben und
+zusätzlich nach `.harnessmesh/chatgpt-mcp-connector.json` geschrieben. Die
+öffentliche URL und der aktive Tunnel lassen sich mit den ngrok-Statusdaten
+prüfen:
+
+```bash
+cat .harnessmesh/chatgpt-mcp-connector.json
+curl -fsS http://127.0.0.1:4040/api/tunnels
+```
+
+Der Tunnel läuft nur solange das Bootstrap-Skript läuft. Mit `Ctrl-C` werden
+MCP-Prozess und temporärer Tunnel beendet. Für einen dauerhaften Tunnel wird
+stattdessen ein benannter Cloudflare-Tunnel oder ein eigener TLS-Reverse-Proxy
+vor `127.0.0.1:8787` benötigt; siehe
+[`docs/chatgpt-mcp-bootstrap.md`](docs/chatgpt-mcp-bootstrap.md).
+
+Zum Beenden der lokalen Demo:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile bridge --profile console down
+```
+
 ## Installation und vollständiges Setup
 
 ### Native Installation
