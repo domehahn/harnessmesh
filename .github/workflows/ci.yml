@@ -11,7 +11,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The deterministic production gate runs the Go race suite, frontend
+    # install/build/E2E/audit, compose checks and image builds in one job.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
