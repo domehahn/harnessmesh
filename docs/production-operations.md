@@ -40,6 +40,19 @@ docker compose -f compose.yaml -f compose.production.yaml \
 curl -fsS http://127.0.0.1:3000/
 ```
 
+The production overlay constrains the console by default to 0.5 CPU, 128 MiB
+RAM, and 64 processes. Tune these values only after observing the deployment:
+
+```sh
+export HARNESSMESH_CONSOLE_CPUS=0.5
+export HARNESSMESH_CONSOLE_MEMORY_LIMIT=128m
+export HARNESSMESH_CONSOLE_PIDS_LIMIT=64
+```
+
+All services in the production overlay use bounded Docker JSON logs (10 MiB per
+file, five files). Forward logs to the deployment's central collector before
+discarding local container logs.
+
 For Docker/Kubernetes secret mounts, use `HARNESSMESH_MCP_TOKEN_FILE`,
 `HARNESSMESH_BRIDGE_TOKEN_FILE`, or `HARNESSMESH_PROVIDER_TOKEN_FILE`. The
 separate admin token remains required as `HARNESSMESH_ADMIN_TOKEN` by the
