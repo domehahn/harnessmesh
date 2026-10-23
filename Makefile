@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build extension compose-config backup-restore-smoke staging-load-smoke runtime-isolation-check check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension compose-config backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -46,6 +46,9 @@ staging-load-smoke:
 
 runtime-isolation-check:
 	./scripts/runtime-isolation-check.sh
+
+simulation:
+	go test ./internal/simulation
 
 check: fmt test vet build
 

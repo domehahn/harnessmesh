@@ -43,6 +43,7 @@ run_gate CONCURRENCY go test -race ./internal/provider -run 'Test.*(Concurrent|T
 run_gate OBSERVABILITY go test ./internal/provider -run 'Test.*(Diagnostic|Audit|Log|Redact)'
 run_gate REDACTION go test ./internal/provider -run 'Test.*(Sensitive|Secret|Redact|Credential)'
 run_gate ZERO_API_BILLING go test ./internal/provider ./internal/config -run 'Test.*(ZeroCredit|ZeroAPIBilling|Metered|Policy)'
+run_gate SIMULATION go test ./internal/simulation
 
 # The React console is part of the production deployment when the console
 # profile is enabled. Keep its dependency graph and distributable covered by
