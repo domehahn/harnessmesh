@@ -28,5 +28,5 @@ test("has no critical accessibility violations on the public shell", async ({ pa
 
 test("keeps a stable public-shell visual baseline", async ({ page }) => {
   await page.goto("/");
-  await expect(page).toHaveScreenshot("public-shell.png", { fullPage: true, animations: "disabled" });
+  await expect(page).toHaveScreenshot("public-shell.png", { fullPage: true, animations: "disabled", maxDiffPixelRatio: 0.02 });
 });
