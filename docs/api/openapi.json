@@ -49,6 +49,10 @@
     "/api/v1/dashboard/summary": {
       "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Tenant-scoped dashboard summary"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "429": {"description": "Rate limited"}}}
     },
+    "/api/v1/dashboard/sessions/{sessionId}/events/stream": {
+      "parameters": [{"name": "sessionId", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Server-Sent Events stream of persisted session events", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "404": {"$ref": "#/components/responses/NotFound"}}}
+    },
     "/api/v1/dashboard/incident": {
       "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Tenant-scoped incident posture"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
     },

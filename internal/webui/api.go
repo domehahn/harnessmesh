@@ -3,6 +3,7 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -629,6 +630,10 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 		}
 		if strings.HasPrefix(path, "/sessions/") {
 			sessionPath := strings.TrimPrefix(path, "/sessions/")
+			stream := strings.HasSuffix(sessionPath, "/events/stream")
+			if stream {
+				sessionPath = strings.TrimSuffix(sessionPath, "/events/stream")
+			}
 			export := strings.HasSuffix(sessionPath, "/bundle")
 			id := strings.TrimSuffix(sessionPath, "/bundle")
 			session, e := st.GetSessionForTenant(ctx, id, who.Tenant)
@@ -639,6 +644,47 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 			if session == nil {
 				http.NotFound(w, r)
 				return
+			}
+			if stream {
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				lastCount := 0
+				ticker := time.NewTicker(2 * time.Second)
+				defer ticker.Stop()
+				for {
+					events, eventErr := st.GetEvents(r.Context(), id)
+					if eventErr != nil {
+						return
+					}
+					if len(events) < lastCount {
+						lastCount = 0
+					}
+					for _, event := range events[lastCount:] {
+						payload, marshalErr := json.Marshal(event)
+						if marshalErr != nil {
+							continue
+						}
+						_, _ = fmt.Fprintf(w, "event: collaboration\\ndata: %s\\n\\n", payload)
+					}
+					if len(events) > lastCount {
+						lastCount = len(events)
+						flusher.Flush()
+					} else {
+						_, _ = fmt.Fprint(w, ": keepalive\\n\\n")
+						flusher.Flush()
+					}
+					select {
+					case <-r.Context().Done():
+						return
+					case <-ticker.C:
+					}
+				}
 			}
 			messages, e := st.GetMessages(ctx, id)
 			if e != nil {

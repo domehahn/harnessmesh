@@ -58,6 +58,9 @@ Dashboard API requests are rate limited per client; tune the limit with
   and immutable status-transition audit history.
 - `GET /api/v1/dashboard/sessions/{id}/bundle` downloads a deterministic ZIP
   run bundle. Sensitive credentials are redacted before the bundle is written.
+- `GET /api/v1/dashboard/sessions/{id}/events/stream` provides a tenant-scoped
+  Server-Sent Events stream of persisted session events. It requires the same
+  API-key or OIDC authentication as the dashboard API.
 - `GET/POST /api/v1/dashboard/spaces` lists or creates tenant-owned visual
   collaboration spaces.
 - `GET /api/v1/dashboard/agents` lists the safe, non-secret configured agent
