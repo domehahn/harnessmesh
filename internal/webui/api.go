@@ -35,9 +35,17 @@ type Orchestrator interface {
 	GetMessages(context.Context, string, string, string, int) ([]*protocol.PeerEnvelope, error)
 }
 
+type Messenger interface {
+	Publish(context.Context, *protocol.PublishRequest) (*protocol.PublishResponse, error)
+}
+
 func APIHandler(st store.Store) http.Handler { return APIHandlerWithOrchestrator(st, nil) }
 
-func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator) http.Handler {
+func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messengers ...Messenger) http.Handler {
+	var messenger Messenger
+	if len(messengers) > 0 {
+		messenger = messengers[0]
+	}
 	const maxRateLimitClients = 10000
 	var rateMu sync.Mutex
 	windows := map[string]struct {
@@ -200,6 +208,36 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator) http.
 					messages = []*protocol.PeerEnvelope{}
 				}
 				writeJSON(w, map[string]any{"space_id": id, "channel": channelID, "messages": messages})
+				return
+			}
+			if len(parts) >= 2 && parts[1] == "messages" && r.Method == http.MethodPost {
+				if messenger == nil {
+					http.Error(w, "messenger unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				var req struct {
+					Channel  string   `json:"channel"`
+					From     string   `json:"from"`
+					To       string   `json:"to"`
+					Message  string   `json:"message"`
+					Mentions []string `json:"mentions"`
+				}
+				if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req) != nil || strings.TrimSpace(req.Message) == "" {
+					http.Error(w, "invalid message request", http.StatusBadRequest)
+					return
+				}
+				if req.Channel == "" {
+					req.Channel = "general"
+				}
+				if req.From == "" {
+					req.From = who.Subject
+				}
+				response, e := messenger.Publish(ctx, &protocol.PublishRequest{SpaceID: id, Channel: req.Channel, From: req.From, To: req.To, Message: req.Message, Mentions: req.Mentions})
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, response)
 				return
 			}
 			if len(parts) >= 2 && parts[1] == "lifecycle" {

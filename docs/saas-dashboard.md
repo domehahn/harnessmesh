@@ -65,6 +65,8 @@ Dashboard API requests are rate limited per client; tune the limit with
   connects an external agent participant with an adapter and activity mode.
 - `GET /api/v1/dashboard/spaces/{id}/messages?channel=general` returns the
   tenant-scoped collaboration transcript for the selected channel.
+- `POST /api/v1/dashboard/spaces/{id}/messages` publishes an operator message
+  through the Collaboration Engine with `{ "channel", "message", "to", "mentions" }`.
 
 Every response is derived from the authenticated tenant context. Tenant IDs in
 URLs or request bodies are not trusted for authorization.
