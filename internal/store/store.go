@@ -204,6 +204,14 @@ type Store interface {
 	Close() error
 }
 
+// JobEventStore is an optional extension implemented by durable job stores.
+// Keeping it separate preserves compatibility with narrow store adapters while
+// allowing workers and the dashboard to expose a persistent execution trail.
+type JobEventStore interface {
+	AppendJobEvent(context.Context, *JobEvent) error
+	ListJobEvents(context.Context, string, int) ([]JobEvent, error)
+}
+
 type EventRecord struct {
 	ID        int64          `json:"id"`
 	SessionID string         `json:"session_id"`
@@ -301,6 +309,16 @@ type DurableJob struct {
 	LastError   string          `json:"last_error,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
+}
+
+type JobEvent struct {
+	ID        string          `json:"id"`
+	JobID     string          `json:"job_id"`
+	Tenant    string          `json:"tenant"`
+	Type      string          `json:"type"`
+	Message   string          `json:"message,omitempty"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 type TenantRecord struct {
@@ -1237,6 +1255,22 @@ func (s *SQLiteStore) migrate() error {
 			sql: `
 				ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
 				CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id, created_at);
+			`,
+		},
+		{
+			version: 19,
+			sql: `
+				CREATE TABLE IF NOT EXISTS job_events (
+					id TEXT PRIMARY KEY,
+					job_id TEXT NOT NULL,
+					tenant TEXT NOT NULL,
+					type TEXT NOT NULL,
+					message TEXT NOT NULL DEFAULT '',
+					payload_json TEXT NOT NULL DEFAULT '{}',
+					created_at TIMESTAMP NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id, created_at);
+				CREATE INDEX IF NOT EXISTS idx_job_events_tenant ON job_events(tenant, created_at);
 			`,
 		},
 	}

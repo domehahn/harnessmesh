@@ -35,6 +35,8 @@ Dashboard API requests are rate limited per client; tune the limit with
 - `GET /api/v1/dashboard/sessions`
 - `GET /api/v1/dashboard/sessions/{id}`
 - `GET /api/v1/dashboard/jobs?status=...`
+- `GET /api/v1/dashboard/jobs/{id}` includes the tenant-scoped persistent event history.
+- `GET /api/v1/dashboard/jobs/{id}/events` returns the durable execution timeline.
 - `GET /api/v1/dashboard/approvals?status=...`
 - `GET /api/v1/dashboard/usage`
 - `GET /api/v1/dashboard/optimization` returns tenant-scoped usage buckets by
