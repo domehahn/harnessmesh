@@ -76,6 +76,11 @@ Dashboard API requests are rate limited per client; tune the limit with
 Every response is derived from the authenticated tenant context. Tenant IDs in
 URLs or request bodies are not trusted for authorization.
 
+The sessions, jobs and approvals list endpoints preserve their legacy array
+response by default. Add `page` or `page_size` to receive a paginated response
+with `items`, `page`, `page_size`, `total` and `has_more`; page size is capped
+at 200.
+
 ## Write APIs
 
 - `GET/POST /api/v1/dashboard/members` lists or manages tenant members. Owner

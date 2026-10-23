@@ -40,6 +40,20 @@ type Messenger interface {
 	Publish(context.Context, *protocol.PublishRequest) (*protocol.PublishResponse, error)
 }
 
+func dashboardPage(r *http.Request) (int, int) {
+	page, pageSize := 1, 50
+	if value, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && value > 0 {
+		page = value
+	}
+	if value, err := strconv.Atoi(r.URL.Query().Get("page_size")); err == nil && value > 0 {
+		pageSize = value
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	return page, pageSize
+}
+
 func APIHandler(st store.Store) http.Handler { return APIHandlerWithOrchestrator(st, nil) }
 
 func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messengers ...Messenger) http.Handler {
@@ -707,14 +721,40 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
 				return
 			}
-			writeJSON(w, v)
+			if r.URL.Query().Get("page") == "" && r.URL.Query().Get("page_size") == "" {
+				writeJSON(w, v)
+				return
+			}
+			page, pageSize := dashboardPage(r)
+			start := (page - 1) * pageSize
+			if start > len(v) {
+				start = len(v)
+			}
+			end := start + pageSize
+			if end > len(v) {
+				end = len(v)
+			}
+			writeJSON(w, map[string]any{"items": v[start:end], "page": page, "page_size": pageSize, "total": len(v), "has_more": end < len(v)})
 		case "/jobs":
 			v, e := st.ListJobs(ctx, who.Tenant, r.URL.Query().Get("status"), 200)
 			if e != nil {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
 				return
 			}
-			writeJSON(w, v)
+			if r.URL.Query().Get("page") == "" && r.URL.Query().Get("page_size") == "" {
+				writeJSON(w, v)
+				return
+			}
+			page, pageSize := dashboardPage(r)
+			start := (page - 1) * pageSize
+			if start > len(v) {
+				start = len(v)
+			}
+			end := start + pageSize
+			if end > len(v) {
+				end = len(v)
+			}
+			writeJSON(w, map[string]any{"items": v[start:end], "page": page, "page_size": pageSize, "total": len(v), "has_more": end < len(v)})
 		case "/approvals":
 			status := protocol.ApprovalStatus(r.URL.Query().Get("status"))
 			v, e := st.ListApprovals(ctx, status)
@@ -722,7 +762,20 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
 				return
 			}
-			writeJSON(w, v)
+			if r.URL.Query().Get("page") == "" && r.URL.Query().Get("page_size") == "" {
+				writeJSON(w, v)
+				return
+			}
+			page, pageSize := dashboardPage(r)
+			start := (page - 1) * pageSize
+			if start > len(v) {
+				start = len(v)
+			}
+			end := start + pageSize
+			if end > len(v) {
+				end = len(v)
+			}
+			writeJSON(w, map[string]any{"items": v[start:end], "page": page, "page_size": pageSize, "total": len(v), "has_more": end < len(v)})
 		case "/health":
 			v, e := st.ListAgentHealth(ctx)
 			if e != nil {
