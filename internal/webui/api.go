@@ -121,6 +121,9 @@ func APIHandler(st store.Store) http.Handler {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
+			if events, ok := st.(store.JobEventStore); ok {
+				_ = events.AppendJobEvent(ctx, &store.JobEvent{JobID: job.ID, Tenant: job.Tenant, Type: "submitted", Message: "job accepted through dashboard"})
+			}
 			writeJSON(w, job)
 			return
 		}
@@ -185,11 +188,36 @@ func APIHandler(st store.Store) http.Handler {
 				return
 			}
 			job.Status, job.NextRunAt, job.LastError = status, nextRun, lastError
+			if events, ok := st.(store.JobEventStore); ok {
+				_ = events.AppendJobEvent(ctx, &store.JobEvent{JobID: job.ID, Tenant: job.Tenant, Type: req.Action, Message: "job action requested through dashboard"})
+			}
 			writeJSON(w, job)
 			return
 		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.HasPrefix(path, "/jobs/") && strings.HasSuffix(path, "/events") {
+			id := strings.TrimSuffix(strings.TrimPrefix(path, "/jobs/"), "/events")
+			job, e := st.GetJob(ctx, id)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if job == nil || job.Tenant != who.Tenant {
+				http.NotFound(w, r)
+				return
+			}
+			events := []store.JobEvent{}
+			if eventStore, ok := st.(store.JobEventStore); ok {
+				events, e = eventStore.ListJobEvents(ctx, id, 200)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+			}
+			writeJSON(w, map[string]any{"job_id": id, "events": events})
 			return
 		}
 		if strings.HasPrefix(path, "/jobs/") {
@@ -203,7 +231,19 @@ func APIHandler(st store.Store) http.Handler {
 				http.NotFound(w, r)
 				return
 			}
-			writeJSON(w, job)
+			response := map[string]any{}
+			encoded, _ := json.Marshal(job)
+			_ = json.Unmarshal(encoded, &response)
+			response["events"] = []store.JobEvent{}
+			if eventStore, ok := st.(store.JobEventStore); ok {
+				events, eventErr := eventStore.ListJobEvents(ctx, id, 200)
+				if eventErr != nil {
+					http.Error(w, eventErr.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				response["events"] = events
+			}
+			writeJSON(w, response)
 			return
 		}
 		if strings.HasPrefix(path, "/sessions/") {
@@ -227,7 +267,12 @@ func APIHandler(st store.Store) http.Handler {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
 				return
 			}
-			writeJSON(w, map[string]any{"session": session, "messages": messages, "findings": findings})
+			events, e := st.GetEvents(ctx, id)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			writeJSON(w, map[string]any{"session": session, "messages": messages, "findings": findings, "timeline": events})
 			return
 		}
 		switch path {
@@ -308,6 +353,13 @@ func APIHandler(st store.Store) http.Handler {
 				DurationMS   int64   `json:"duration_ms"`
 				Requests     int     `json:"requests"`
 			}
+			type qualityBucket struct {
+				Agent       string  `json:"agent"`
+				Successful  int64   `json:"successful"`
+				Failed      int64   `json:"failed"`
+				SuccessRate float64 `json:"success_rate"`
+				SampleCount int64   `json:"sample_count"`
+			}
 			byAgent := map[string]*usageBucket{}
 			byModel := map[string]*usageBucket{}
 			bySession := map[string]*usageBucket{}
@@ -350,6 +402,15 @@ func APIHandler(st store.Store) http.Handler {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
 				return
 			}
+			quality := make([]qualityBucket, 0, len(health))
+			for _, item := range health {
+				samples := item.Successful + item.Failed
+				rate := 0.0
+				if samples > 0 {
+					rate = float64(item.Successful) / float64(samples)
+				}
+				quality = append(quality, qualityBucket{Agent: item.Agent, Successful: item.Successful, Failed: item.Failed, SuccessRate: rate, SampleCount: samples})
+			}
 			connections := make([]map[string]any, 0, len(health))
 			for _, item := range health {
 				connections = append(connections, map[string]any{
@@ -362,6 +423,7 @@ func APIHandler(st store.Store) http.Handler {
 			writeJSON(w, map[string]any{
 				"tenant": who.Tenant, "connections": connections,
 				"by_agent": toList(byAgent), "by_model": toList(byModel), "by_session": toList(bySession),
+				"quality":      quality,
 				"credits":      map[string]any{"available": false, "reason": "provider quota API not configured", "used_percent": nil, "next_available_at": nil},
 				"optimization": map[string]any{"status": "observational", "recommendation": "Collect more completed usage and quality outcomes before changing routing", "automatic_changes": false},
 			})
