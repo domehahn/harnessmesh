@@ -11,7 +11,8 @@
   ],
   "tags": [
     {"name": "Bridge"},
-    {"name": "Provider"}
+    {"name": "Provider"},
+    {"name": "Dashboard"}
   ],
   "paths": {
     "/healthz": {
@@ -44,10 +45,23 @@
     },
     "/v1/responses": {
       "post": {"tags": ["Provider"], "security": [{"BearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model", "input"], "properties": {"model": {"type": "string"}, "input": {}, "stream": {"type": "boolean"}}, "additionalProperties": true}}}}, "responses": {"200": {"description": "Responses API result or SSE stream"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "429": {"description": "Rate limited"}, "502": {"description": "Backend unavailable"}}}
+    },
+    "/api/v1/dashboard/summary": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Tenant-scoped dashboard summary"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "429": {"description": "Rate limited"}}}
+    },
+    "/api/v1/dashboard/incident": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Tenant-scoped incident posture"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/api/v1/dashboard/optimization": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Usage, quality, quota and routing projection"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/api/v1/dashboard/simulation": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Deterministic safety scenario catalog"}, "401": {"$ref": "#/components/responses/Unauthorized"}}},
+      "post": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["scenario_id", "observation"], "properties": {"scenario_id": {"type": "string"}, "observation": {"type": "object"}}, "additionalProperties": false}}}}, "responses": {"200": {"description": "Deterministic scenario result"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
     }
   },
   "components": {
-    "securitySchemes": {"BearerAuth": {"type": "http", "scheme": "bearer"}},
+    "securitySchemes": {"BearerAuth": {"type": "http", "scheme": "bearer"}, "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-HarnessMesh-API-Key"}},
     "parameters": {
       "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": false, "schema": {"type": "string", "minLength": 1, "maxLength": 256}},
       "TaskId": {"name": "taskId", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}

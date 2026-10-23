@@ -82,6 +82,10 @@ through URL fragments (`#sessions`, `#jobs`, `#approvals`, `#optimization`,
 observational: routing recommendations and provider quota projections do not
 mutate production routing automatically.
 
+The dashboard read and simulation contracts are also represented in
+[`docs/api/openapi.json`](api/openapi.json), including both API-key and OIDC
+Bearer authentication schemes.
+
 ## Usage and cost boundary
 
 Usage visibility is available, including observation and job counts and the
