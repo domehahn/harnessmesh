@@ -334,6 +334,17 @@ docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
 
 Diesen Key in der Console unter `http://127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-3000}` eingeben.
 
+Für den React-Login einmalig einen lokalen Tenant und API-Key anlegen. Der
+ausgegebene Key wird nur einmal angezeigt:
+
+```bash
+bin/harnessmesh tenant create --id tenant-demo --slug demo --name "Local Demo"
+bin/harnessmesh tenant member --id tenant-demo --subject demo-user --role owner
+bin/harnessmesh tenant key --id tenant-demo --subject demo-user
+```
+
+Diesen Key in der Console unter `http://127.0.0.1:3000` eingeben.
+
 Danach sind die lokalen Beobachtungspunkte:
 
 | Oberfläche/Endpoint | Zweck |
