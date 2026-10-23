@@ -55,16 +55,24 @@ docker compose -f compose.yaml -f compose.production.yaml \
   --profile mcp --profile bridge --profile console up --build -d
 ```
 
-Für den React-Login einmalig einen lokalen Tenant und API-Key anlegen. Der
-ausgegebene Key wird nur einmal angezeigt:
+Für den React-Login einmalig einen lokalen Tenant und API-Key im Docker-Volume
+des laufenden MCP-Containers anlegen. Der ausgegebene Key wird nur einmal
+angezeigt. Die CLI muss im Container laufen, damit sie dieselbe SQLite-Datenbank
+wie die Console verwendet:
 
 ```bash
-bin/harnessmesh tenant create --id tenant-demo --slug demo --name "Local Demo"
-bin/harnessmesh tenant member --id tenant-demo --subject demo-user --role owner
-bin/harnessmesh tenant key --id tenant-demo --subject demo-user
+docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
+  /usr/local/bin/harnessmesh tenant create \
+  --id tenant-demo --slug demo --name "Local Demo"
+docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
+  /usr/local/bin/harnessmesh tenant member \
+  --id tenant-demo --subject demo-user --role owner
+docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
+  /usr/local/bin/harnessmesh tenant key \
+  --id tenant-demo --subject demo-user
 ```
 
-Diesen Key in der Console unter `http://127.0.0.1:3000` eingeben.
+Diesen Key in der Console unter `http://127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-3000}` eingeben.
 
 Danach sind die lokalen Beobachtungspunkte:
 
