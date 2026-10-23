@@ -195,6 +195,22 @@ func (s *SpaceService) GetMessages(ctx context.Context, spaceID, channelID, thre
 	return s.store.GetSpaceMessages(ctx, spaceID, channelID, threadID, limit)
 }
 
+func (s *SpaceService) ConfiguredAgents() []map[string]any {
+	agents := make([]map[string]any, 0, len(s.cfg.Agents))
+	for name, agent := range s.cfg.Agents {
+		adapter := agent.Adapter
+		if adapter == "" {
+			adapter = agent.Kind
+		}
+		execution := agent.ExecutionMode
+		if execution == "" {
+			execution = protocol.ExecutionModeManaged
+		}
+		agents = append(agents, map[string]any{"id": name, "adapter": adapter, "role": agent.Role, "mode": agent.Mode, "execution_mode": execution, "writable": agent.Writable, "capabilities": agent.Capabilities})
+	}
+	return agents
+}
+
 func (s *SpaceService) PauseSpace(ctx context.Context, id string) error {
 	return s.store.UpdateSpaceLifecycle(ctx, id, protocol.SpaceStatePaused)
 }

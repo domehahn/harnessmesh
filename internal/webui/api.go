@@ -33,6 +33,7 @@ type Orchestrator interface {
 	AddParticipant(context.Context, string, *protocol.SpaceParticipant) error
 	UpdateParticipantMode(context.Context, string, string, protocol.ParticipantActivityMode) error
 	GetMessages(context.Context, string, string, string, int) ([]*protocol.PeerEnvelope, error)
+	ConfiguredAgents() []map[string]any
 }
 
 type Messenger interface {
@@ -305,6 +306,14 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 				return
 			}
 			http.NotFound(w, r)
+			return
+		}
+		if path == "/agents" && r.Method == http.MethodGet {
+			if orchestrator == nil {
+				http.Error(w, "orchestrator unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestrator.ConfiguredAgents()})
 			return
 		}
 		if path == "/members" {

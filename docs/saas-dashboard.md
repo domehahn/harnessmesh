@@ -60,6 +60,8 @@ Dashboard API requests are rate limited per client; tune the limit with
   run bundle. Sensitive credentials are redacted before the bundle is written.
 - `GET/POST /api/v1/dashboard/spaces` lists or creates tenant-owned visual
   collaboration spaces.
+- `GET /api/v1/dashboard/agents` lists the safe, non-secret configured agent
+  catalog available for visual orchestration.
 - `GET /api/v1/dashboard/spaces/{id}` reads a space; `POST` to
   `/lifecycle` pauses, resumes or stops it, and `POST` to `/participants`
   connects an external agent participant with an adapter and activity mode.
