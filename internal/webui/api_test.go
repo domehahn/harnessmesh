@@ -139,3 +139,21 @@ func TestDashboardAPIAcceptsOAuthIntrospection(t *testing.T) {
 		t.Fatalf("oauth dashboard status=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+func TestProviderQuotaProjection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer quota-secret" {
+			http.Error(w, "missing bearer", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"provider":"example","used_percent":42.5,"next_available_at":"2030-01-01T00:00:00Z","remaining":575,"limit":1000}`))
+	}))
+	defer server.Close()
+	t.Setenv("HARNESSMESH_PROVIDER_QUOTA_URL", server.URL)
+	t.Setenv("HARNESSMESH_PROVIDER_QUOTA_TOKEN", "quota-secret")
+	quota := providerQuota(context.Background())
+	if !quota.Available || quota.UsedPercent == nil || *quota.UsedPercent != 42.5 || quota.Provider != "example" {
+		t.Fatalf("unexpected quota projection: %+v", quota)
+	}
+}
