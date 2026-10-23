@@ -25,6 +25,9 @@ the limit with `HARNESSMESH_DASHBOARD_RATE_LIMIT`.
 - `GET /api/v1/dashboard/jobs?status=...`
 - `GET /api/v1/dashboard/approvals?status=...`
 - `GET /api/v1/dashboard/usage`
+- `GET /api/v1/dashboard/optimization` returns tenant-scoped usage buckets by
+  agent, model and session, persisted token/cost/duration data, agent health,
+  and an explicit provider-quota availability state.
 - `GET /api/v1/dashboard/health`
 
 Every response is derived from the authenticated tenant context. Tenant IDs in
