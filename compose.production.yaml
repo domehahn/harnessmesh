@@ -27,8 +27,6 @@ services:
     cpus: ${HARNESSMESH_CONSOLE_CPUS:-0.5}
     read_only: true
     cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
     tmpfs:
       - /var/cache/nginx:size=32m,mode=1777
       - /var/run:size=8m,mode=1777
@@ -75,8 +73,6 @@ services:
     cpus: ${HARNESSMESH_MCP_CPUS:-2.0}
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
     tmpfs:
       - /tmp:size=256m,mode=1777
     environment:
@@ -94,8 +90,6 @@ services:
     cpus: ${HARNESSMESH_BRIDGE_CPUS:-1.0}
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
     tmpfs:
       - /tmp:size=128m,mode=1777
     environment:
@@ -130,8 +124,6 @@ services:
     cpus: ${HARNESSMESH_BACKUP_CPUS:-1.0}
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
     logging: *production-logging
 
   harnessmesh-restore:
@@ -142,8 +134,6 @@ services:
     cpus: ${HARNESSMESH_RESTORE_CPUS:-1.0}
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
     logging: *production-logging
 
 volumes:
