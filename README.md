@@ -13,11 +13,27 @@ Current source version: **v0.1.0**.
 ## SaaS dashboard
 
 The embedded control-plane UI is available at `/dashboard` when the MCP server
-is running. Connect with a tenant API key; the dashboard provides tenant
-overview, sessions, jobs, approvals, usage/billing visibility and monitoring.
-Dashboard API routes are tenant-scoped and rate limited. See
+is running. The production React console is served by the `console` Compose
+profile and provides the same tenant-scoped control plane with:
+
+- tenant overview, sessions and jobs with detail views;
+- persistent job events, causal session timelines and redacted run-bundle export;
+- approval decisions, bulk actions and immutable approval audit history;
+- usage, input/output token accounting, configured cost, model quality and trust scores;
+- MCP/Bridge health probes, agent health, incidents, failed jobs and dead letters;
+- routing recommendations, provider-quota projection and deterministic Simulation Lab;
+- tenant members, roles and API-key issuance/revocation;
+- deep links, local pagination, keyboard-accessible navigation and authenticated E2E coverage.
+
+The console stores credentials only in browser session storage. It polls the
+control plane for updates; routing recommendations remain observational and do
+not change production routing automatically. Provider quotas are available
+only when an operator-configured quota endpoint is supplied. Dashboard API
+routes are tenant-scoped and rate limited. See
 [`docs/production-operations.md`](docs/production-operations.md) for deployment
-and security configuration.
+and security configuration and [`docs/saas-dashboard.md`](docs/saas-dashboard.md)
+for the API contract. The embedded `/dashboard` page remains a dependency-free
+fallback; the React console is the recommended production UI.
 
 ## External MCP integrations
 
