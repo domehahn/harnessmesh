@@ -355,6 +355,21 @@ type APIKeyRecord struct {
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 }
 
+type ApprovalAudit struct {
+	ID         string    `json:"id"`
+	ApprovalID string    `json:"approval_id"`
+	TenantID   string    `json:"tenant_id,omitempty"`
+	FromStatus string    `json:"from_status"`
+	ToStatus   string    `json:"to_status"`
+	Actor      string    `json:"actor"`
+	Reason     string    `json:"reason,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type ApprovalAuditStore interface {
+	ListApprovalAudit(context.Context, string, int) ([]ApprovalAudit, error)
+}
+
 // IdentityStore is the persistence seam for the SaaS directory. It is kept
 // separate from the large collaboration Store contract so local deployments
 // and future PostgreSQL implementations can adopt it incrementally.
@@ -1278,6 +1293,22 @@ func (s *SQLiteStore) migrate() error {
 				);
 				CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id, created_at);
 				CREATE INDEX IF NOT EXISTS idx_job_events_tenant ON job_events(tenant, created_at);
+			`,
+		},
+		{
+			version: 20,
+			sql: `
+				CREATE TABLE IF NOT EXISTS approval_audit (
+					id TEXT PRIMARY KEY,
+					approval_id TEXT NOT NULL,
+					tenant_id TEXT NOT NULL DEFAULT '',
+					from_status TEXT NOT NULL DEFAULT '',
+					to_status TEXT NOT NULL,
+					actor TEXT NOT NULL DEFAULT '',
+					reason TEXT NOT NULL DEFAULT '',
+					created_at TIMESTAMP NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS idx_approval_audit_approval ON approval_audit(approval_id, created_at);
 			`,
 		},
 	}
@@ -3139,8 +3170,45 @@ func (s *SQLiteStore) SaveApproval(ctx context.Context, a *protocol.ApprovalRequ
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = time.Now().UTC()
 	}
+	previousStatus := ""
+	_ = s.db.QueryRowContext(ctx, `SELECT status FROM approval_requests WHERE id=?`, a.ID).Scan(&previousStatus)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO approval_requests(id,session_id,agent,reason,estimated_cost_usd,estimated_tokens,status,requested_by,decided_by,created_at,decided_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,decided_by=excluded.decided_by,decided_at=excluded.decided_at`, a.ID, a.SessionID, a.Agent, a.Reason, a.EstimatedCostUSD, a.EstimatedTokens, string(a.Status), a.RequestedBy, a.DecidedBy, a.CreatedAt, nullableTimePtr(a.DecidedAt))
+	if err != nil {
+		return err
+	}
+	if previousStatus != string(a.Status) {
+		actor := a.DecidedBy
+		if actor == "" {
+			actor = a.RequestedBy
+		}
+		_, err = s.db.ExecContext(ctx, `INSERT INTO approval_audit(id,approval_id,from_status,to_status,actor,reason,created_at) VALUES(?,?,?,?,?,?,?)`, fmt.Sprintf("approval_audit_%d", time.Now().UTC().UnixNano()), a.ID, previousStatus, string(a.Status), actor, a.Reason, time.Now().UTC())
+	}
 	return err
+}
+
+func (s *SQLiteStore) ListApprovalAudit(ctx context.Context, approvalID string, limit int) ([]ApprovalAudit, error) {
+	if approvalID == "" {
+		return nil, errors.New("approval id is required")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT id,approval_id,tenant_id,from_status,to_status,actor,reason,created_at FROM approval_audit WHERE approval_id=? ORDER BY created_at ASC LIMIT ?`, approvalID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ApprovalAudit
+	for rows.Next() {
+		var audit ApprovalAudit
+		if err := rows.Scan(&audit.ID, &audit.ApprovalID, &audit.TenantID, &audit.FromStatus, &audit.ToStatus, &audit.Actor, &audit.Reason, &audit.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, audit)
+	}
+	return out, rows.Err()
 }
 func nullableTimePtr(t *time.Time) any {
 	if t == nil {

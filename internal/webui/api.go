@@ -227,6 +227,28 @@ func APIHandler(st store.Store) http.Handler {
 			writeJSON(w, job)
 			return
 		}
+		if strings.HasPrefix(path, "/approvals/") && r.Method == http.MethodGet {
+			id := strings.TrimPrefix(path, "/approvals/")
+			a, e := st.GetApproval(ctx, id)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if a == nil {
+				http.NotFound(w, r)
+				return
+			}
+			audit := []store.ApprovalAudit{}
+			if auditStore, ok := st.(store.ApprovalAuditStore); ok {
+				audit, e = auditStore.ListApprovalAudit(ctx, id, 200)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+			}
+			writeJSON(w, map[string]any{"approval": a, "audit": audit})
+			return
+		}
 		if r.Method == http.MethodPost && strings.HasPrefix(path, "/approvals/") {
 			id := strings.TrimPrefix(path, "/approvals/")
 			var req struct {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/protocol"
@@ -43,6 +44,17 @@ CREATE TABLE IF NOT EXISTS governance_decisions (
  PRIMARY KEY (tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_governance_decisions_tenant_space ON governance_decisions(tenant_id, space_id, created_at);
+CREATE TABLE IF NOT EXISTS approval_audit (
+ id TEXT PRIMARY KEY,
+ approval_id TEXT NOT NULL,
+ tenant_id TEXT NOT NULL,
+ from_status TEXT NOT NULL DEFAULT '',
+ to_status TEXT NOT NULL,
+ actor TEXT NOT NULL DEFAULT '',
+ reason TEXT NOT NULL DEFAULT '',
+ created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approval_audit_tenant_approval ON approval_audit(tenant_id, approval_id, created_at);
 `)
 	return err
 }
@@ -66,12 +78,48 @@ func (s *PostgresGovernanceStore) SaveApproval(ctx context.Context, approval *pr
 	if approval.CreatedAt.IsZero() {
 		approval.CreatedAt = time.Now().UTC()
 	}
+	previousStatus := ""
+	_ = s.db.QueryRowContext(ctx, `SELECT status FROM governance_approvals WHERE id=$1 AND tenant_id=$2`, approval.ID, tenantID).Scan(&previousStatus)
 	payload, err := json.Marshal(approval)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO governance_approvals(id,tenant_id,status,created_at,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status,payload=EXCLUDED.payload`, approval.ID, tenantID, string(approval.Status), approval.CreatedAt, string(payload))
+	if err == nil && previousStatus != string(approval.Status) {
+		actor := approval.DecidedBy
+		if actor == "" {
+			actor = approval.RequestedBy
+		}
+		_, err = s.db.ExecContext(ctx, `INSERT INTO approval_audit(id,approval_id,tenant_id,from_status,to_status,actor,reason,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, fmt.Sprintf("approval_audit_%d", time.Now().UTC().UnixNano()), approval.ID, tenantID, previousStatus, string(approval.Status), actor, approval.Reason, time.Now().UTC())
+	}
 	return err
+}
+
+func (s *PostgresGovernanceStore) ListApprovalAudit(ctx context.Context, approvalID string, limit int) ([]ApprovalAudit, error) {
+	if approvalID == "" {
+		return nil, errors.New("approval id is required")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	tenantID, err := governanceTenant(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,approval_id,tenant_id,from_status,to_status,actor,reason,created_at FROM approval_audit WHERE tenant_id=$1 AND approval_id=$2 ORDER BY created_at ASC LIMIT $3`, tenantID, approvalID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ApprovalAudit
+	for rows.Next() {
+		var audit ApprovalAudit
+		if err := rows.Scan(&audit.ID, &audit.ApprovalID, &audit.TenantID, &audit.FromStatus, &audit.ToStatus, &audit.Actor, &audit.Reason, &audit.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, audit)
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresGovernanceStore) GetApproval(ctx context.Context, id string) (*protocol.ApprovalRequest, error) {
