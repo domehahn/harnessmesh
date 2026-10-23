@@ -28,6 +28,7 @@ type Decision struct {
 	Server           string `json:"server,omitempty"`
 	Tool             string `json:"tool,omitempty"`
 	MatchedPolicy    string `json:"matched_policy,omitempty"`
+	Risk             string `json:"risk,omitempty"`
 }
 
 func New(cfg config.MCPRegistryConfig) (*Registry, error) {
@@ -70,6 +71,13 @@ func (r *Registry) Validate() error {
 		for _, tool := range append(append([]string{}, s.AllowedTools...), s.Capabilities...) {
 			if strings.TrimSpace(tool) == "" {
 				return fmt.Errorf("MCP server %q: tool/capability names must not be empty", name)
+			}
+		}
+		for tool, risk := range s.ToolRisk {
+			switch strings.ToLower(strings.TrimSpace(risk)) {
+			case "read", "write", "destructive", "critical":
+			default:
+				return fmt.Errorf("MCP server %q: invalid risk %q for tool %q", name, risk, tool)
 			}
 		}
 	}
@@ -115,6 +123,7 @@ func (r *Registry) Check(server, tool, policy string) Decision {
 		d.Reason = "tool is not allowed by server allowlist"
 		return d
 	}
+	d.Risk = strings.ToLower(strings.TrimSpace(s.ToolRisk[tool]))
 	if policy != "" {
 		p, exists := r.cfg.Policies[policy]
 		if !exists {
@@ -134,6 +143,14 @@ func (r *Registry) Check(server, tool, policy string) Decision {
 			return d
 		}
 		d.RequiresApproval = p.RequireApprovalWrite
+		for _, risk := range p.RequireApprovalRisk {
+			if strings.EqualFold(strings.TrimSpace(risk), d.Risk) {
+				d.RequiresApproval = true
+			}
+		}
+	}
+	if d.Risk == "destructive" || d.Risk == "critical" {
+		d.RequiresApproval = true
 	}
 	if s.RequiresApproval {
 		d.RequiresApproval = true

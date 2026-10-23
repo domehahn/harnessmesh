@@ -58,19 +58,20 @@ type MCPRegistryConfig struct {
 }
 
 type MCPServerConfig struct {
-	Type              string   `json:"type"` // local, remote
-	Enabled           bool     `json:"enabled"`
-	Endpoint          string   `json:"endpoint,omitempty"`
-	TokenEnv          string   `json:"token_env,omitempty"`
-	Command           string   `json:"command,omitempty"`
-	Args              []string `json:"args,omitempty"`
-	AllowedTools      []string `json:"allowed_tools,omitempty"`
-	AllowedDomains    []string `json:"allowed_domains,omitempty"`
-	Capabilities      []string `json:"capabilities,omitempty"`
-	NetworkMode       string   `json:"network_mode,omitempty"`
-	RequiresApproval  bool     `json:"requires_approval,omitempty"`
-	TimeoutSeconds    int      `json:"timeout_seconds,omitempty"`
-	MaxRequestsMinute int      `json:"max_requests_per_minute,omitempty"`
+	Type              string            `json:"type"` // local, remote
+	Enabled           bool              `json:"enabled"`
+	Endpoint          string            `json:"endpoint,omitempty"`
+	TokenEnv          string            `json:"token_env,omitempty"`
+	Command           string            `json:"command,omitempty"`
+	Args              []string          `json:"args,omitempty"`
+	AllowedTools      []string          `json:"allowed_tools,omitempty"`
+	ToolRisk          map[string]string `json:"tool_risk,omitempty"` // read, write, destructive, critical
+	AllowedDomains    []string          `json:"allowed_domains,omitempty"`
+	Capabilities      []string          `json:"capabilities,omitempty"`
+	NetworkMode       string            `json:"network_mode,omitempty"`
+	RequiresApproval  bool              `json:"requires_approval,omitempty"`
+	TimeoutSeconds    int               `json:"timeout_seconds,omitempty"`
+	MaxRequestsMinute int               `json:"max_requests_per_minute,omitempty"`
 }
 
 type MCPPolicyConfig struct {
@@ -79,6 +80,7 @@ type MCPPolicyConfig struct {
 	DeniedTools          []string `json:"denied_tools,omitempty"`
 	AllowedDomains       []string `json:"allowed_domains,omitempty"`
 	RequireApprovalWrite bool     `json:"require_approval_for_write,omitempty"`
+	RequireApprovalRisk  []string `json:"require_approval_for_risk,omitempty"`
 }
 
 // ProviderGatewayConfig configures HarnessMesh's Codex-compatible model

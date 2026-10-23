@@ -31,3 +31,24 @@ func TestRegistryRejectsUnknownPolicyServer(t *testing.T) {
 		t.Fatal("expected unknown server validation error")
 	}
 }
+
+func TestRegistryRequiresApprovalForRiskyTools(t *testing.T) {
+	r, err := New(config.MCPRegistryConfig{Servers: map[string]config.MCPServerConfig{
+		"home": {Type: "remote", Enabled: true, Endpoint: "https://home.example", AllowedTools: []string{"unlock_door"}, AllowedDomains: []string{"home.example"}, ToolRisk: map[string]string{"unlock_door": "critical"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := r.Check("home", "unlock_door", "")
+	if !d.Allowed || !d.RequiresApproval || d.Risk != "critical" {
+		t.Fatalf("unexpected risky decision: %+v", d)
+	}
+}
+
+func TestRegistryRejectsInvalidToolRisk(t *testing.T) {
+	if _, err := New(config.MCPRegistryConfig{Servers: map[string]config.MCPServerConfig{
+		"bad": {Type: "local", Enabled: true, Command: "bad", AllowedTools: []string{"run"}, ToolRisk: map[string]string{"run": "unknown"}},
+	}}); err == nil {
+		t.Fatal("expected invalid risk validation error")
+	}
+}
