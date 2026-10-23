@@ -16,6 +16,9 @@ services:
     depends_on:
       harnessmesh-mcp:
         condition: service_healthy
+    pids_limit: ${HARNESSMESH_CONSOLE_PIDS_LIMIT:-64}
+    mem_limit: ${HARNESSMESH_CONSOLE_MEMORY_LIMIT:-128m}
+    cpus: ${HARNESSMESH_CONSOLE_CPUS:-0.5}
     read_only: true
     cap_drop: ["ALL"]
     security_opt:
