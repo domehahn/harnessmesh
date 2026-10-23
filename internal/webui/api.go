@@ -448,6 +448,29 @@ func APIHandler(st store.Store) http.Handler {
 				return
 			}
 			writeJSON(w, v)
+		case "/incident":
+			failed, e := st.ListJobs(ctx, who.Tenant, "failed", 200)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			dead, e := st.ListJobs(ctx, who.Tenant, "dead", 200)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			health, e := st.ListAgentHealth(ctx)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			unhealthy := make([]protocol.AgentHealth, 0)
+			for _, agent := range health {
+				if agent.Status != protocol.AgentHealthHealthy {
+					unhealthy = append(unhealthy, agent)
+				}
+			}
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "failed_jobs": failed, "dead_jobs": dead, "unhealthy_agents": unhealthy, "requires_attention": len(failed)+len(dead)+len(unhealthy) > 0})
 		case "/usage":
 			observations, e := st.QueryPerformanceObservations(ctx, who.Tenant, "", "")
 			if e != nil {
