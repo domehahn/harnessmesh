@@ -35,6 +35,17 @@ jobs:
           output: trivy-mcp.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Enforce MCP image policy
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: harnessmesh:mcp-scan
+          version: v0.76.1
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: '1'
 
       - name: Scan console image
@@ -45,6 +56,17 @@ jobs:
           version: v0.76.1
           format: sarif
           output: trivy-console.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Enforce console image policy
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: harnessmesh-console:scan
+          version: v0.76.1
+          format: table
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
