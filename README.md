@@ -219,6 +219,186 @@ docker compose -f compose.yaml -f compose.production.yaml \
   --profile mcp --profile bridge --profile console down
 ```
 
+## SaaS dashboard
+
+The embedded control-plane UI is available at `/dashboard` when the MCP server
+is running. The production React console is served by the `console` Compose
+profile and provides the same tenant-scoped control plane with:
+
+- tenant overview, sessions and jobs with detail views;
+- visual Orchestrator spaces with participant connection and pause/resume/stop controls;
+- persistent job events, causal session timelines and redacted run-bundle export;
+- approval decisions, bulk actions and immutable approval audit history;
+- usage, input/output token accounting, configured cost, model quality and trust scores;
+- MCP/Bridge health probes, agent health, incidents, failed jobs and dead letters;
+- routing recommendations, provider-quota projection and deterministic Simulation Lab;
+- tenant members, roles and API-key issuance/revocation;
+- a credential-free adapter registry contract for built-in and external agent integrations;
+- a registrable Provider Backend SDK with policy-checked fallback resolution;
+- deep links, local pagination, keyboard-accessible navigation and authenticated E2E coverage.
+
+The console stores credentials only in browser session storage. It polls the
+control plane for updates; routing recommendations remain observational and do
+not change production routing automatically. Provider quotas are available
+only when an operator-configured quota endpoint is supplied. Dashboard API
+routes are tenant-scoped and rate limited. See
+[`docs/production-operations.md`](docs/production-operations.md) for deployment
+and security configuration and [`docs/saas-dashboard.md`](docs/saas-dashboard.md)
+for the API contract. The embedded `/dashboard` page remains a dependency-free
+fallback; the React console is the recommended production UI.
+
+## External MCP integrations
+
+External MCP servers are controlled through the fail-closed registry described
+in [`docs/mcp-registry.md`](docs/mcp-registry.md). The repository also provides
+local code intelligence without uploading source code:
+
+```bash
+bin/harnessmesh mcp registry validate --config harnessmesh.json
+bin/harnessmesh mcp registry check --config harnessmesh.json \
+  --server serena --tool find_symbol --policy developer-readonly
+bin/harnessmesh code search --repo . --query authentication
+bin/harnessmesh code impact --repo . --query Config
+```
+
+Restart-safe agent work can be submitted as tenant-scoped durable jobs; see
+[`docs/durable-jobs.md`](docs/durable-jobs.md).
+
+## Lokale Multi-Agent-Demo beobachten
+
+Der folgende Ablauf startet die Control Plane, die Bridge und die React-Konsole
+lokal. Damit kannst du Sessions, Jobs, Approvals und Agent-Health in der UI
+sehen und gleichzeitig die Kommunikation über Logs und Prometheus-Metriken
+beobachten.
+
+```bash
+make build
+export HARNESSMESH_MCP_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_BRIDGE_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_PROVIDER_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_ADMIN_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+export HARNESSMESH_SECRET_KEY="$(openssl rand -hex 32)"
+
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile bridge --profile console up --build -d
+```
+
+Tenant-owned provider keys and MCP credentials can be entered in Settings.
+They are encrypted locally with `HARNESSMESH_SECRET_KEY` and are never
+returned by the API. For a local Vault exercise, run `make vault-up`, set
+`HARNESSMESH_SECRET_BACKEND=vault` and `VAULT_TOKEN=dev-root-token`, then
+start the stack again. The Vault profile is development-only; production
+uses an externally managed Vault and Kubernetes secrets.
+
+The central operational entry points are `make local-up`, `make local-down`,
+`make k8s-validate`, `make k8s-apply` and `make k3d-up`. Kubernetes manifests
+and the required out-of-band secret setup are documented in
+[`deploy/k8s/README.md`](deploy/k8s/README.md).
+
+The durable worker pool can be started separately with `make worker-up` and
+uses PostgreSQL leases when `HARNESSMESH_POSTGRES_DSN` is configured. Multiple
+workers may claim work concurrently without processing the same leased job.
+
+For local OIDC introspection, copy the OIDC values from `.env.example`, set a
+Keycloak admin password, and run `make keycloak-up`. The realm import is in
+[`deploy/keycloak/harnessmesh-realm.json`](deploy/keycloak/harnessmesh-realm.json).
+The imported client is for local testing only; configure MFA and client
+credentials in the managed Keycloak realm for production.
+
+To use PostgreSQL instead of SQLite locally, set
+`HARNESSMESH_POSTGRES_DSN=postgres://...` and start with the `postgres`
+profile. The MCP process selects PostgreSQL automatically from that DSN:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile console --profile postgres up --build -d
+```
+
+Für den React-Login einmalig einen lokalen Tenant und API-Key im Docker-Volume
+des laufenden MCP-Containers anlegen. Der ausgegebene Key wird nur einmal
+angezeigt. Die CLI muss im Container laufen, damit sie dieselbe SQLite-Datenbank
+wie die Console verwendet:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
+  /usr/local/bin/harnessmesh tenant create \
+  --id tenant-demo --slug demo --name "Local Demo"
+docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
+  /usr/local/bin/harnessmesh tenant member \
+  --id tenant-demo --subject demo-user --role owner
+docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
+  /usr/local/bin/harnessmesh tenant key \
+  --id tenant-demo --subject demo-user
+```
+
+Diesen Key in der Console unter `http://127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-3000}` eingeben.
+
+Danach sind die lokalen Beobachtungspunkte:
+
+| Oberfläche/Endpoint | Zweck |
+| --- | --- |
+| `http://127.0.0.1:3000` | React-SaaS-Konsole; API-Key des lokalen Tenant-Setups eingeben |
+| `http://127.0.0.1:8787/healthz` | MCP-Control-Plane-Health |
+| `http://127.0.0.1:8787/readyz` | MCP-Readiness |
+| `http://127.0.0.1:8787/metrics` | Requests, Fehler, Rate Limits und Agent-Signale |
+| `http://127.0.0.1:8788` | lokale REST-/WebSocket-Bridge für UI-Clients |
+
+Die laufende Agent-Kommunikation siehst du parallel im Terminal:
+
+```bash
+docker compose logs -f harnessmesh-mcp harnessmesh-bridge
+docker compose ps
+curl -fsS http://127.0.0.1:8787/metrics
+```
+
+Für einen reproduzierbaren Collaboration-Lauf kannst du anschließend einen
+Task mit der vorhandenen Multi-Agent-Konfiguration starten, zum Beispiel:
+
+```bash
+bin/harnessmesh collaborate \
+  --config configs/claude-codex.json \
+  --task "Analysiere den aktuellen Projektstand und erstelle einen Review-Plan"
+```
+
+Die erzeugten Sessions, Nachrichten, Findings, Approvals und Jobs erscheinen
+anschließend in der Konsole. Die Kommunikation bleibt tenant-scoped und wird
+nicht aus Browserdaten simuliert.
+
+### Den verwendeten Tunnel sehen
+
+Der Compose-Stack öffnet absichtlich keinen öffentlichen Tunnel. Für einen
+temporären ChatGPT-MCP-Tunnel startet der Bootstrap-Wrapper den MCP-Prozess
+und zeigt die öffentliche URL im Terminal:
+
+```bash
+make build
+HARNESSMESH_TUNNEL=auto ./scripts/start-chatgpt-mcp.sh
+```
+
+Dabei wird bei verfügbarer `ngrok`-Installation die Tunnel-URL ausgegeben und
+zusätzlich nach `.harnessmesh/chatgpt-mcp-connector.json` geschrieben. Die
+öffentliche URL und der aktive Tunnel lassen sich mit den ngrok-Statusdaten
+prüfen:
+
+```bash
+cat .harnessmesh/chatgpt-mcp-connector.json
+curl -fsS http://127.0.0.1:4040/api/tunnels
+```
+
+Der Tunnel läuft nur solange das Bootstrap-Skript läuft. Mit `Ctrl-C` werden
+MCP-Prozess und temporärer Tunnel beendet. Für einen dauerhaften Tunnel wird
+stattdessen ein benannter Cloudflare-Tunnel oder ein eigener TLS-Reverse-Proxy
+vor `127.0.0.1:8787` benötigt; siehe
+[`docs/chatgpt-mcp-bootstrap.md`](docs/chatgpt-mcp-bootstrap.md).
+
+Zum Beenden der lokalen Demo:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile bridge --profile console down
+```
+
 ## Installation und vollständiges Setup
 
 ### Native Installation
