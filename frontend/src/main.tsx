@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { Activity, ArrowUpRight, CheckCircle2, ChevronRight, CircleAlert, Clock3, Command, CreditCard, Database, LayoutDashboard, LogOut, Play, RefreshCw, Search, Settings2, ShieldCheck, Users, XCircle } from "lucide-react";
 import "./styles.css";
 import "./console-overrides.css";
-import { beginOIDC, completeOIDC, oidcConfigured } from "./oidc";
+import { beginOIDC, completeOIDC, logoutOIDC, oidcConfigured } from "./oidc";
 
 type View = "overview" | "orchestrator" | "sessions" | "jobs" | "approvals" | "usage" | "optimization" | "monitoring" | "simulation" | "settings";
 type Session = { id: string; task: string; status: string; repo_root?: string; updated_at?: string };
@@ -27,7 +27,7 @@ function App() { const [view, setView] = useState<View>("overview"); const [key,
   useEffect(() => { void completeOIDC().then(token => { if (token) { sessionStorage.removeItem(apiKeyStorage); sessionStorage.setItem(accessTokenStorage, token); setKey(token); } }).catch(e => setError(e instanceof Error ? e.message : "OIDC login failed")); }, []);
   useEffect(() => { void load(); if (!key) return; const timer = window.setInterval(() => void load(), 15000); return () => window.clearInterval(timer); }, [key]);
   const connect = () => { const value = input.trim(); sessionStorage.removeItem(apiKeyStorage); sessionStorage.removeItem(accessTokenStorage); sessionStorage.removeItem(tenantStorage); sessionStorage.setItem(value.startsWith("eyJ") ? accessTokenStorage : apiKeyStorage, value); setKey(value); };
-  const logout = () => { sessionStorage.removeItem(apiKeyStorage); sessionStorage.removeItem(accessTokenStorage); sessionStorage.removeItem(tenantStorage); setKey(""); setInput(""); setSummary(null); setTenants([]); };
+  const logout = () => { const oidc = Boolean(sessionStorage.getItem(accessTokenStorage)); sessionStorage.removeItem(apiKeyStorage); sessionStorage.removeItem(accessTokenStorage); sessionStorage.removeItem(tenantStorage); setKey(""); setInput(""); setSummary(null); setTenants([]); if (oidc) logoutOIDC(); };
   const switchTenant = (tenant: string) => { sessionStorage.setItem(tenantStorage, tenant); setSummary(null); void load(); };
   const title = nav.find(item => item.id === view)?.label ?? "Overview";
   const navigate = (target: View) => { setView(target); window.location.hash = target; };
