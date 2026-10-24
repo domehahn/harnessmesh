@@ -1559,6 +1559,12 @@ The Codex UI may independently request routes such as `/settings/user`, `/wham/u
 
 # 19. Production Readiness
 
+The repository automation map is documented in
+[`docs/github-actions.md`](docs/github-actions.md). It covers dependency and
+container security, license and link checks, benchmark regression, release
+provenance, multi-platform installation smoke tests and protected staging
+qualification.
+
 The authoritative deterministic gate is:
 
 ```bash
