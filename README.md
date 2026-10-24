@@ -559,7 +559,7 @@ The **provider plane and collaboration plane share no server-side state dependen
 | **Model-routing boundary** | Fixed, external and optional NVIDIA NeMo Switchyard routing without conflating participant selection and underlying model selection |
 | **Observability** | Liveness/readiness, Prometheus-style metrics, request/correlation IDs, structured audit records, operational/admin endpoints and optional OTLP integration |
 | **Production validation** | Build, vet, unit, race, fuzz, protocol-contract, auth, model-catalog, filesystem write/edit, recovery, concurrency, observability, redaction and zero-API-billing gates |
-| **Release engineering** | Docker, CodeQL, govulncheck, race tests, archive benchmarks, SBOM generation, checksums and keyless Cosign signing for tagged releases |
+| **Release engineering** | Docker, CodeQL, dependency review, container scanning, govulncheck, race tests, archive benchmarks, SBOM generation, checksums, Cosign signing and build-provenance attestations for tagged releases |
 
 ---
 
