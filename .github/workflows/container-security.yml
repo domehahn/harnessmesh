@@ -30,6 +30,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: harnessmesh:mcp-scan
+          version: v0.76.1
           format: sarif
           output: trivy-mcp.sarif
           severity: HIGH,CRITICAL
@@ -41,6 +42,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: harnessmesh-console:scan
+          version: v0.76.1
           format: sarif
           output: trivy-console.sarif
           severity: HIGH,CRITICAL
@@ -52,9 +54,11 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-mcp.sarif
+          category: trivy-mcp
 
       - name: Upload console scan results
         if: always() && hashFiles('trivy-console.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-console.sarif
+          category: trivy-console
