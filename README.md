@@ -1,5 +1,10 @@
 # HarnessMesh
 
+[![GitHub CI](https://github.com/domehahn/harnessmesh/actions/workflows/ci.yml/badge.svg)](https://github.com/domehahn/harnessmesh/actions/workflows/ci.yml)
+[![GitLab pipeline](https://gitlab.com/domehahn/harnessmesh/badges/main/pipeline.svg)](https://gitlab.com/domehahn/harnessmesh/-/pipelines)
+[![Go Reference](https://pkg.go.dev/badge/github.com/domehahn/harnessmesh.svg)](https://pkg.go.dev/github.com/domehahn/harnessmesh)
+[![Latest release](https://img.shields.io/github/v/release/domehahn/harnessmesh?sort=semver)](https://github.com/domehahn/harnessmesh/releases/latest)
+
 **A persistent, evidence-driven collaboration fabric, change-control plane, and Codex-compatible provider gateway for AI coding harnesses.**
 
 HarnessMesh connects coding agents such as **Claude Code**, **OpenAI Codex**, **Google Antigravity**, **GitHub Copilot CLI**, ChatGPT-connected MCP clients, and custom adapters so they can collaborate through a shared durable control plane instead of relying on human copy/paste between tools.
@@ -14,7 +19,7 @@ It also provides a separate, bounded **model-provider plane** that lets the offi
 
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.
 
-Current source version: **v0.1.0**.
+Current source version: **v0.2.0**.
 
 ## SaaS dashboard
 
@@ -242,7 +247,7 @@ bin/harnessmesh --help
 Für die reine CLI-Installation ist kein Repository-Checkout erforderlich:
 
 ```bash
-go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.2.0
 harnessmesh version
 ```
 
@@ -258,7 +263,7 @@ Für ein reproduzierbares Upgrade kann eine konkrete Version verwendet werden;
 `@latest` folgt dagegen dem neuesten veröffentlichten Modulstand:
 
 ```bash
-go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.2.0
 # später:
 go install github.com/domehahn/harnessmesh/cmd/harnessmesh@latest
 ```
@@ -826,7 +831,7 @@ Install HarnessMesh first and make sure `harnessmesh.json` exists in the
 repository you want Codex to work on:
 
 ```bash
-go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.2.0
 cd /path/to/your/repository
 cp /path/to/harnessmesh/configs/harnessmesh.example.json harnessmesh.json
 harnessmesh config validate --config harnessmesh.json
@@ -943,7 +948,7 @@ gestartet.
 #### 1. CLI und Projekt vorbereiten
 
 ```bash
-go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.2.0
 export PATH="$(go env GOPATH)/bin:$PATH"
 
 cd /path/to/dein/repository
@@ -989,7 +994,7 @@ cd /path/to/harnessmesh/extensions/vscode
 npm install
 npm run compile
 npx @vscode/vsce package
-code --install-extension harnessmesh-vscode-0.1.0.vsix
+code --install-extension harnessmesh-vscode-0.2.0.vsix
 ```
 
 Danach den Zielordner als Workspace in VS Code öffnen.
@@ -1064,7 +1069,7 @@ cd extensions/vscode
 npm install
 npm run compile
 npx @vscode/vsce package
-code --install-extension harnessmesh-vscode-0.1.0.vsix
+code --install-extension harnessmesh-vscode-0.2.0.vsix
 ```
 
 Alternativ kann die Erweiterung in VS Code über `Run and Debug` als Extension
