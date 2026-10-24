@@ -26,6 +26,8 @@ type Manifest struct {
 	Version               string        `json:"version"`
 	Description           string        `json:"description,omitempty"`
 	Protocol              string        `json:"protocol,omitempty"`
+	Transport             string        `json:"transport,omitempty"` // stdio or unix
+	Socket                string        `json:"socket,omitempty"`
 	Binary                string        `json:"binary,omitempty"`
 	Aliases               []string      `json:"aliases,omitempty"`
 	Capabilities          []string      `json:"capabilities,omitempty"`
@@ -106,6 +108,16 @@ func (m Manifest) validate(dir string, opts Options) (string, bool, bool, error)
 	}
 	if m.protocol() != ProtocolVersion {
 		return "", false, false, fmt.Errorf("plugin %q uses unsupported protocol %q", m.Name, m.protocol())
+	}
+	transport := strings.ToLower(strings.TrimSpace(m.Transport))
+	if transport == "" {
+		transport = "stdio"
+	}
+	if transport != "stdio" && transport != "unix" {
+		return "", false, false, fmt.Errorf("plugin %q uses unsupported transport %q", m.Name, m.Transport)
+	}
+	if transport == "unix" && m.Socket != "" && (filepath.IsAbs(m.Socket) || filepath.Clean(m.Socket) != m.Socket || strings.HasPrefix(m.Socket, ".."+string(filepath.Separator))) {
+		return "", false, false, fmt.Errorf("plugin %q socket must stay inside its plugin directory", m.Name)
 	}
 	if m.Risk == "" {
 		m.Risk = "high"

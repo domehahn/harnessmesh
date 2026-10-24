@@ -13,6 +13,7 @@ in the agent catalog.
   "name": "my-agent",
   "version": "1.0.0",
   "protocol": "harnessmesh-agent-v1",
+  "transport": "stdio",
   "binary": "bin/my-agent",
   "enabled": true,
   "sha256": "<sha256 of bin/my-agent>",
@@ -34,6 +35,10 @@ request has `id`, `method` and `payload`; each response must return the same
 `id`, `ok`, and an optional `payload` or `error`. Implement these methods:
 `health`, `start_session`, `resume_session`, `close_session`, and `invoke`.
 `invoke` returns `text`, optional `session_id`, `usage` and `duration_ms`.
+Set `transport` to `unix` (and optionally `socket`) to use a local Unix
+domain socket instead of stdin/stdout. HarnessMesh creates the socket and
+passes its path in `HARNESSMESH_PLUGIN_SOCKET`; the plugin connects to it
+before sending JSON-lines messages.
 
 The runtime validates the protocol, name, version range, executable location,
 capabilities and risk. It verifies `sha256`; production can additionally

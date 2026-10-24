@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	stdruntime "runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +41,7 @@ type runtime struct {
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	stdout   *bufio.Reader
+	conn     net.Conn
 	mu       sync.Mutex
 	seq      uint64
 }
@@ -73,9 +76,73 @@ func newRuntime(m Manifest, dir, binary string) (*runtime, error) {
 		script := `if [ "$1" -gt 0 ]; then ulimit -u "$1" || exit 1; fi; if [ "$2" -gt 0 ]; then ulimit -v "$2" || exit 1; fi; shift 2; exec "$@"`
 		command, args = "/bin/sh", append([]string{"-c", script, "harnessmesh-plugin", strconv.Itoa(m.Sandbox.MaxProcesses), strconv.Itoa(m.Sandbox.MemoryMB * 1024), command}, args...)
 	}
+	transport := strings.ToLower(strings.TrimSpace(m.Transport))
+	if transport == "" {
+		transport = "stdio"
+	}
+	var listener net.Listener
+	var socketPath, socketRelative string
+	var err error
+	if transport == "unix" {
+		socketRelative = m.Socket
+		if socketRelative == "" {
+			socketRelative = filepath.Join(".harnessmesh", m.Name+".sock")
+		}
+		socketPath = filepath.Join(dir, socketRelative)
+		if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+			return nil, err
+		}
+		_ = os.Remove(socketPath)
+		listener, err = net.Listen("unix", socketPath)
+		if err != nil {
+			return nil, fmt.Errorf("listen plugin socket: %w", err)
+		}
+	}
 	cmd := exec.Command(command, args...)
 	cmd.Dir = dir
 	cmd.Env = append([]string{}, os.Environ()...)
+	if transport == "unix" {
+		advertised := socketPath
+		if policy.NetworkMode == "none" {
+			advertised = filepath.Join("/workspace", socketRelative)
+		}
+		cmd.Env = append(cmd.Env, "HARNESSMESH_PLUGIN_SOCKET="+advertised)
+	}
+	if transport == "unix" {
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		if err := cmd.Start(); err != nil {
+			_ = listener.Close()
+			_ = os.Remove(socketPath)
+			return nil, fmt.Errorf("start plugin %q: %w", m.Name, err)
+		}
+		accepted := make(chan struct {
+			conn net.Conn
+			err  error
+		}, 1)
+		go func() {
+			conn, acceptErr := listener.Accept()
+			accepted <- struct {
+				conn net.Conn
+				err  error
+			}{conn: conn, err: acceptErr}
+		}()
+		select {
+		case result := <-accepted:
+			_ = listener.Close()
+			if result.err != nil {
+				_ = cmd.Process.Kill()
+				_ = os.Remove(socketPath)
+				return nil, fmt.Errorf("accept plugin socket: %w", result.err)
+			}
+			return &runtime{manifest: m, dir: dir, cmd: cmd, stdin: result.conn, stdout: bufio.NewReader(result.conn), conn: result.conn}, nil
+		case <-time.After(5 * time.Second):
+			_ = listener.Close()
+			_ = cmd.Process.Kill()
+			_ = os.Remove(socketPath)
+			return nil, fmt.Errorf("plugin %q did not connect to unix socket", m.Name)
+		}
+	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -97,7 +164,11 @@ func (r *runtime) close() error {
 	if r == nil || r.cmd == nil {
 		return nil
 	}
-	_ = r.stdin.Close()
+	if r.conn != nil {
+		_ = r.conn.Close()
+	} else if r.stdin != nil {
+		_ = r.stdin.Close()
+	}
 	if r.cmd.Process != nil {
 		_ = r.cmd.Process.Kill()
 	}
