@@ -24,6 +24,7 @@ profile and provides the same tenant-scoped control plane with:
 - MCP/Bridge health probes, agent health, incidents, failed jobs and dead letters;
 - routing recommendations, provider-quota projection and deterministic Simulation Lab;
 - tenant members, roles and API-key issuance/revocation;
+- a credential-free adapter registry contract for built-in and external agent integrations;
 - deep links, local pagination, keyboard-accessible navigation and authenticated E2E coverage.
 
 The console stores credentials only in browser session storage. It polls the
