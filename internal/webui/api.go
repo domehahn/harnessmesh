@@ -147,6 +147,7 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 		key := strings.TrimSpace(r.Header.Get("X-HarnessMesh-API-Key"))
 		var who tenant.Identity
 		var err error
+		apiKeyAuth := key != ""
 		if key != "" {
 			who, err = (identity.Service{Store: identityStore}).AuthenticateAPIKey(r.Context(), key)
 		} else {
@@ -161,6 +162,15 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if !apiKeyAuth {
+			requestedTenant := strings.TrimSpace(r.Header.Get("X-HarnessMesh-Tenant"))
+			if requestedTenant != "" && requestedTenant != who.Tenant {
+				membership, membershipErr := identityStore.GetMembership(r.Context(), requestedTenant, who.Subject)
+				if membershipErr != nil || membership == nil || membership.Status != "active" { http.Error(w, "tenant access denied", http.StatusForbidden); return }
+				who.Tenant = requestedTenant
+				who.Roles = map[string]bool{membership.Role: true}
+			}
 		}
 		ctx := tenant.WithIdentity(r.Context(), who)
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/dashboard")
@@ -427,6 +437,14 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestrator.ConfiguredAgents()})
 			return
+		}
+		if path == "/tenants" && r.Method == http.MethodGet {
+			if apiKeyAuth { writeJSON(w, map[string]any{"tenant": who.Tenant, "tenants": []map[string]any{{"id": who.Tenant, "role": "api_key"}}}); return }
+			directory, ok := st.(store.DirectoryStore); if !ok { http.Error(w, "directory backend unavailable", http.StatusServiceUnavailable); return }
+			memberships, e := directory.ListMembershipsForSubject(ctx, who.Subject); if e != nil { http.Error(w, e.Error(), http.StatusServiceUnavailable); return }
+			items := make([]map[string]any, 0, len(memberships))
+			for _, membership := range memberships { item := map[string]any{"id": membership.TenantID, "role": membership.Role, "status": membership.Status}; if tenantStore, ok := st.(store.IdentityStore); ok { if record, tenantErr := tenantStore.GetTenant(ctx, membership.TenantID); tenantErr == nil && record != nil { item["slug"], item["name"] = record.Slug, record.Name } }; items = append(items, item) }
+			writeJSON(w, map[string]any{"subject": who.Subject, "active": who.Tenant, "tenants": items}); return
 		}
 		if path == "/marketplace" && r.Method == http.MethodGet {
 			items := []map[string]any{}

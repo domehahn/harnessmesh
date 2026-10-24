@@ -388,6 +388,7 @@ type IdentityStore interface {
 // tenant's members and API keys. Secrets are never returned by list methods.
 type DirectoryStore interface {
 	ListMemberships(context.Context, string) ([]MembershipRecord, error)
+	ListMembershipsForSubject(context.Context, string) ([]MembershipRecord, error)
 	ListAPIKeys(context.Context, string) ([]APIKeyRecord, error)
 }
 

@@ -154,6 +154,11 @@ that token through the configured RFC-7662 introspection endpoint. Configure
 the OIDC client redirect URI to the console origin and enable its web origin
 at the identity provider.
 
+OIDC users with more than one active tenant membership can switch tenants in
+the console header. The backend validates the selected tenant membership for
+the authenticated subject; API-key sessions remain pinned to their issuing
+tenant and cannot be switched by a header override.
+
 ## Usage and cost boundary
 
 Usage visibility is available, including observation and job counts and the
