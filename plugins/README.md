@@ -38,6 +38,8 @@ request has `id`, `method` and `payload`; each response must return the same
 The runtime validates the protocol, name, version range, executable location,
 capabilities and risk. It verifies `sha256`; production can additionally
 require Ed25519 signatures with `HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE=1`.
+When `HARNESSMESH_PLUGIN_TRUSTED_KEYS` contains comma-separated base64
+Ed25519 public keys, only signatures from those trusted keys are accepted.
 Network isolation uses bubblewrap when `network` is `none` and fails closed if
 the OS sandbox is unavailable. Message size and request timeout limits are
 enforced by the host process. Plugins must never put credentials in manifests;

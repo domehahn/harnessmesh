@@ -2,6 +2,8 @@ package plugin
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -133,8 +135,28 @@ func RegisterFromEnvironment() error {
 	if version == "" {
 		version = "0.1.0"
 	}
-	_, err := RegisterDirectory(root, Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version})
+	trusted, err := TrustedKeysFromEnvironment()
+	if err != nil {
+		return err
+	}
+	_, err = RegisterDirectory(root, Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version, TrustedPublicKeys: trusted})
 	return err
+}
+
+func TrustedKeysFromEnvironment() ([]ed25519.PublicKey, error) {
+	raw := strings.TrimSpace(os.Getenv("HARNESSMESH_PLUGIN_TRUSTED_KEYS"))
+	if raw == "" {
+		return nil, nil
+	}
+	keys := make([]ed25519.PublicKey, 0)
+	for _, item := range strings.Split(raw, ",") {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(item))
+		if err != nil || len(decoded) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("invalid HARNESSMESH_PLUGIN_TRUSTED_KEYS entry")
+		}
+		keys = append(keys, ed25519.PublicKey(decoded))
+	}
+	return keys, nil
 }
 
 func RequireReady(name string) error {

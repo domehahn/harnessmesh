@@ -65,6 +65,7 @@ type Options struct {
 	RequireSignature   bool
 	RequireHash        bool
 	HarnessMeshVersion string
+	TrustedPublicKeys  []ed25519.PublicKey
 }
 
 func (m Manifest) protocol() string {
@@ -160,6 +161,18 @@ func (m Manifest) validate(dir string, opts Options) (string, bool, bool, error)
 		sig, sigErr := base64.StdEncoding.DecodeString(m.Signature)
 		if pubErr != nil || sigErr != nil || len(pub) != ed25519.PublicKeySize || len(sig) != ed25519.SignatureSize {
 			return "", false, false, fmt.Errorf("plugin %q has invalid ed25519 signature encoding", m.Name)
+		}
+		if len(opts.TrustedPublicKeys) > 0 {
+			trusted := false
+			for _, key := range opts.TrustedPublicKeys {
+				if string(key) == string(pub) {
+					trusted = true
+					break
+				}
+			}
+			if !trusted {
+				return "", false, false, fmt.Errorf("plugin %q signer is not trusted", m.Name)
+			}
 		}
 		signatureVerified = ed25519.Verify(ed25519.PublicKey(pub), []byte(digest), sig)
 		if opts.RequireSignature && !signatureVerified {

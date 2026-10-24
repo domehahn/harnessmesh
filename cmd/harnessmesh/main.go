@@ -582,7 +582,11 @@ func collaborate(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := plugin.RegisterDirectory(pluginRoot(), plugin.Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version}); err != nil {
+	trusted, trustErr := plugin.TrustedKeysFromEnvironment()
+	if trustErr != nil {
+		return trustErr
+	}
+	if _, err := plugin.RegisterDirectory(pluginRoot(), plugin.Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version, TrustedPublicKeys: trusted}); err != nil {
 		return fmt.Errorf("load agent plugins: %w", err)
 	}
 	if *executorName != "" {
@@ -807,7 +811,11 @@ func mcpServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := plugin.RegisterDirectory(pluginRoot(), plugin.Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version}); err != nil {
+	trusted, trustErr := plugin.TrustedKeysFromEnvironment()
+	if trustErr != nil {
+		return trustErr
+	}
+	if _, err := plugin.RegisterDirectory(pluginRoot(), plugin.Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version, TrustedPublicKeys: trusted}); err != nil {
 		return fmt.Errorf("load agent plugins: %w", err)
 	}
 	if registry, registryErr := mcpregistry.New(cfg.MCP); registryErr != nil {
