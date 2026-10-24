@@ -44,6 +44,14 @@ and security configuration and [`docs/saas-dashboard.md`](docs/saas-dashboard.md
 for the API contract. The embedded `/dashboard` page remains a dependency-free
 fallback; the React console is the recommended production UI.
 
+### Walkthrough: CLI and React console
+
+<video controls preload="metadata" width="960" src="artifacts/videos/harnessmesh-walkthrough.webm"></video>
+
+The walkthrough demonstrates local CLI startup, agent discovery, tenant
+connection, monitoring, approvals, the visual Orchestrator and Simulation Lab.
+To regenerate it locally, see [`docs/walkthrough-video.md`](docs/walkthrough-video.md).
+
 ## External MCP integrations
 
 External MCP servers are controlled through the fail-closed registry described
@@ -132,6 +140,16 @@ docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
 Diesen Key in der Console unter `http://127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-3000}` eingeben.
 
 Danach sind die lokalen Beobachtungspunkte:
+
+<video controls preload="metadata" width="960" src="artifacts/videos/harnessmesh-walkthrough.webm"></video>
+
+Die Aufnahme zeigt denselben Ablauf kompakt in CLI und React-Konsole. Für eine
+eigene Aufnahme mit aktuellen Demo-Daten:
+
+```bash
+cd frontend
+npm run demo:video
+```
 
 | Oberfläche/Endpoint | Zweck |
 | --- | --- |

@@ -18,7 +18,8 @@ cd frontend
 npm run demo:video
 ```
 
-The video is written to `artifacts/videos/harnessmesh-walkthrough.webm`.
+The reference video is committed at `artifacts/videos/harnessmesh-walkthrough.webm`.
+Running the command regenerates and overwrites that local artifact.
 Override the output directory with `HARNESSMESH_VIDEO_DIR=/tmp/harnessmesh-video`.
 
 The recording covers:
