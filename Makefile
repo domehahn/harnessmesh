@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build extension compose-config local-up local-down vault-up vault-down k8s-validate k8s-apply k3d-up k3d-down backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension compose-config local-up local-down vault-up vault-down k8s-validate k8s-apply k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -58,7 +58,12 @@ k8s-apply:
 
 k3d-up:
 	k3d cluster create harnessmesh --agents $${K3D_AGENTS:-1} --wait
+	$(MAKE) k3d-image
 	$(MAKE) k8s-apply
+
+k3d-image:
+	docker build -t harnessmesh:local .
+	k3d image import harnessmesh:local -c harnessmesh
 
 k3d-down:
 	k3d cluster delete harnessmesh
