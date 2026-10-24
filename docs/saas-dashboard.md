@@ -37,6 +37,8 @@ Dashboard API requests are rate limited per client; tune the limit with
 - `GET /api/v1/dashboard/jobs?status=...`
 - `GET /api/v1/dashboard/jobs/{id}` includes the tenant-scoped persistent event history.
 - `GET /api/v1/dashboard/jobs/{id}/events` returns the durable execution timeline.
+- `GET /api/v1/dashboard/jobs/{id}/events/stream` provides an authenticated
+  SSE stream for durable job events.
 - `GET /api/v1/dashboard/approvals?status=...`
 - `GET /api/v1/dashboard/usage`
 - `GET /api/v1/dashboard/optimization` returns tenant-scoped usage buckets by
@@ -73,6 +75,8 @@ Dashboard API requests are rate limited per client; tune the limit with
 - `GET /api/v1/dashboard/spaces/{id}/messages?channel=general&limit=100` returns
   the tenant-scoped collaboration transcript for the selected channel. The
   limit is bounded to 500.
+- `GET /api/v1/dashboard/spaces/{id}/messages/stream?channel=general` provides
+  an authenticated SSE stream for collaboration messages.
 - `POST /api/v1/dashboard/spaces/{id}/messages` publishes an operator message
   through the Collaboration Engine with `{ "channel", "message", "to", "mentions" }`.
 

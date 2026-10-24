@@ -209,6 +209,49 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 				writeJSON(w, space)
 				return
 			}
+			if len(parts) >= 3 && parts[1] == "messages" && parts[2] == "stream" && r.Method == http.MethodGet {
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+					return
+				}
+				channelID := r.URL.Query().Get("channel")
+				if channelID == "" {
+					channelID = "general"
+				}
+				threadID := r.URL.Query().Get("thread")
+				lastCount := 0
+				ticker := time.NewTicker(2 * time.Second)
+				defer ticker.Stop()
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				for {
+					messages, messageErr := orchestrator.GetMessages(ctx, id, channelID, threadID, 500)
+					if messageErr != nil {
+						return
+					}
+					if len(messages) < lastCount {
+						lastCount = 0
+					}
+					for _, message := range messages[lastCount:] {
+						payload, marshalErr := json.Marshal(message)
+						if marshalErr == nil {
+							_, _ = fmt.Fprintf(w, "event: collaboration\\ndata: %s\\n\\n", payload)
+						}
+					}
+					if len(messages) > lastCount {
+						lastCount = len(messages)
+					}
+					_, _ = fmt.Fprint(w, ": keepalive\\n\\n")
+					flusher.Flush()
+					select {
+					case <-r.Context().Done():
+						return
+					case <-ticker.C:
+					}
+				}
+			}
 			if len(parts) >= 2 && parts[1] == "messages" && r.Method == http.MethodGet {
 				channelID := r.URL.Query().Get("channel")
 				if channelID == "" {
@@ -579,6 +622,57 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+		if strings.HasPrefix(path, "/jobs/") && strings.HasSuffix(path, "/events/stream") {
+			id := strings.TrimSuffix(strings.TrimPrefix(path, "/jobs/"), "/events/stream")
+			job, e := st.GetJob(ctx, id)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if job == nil || job.Tenant != who.Tenant {
+				http.NotFound(w, r)
+				return
+			}
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			lastCount := 0
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				events := []store.JobEvent{}
+				if eventStore, ok := st.(store.JobEventStore); ok {
+					events, e = eventStore.ListJobEvents(ctx, id, 500)
+					if e != nil {
+						return
+					}
+				}
+				if len(events) < lastCount {
+					lastCount = 0
+				}
+				for _, event := range events[lastCount:] {
+					payload, marshalErr := json.Marshal(event)
+					if marshalErr == nil {
+						_, _ = fmt.Fprintf(w, "event: job\\ndata: %s\\n\\n", payload)
+					}
+				}
+				if len(events) > lastCount {
+					lastCount = len(events)
+				}
+				_, _ = fmt.Fprint(w, ": keepalive\\n\\n")
+				flusher.Flush()
+				select {
+				case <-r.Context().Done():
+					return
+				case <-ticker.C:
+				}
+			}
 		}
 		if strings.HasPrefix(path, "/jobs/") && strings.HasSuffix(path, "/events") {
 			id := strings.TrimSuffix(strings.TrimPrefix(path, "/jobs/"), "/events")
