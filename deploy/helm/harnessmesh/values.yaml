@@ -1,0 +1,22 @@
+image:
+  repository: harnessmesh
+  tag: local
+  pullPolicy: IfNotPresent
+replicaCount: 1
+worker:
+  replicaCount: 2
+  concurrency: 2
+service:
+  type: ClusterIP
+  port: 8787
+existingSecret: harnessmesh-runtime
+secretKeys:
+  mcpToken: mcp-token
+  adminToken: admin-token
+  vaultToken: vault-token
+  postgresDSN: postgres-dsn
+env:
+  secretBackend: vault
+  vaultAddress: ""
+  vaultMount: secret
+resources: {}

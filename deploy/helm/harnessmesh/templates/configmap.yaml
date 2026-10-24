@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "harnessmesh.fullname" . }}-config
+  labels:
+    {{- include "harnessmesh.labels" . | nindent 4 }}
+data:
+  HARNESSMESH_SECRET_BACKEND: {{ .Values.env.secretBackend | quote }}
+  HARNESSMESH_VAULT_MOUNT: {{ .Values.env.vaultMount | quote }}
+  {{- if .Values.env.vaultAddress }}
+  VAULT_ADDR: {{ .Values.env.vaultAddress | quote }}
+  {{- end }}
+  harnessmesh.json: |
+    {"version":1,"provider":{"default_backend":"local","backends":{"local":{"type":"local","base_url":"http://127.0.0.1:11434"}}}}
