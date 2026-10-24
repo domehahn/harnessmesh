@@ -20,7 +20,7 @@ run_benchmark() {
 run_benchmark "$base_dir" "$base_output"
 run_benchmark "$PWD" "$head_output"
 
-GOBIN="$tmp_root/bin" go install golang.org/x/perf/cmd/benchstat@latest
+GOTOOLCHAIN=auto GOBIN="$tmp_root/bin" go install golang.org/x/perf/cmd/benchstat@latest
 mkdir -p benchmark-results
 "$tmp_root/bin/benchstat" -format csv "$base_output" "$head_output" | tee benchmark-results/benchstat.csv
 
