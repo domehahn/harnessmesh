@@ -1187,7 +1187,7 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				"routing":      governance.Recommend(routingCandidates),
 				"transports":   map[string]any{"mcp": mcp, "bridge": bridge},
 				"credits":      credits,
-				"optimization": map[string]any{"status": "observational", "recommendation": "Collect more completed usage and quality outcomes before changing routing", "automatic_changes": false},
+				"optimization": map[string]any{"status": "agent-routing-active-model-routing-observational", "recommendation": "Agent task selection already applies the configured economy policy; model/provider route changes remain recommendation-only until explicitly enabled by provider policy", "automatic_changes": false, "automatic_agent_routing": true},
 			})
 		default:
 			http.NotFound(w, r)
