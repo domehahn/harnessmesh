@@ -133,6 +133,11 @@ development-only Vault profile. `make k8s-validate`, `make k8s-apply` and
 replace the included single-replica PostgreSQL StatefulSet with managed HA
 PostgreSQL and use an externally managed Vault.
 
+When `HARNESSMESH_REQUIRE_STRONG_TOKENS=1` is enabled, the MCP process fails
+closed if the configured Vault backend is unavailable or local encrypted
+storage has no `HARNESSMESH_SECRET_KEY`. This prevents a production control
+plane from starting with a dashboard that cannot manage credentials.
+
 ## Usage and cost boundary
 
 Usage visibility is available, including observation and job counts and the
