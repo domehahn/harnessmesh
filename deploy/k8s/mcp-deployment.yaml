@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harnessmesh-mcp
+spec:
+  # SQLite is the default runtime store in this baseline; use one replica
+  # with a durable volume. A multi-replica deployment requires completing the
+  # Postgres-backed Engine wiring before scaling horizontally.
+  replicas: 1
+  selector:
+    matchLabels: { app: harnessmesh-mcp }
+  template:
+    metadata:
+      labels: { app: harnessmesh-mcp }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: mcp
+          image: harnessmesh:local
+          imagePullPolicy: IfNotPresent
+          args: ["mcp", "serve", "--config", "/etc/harnessmesh/harnessmesh.json", "--repo", "/workspace", "--listen", "0.0.0.0:8787"]
+          ports: [{ name: http, containerPort: 8787 }]
+          envFrom: [{ configMapRef: { name: harnessmesh-config } }]
+          env:
+            - name: HARNESSMESH_MCP_TOKEN
+              valueFrom: { secretKeyRef: { name: harnessmesh-runtime, key: mcp-token } }
+            - name: HARNESSMESH_ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: harnessmesh-runtime, key: admin-token } }
+            - name: VAULT_TOKEN
+              valueFrom: { secretKeyRef: { name: harnessmesh-runtime, key: vault-token } }
+            - name: HARNESSMESH_POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: harnessmesh-runtime, key: postgres-password } }
+          readinessProbe: { httpGet: { path: /readyz, port: http }, initialDelaySeconds: 10, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 20, periodSeconds: 20 }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts:
+            - { name: config, mountPath: /etc/harnessmesh }
+            - { name: tmp, mountPath: /tmp }
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: config
+          configMap: { name: harnessmesh-runtime-config }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 256Mi }
+        - name: data
+          persistentVolumeClaim: { claimName: harnessmesh-data }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harnessmesh-runtime-config
+data:
+  harnessmesh.json: |
+    {"version":1,"provider":{"default_backend":"local","backends":{"local":{"type":"local","base_url":"http://127.0.0.1:11434"}}}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harnessmesh-mcp
+spec:
+  selector: { app: harnessmesh-mcp }
+  ports: [{ name: http, port: 8787, targetPort: http }]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: harnessmesh-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 10Gi } }

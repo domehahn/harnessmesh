@@ -24,6 +24,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/mcpgateway"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/secrets"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/telemetry"
 	"github.com/domehahn/harnessmesh/internal/tenant"
@@ -150,7 +151,17 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 		mux.Handle("/api/v1/identity/", identity.NewHandler(identityStore))
 	}
 	mux.Handle("/dashboard/", webui.Handler())
-	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine))
+	var secretManager secrets.Manager
+	if strings.EqualFold(os.Getenv("HARNESSMESH_SECRET_BACKEND"), "vault") {
+		if configured, err := secrets.NewVaultFromEnv(); err == nil {
+			secretManager = configured
+		}
+	} else if secretStore, ok := s.engine.Store().(store.SecretStore); ok {
+		if configured, err := secrets.NewLocal(secretStore, os.Getenv("HARNESSMESH_SECRET_KEY")); err == nil {
+			secretManager = configured
+		}
+	}
+	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine, secretManager))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)

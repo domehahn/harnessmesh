@@ -67,10 +67,23 @@ export HARNESSMESH_BRIDGE_TOKEN="$(openssl rand -hex 32)"
 export HARNESSMESH_PROVIDER_TOKEN="$(openssl rand -hex 32)"
 export HARNESSMESH_ADMIN_TOKEN="$(openssl rand -hex 32)"
 export HARNESSMESH_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+export HARNESSMESH_SECRET_KEY="$(openssl rand -hex 32)"
 
 docker compose -f compose.yaml -f compose.production.yaml \
   --profile mcp --profile bridge --profile console up --build -d
 ```
+
+Tenant-owned provider keys and MCP credentials can be entered in Settings.
+They are encrypted locally with `HARNESSMESH_SECRET_KEY` and are never
+returned by the API. For a local Vault exercise, run `make vault-up`, set
+`HARNESSMESH_SECRET_BACKEND=vault` and `VAULT_TOKEN=dev-root-token`, then
+start the stack again. The Vault profile is development-only; production
+uses an externally managed Vault and Kubernetes secrets.
+
+The central operational entry points are `make local-up`, `make local-down`,
+`make k8s-validate`, `make k8s-apply` and `make k3d-up`. Kubernetes manifests
+and the required out-of-band secret setup are documented in
+[`deploy/k8s/README.md`](deploy/k8s/README.md).
 
 Für den React-Login einmalig einen lokalen Tenant und API-Key im Docker-Volume
 des laufenden MCP-Containers anlegen. Der ausgegebene Key wird nur einmal

@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS principals (subject TEXT PRIMARY KEY, email TEXT NOT 
 CREATE TABLE IF NOT EXISTS tenant_memberships (tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, subject TEXT NOT NULL REFERENCES principals(subject) ON DELETE CASCADE, role TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (tenant_id, subject));
 CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, subject TEXT NOT NULL REFERENCES principals(subject) ON DELETE CASCADE, prefix TEXT NOT NULL, hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ NULL);
 CREATE INDEX IF NOT EXISTS idx_memberships_subject ON tenant_memberships(subject, status);
-CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id, status);`)
+CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id, status);
+CREATE TABLE IF NOT EXISTS tenant_secrets (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL, ciphertext BYTEA NOT NULL, nonce BYTEA NOT NULL, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, UNIQUE(tenant_id,name));
+CREATE INDEX IF NOT EXISTS idx_tenant_secrets_tenant ON tenant_secrets(tenant_id,name);`)
 	return err
 }
 

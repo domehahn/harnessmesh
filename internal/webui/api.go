@@ -17,6 +17,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/runbundle"
+	"github.com/domehahn/harnessmesh/internal/secrets"
 	"github.com/domehahn/harnessmesh/internal/simulation"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/tenant"
@@ -57,10 +58,16 @@ func dashboardPage(r *http.Request) (int, int) {
 
 func APIHandler(st store.Store) http.Handler { return APIHandlerWithOrchestrator(st, nil) }
 
-func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messengers ...Messenger) http.Handler {
+func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integrations ...any) http.Handler {
 	var messenger Messenger
-	if len(messengers) > 0 {
-		messenger = messengers[0]
+	if len(integrations) > 0 {
+		messenger, _ = integrations[0].(Messenger)
+	}
+	var secretManager secrets.Manager
+	for _, integration := range integrations {
+		if configured, ok := integration.(secrets.Manager); ok {
+			secretManager = configured
+		}
 	}
 	const maxRateLimitClients = 10000
 	var rateMu sync.Mutex
@@ -403,6 +410,64 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, messe
 				return
 			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestrator.ConfiguredAgents()})
+			return
+		}
+		if strings.HasPrefix(path, "/secrets") {
+			if secretManager == nil {
+				http.Error(w, "secret manager unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			if path == "/secrets" && r.Method == http.MethodGet {
+				items, e := secretManager.List(ctx, who.Tenant)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "secrets": items})
+				return
+			}
+			if path == "/secrets" && r.Method == http.MethodPost {
+				var req struct {
+					Name     string            `json:"name"`
+					Value    string            `json:"value"`
+					Metadata map[string]string `json:"metadata"`
+				}
+				if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req) != nil || strings.TrimSpace(req.Name) == "" || req.Value == "" {
+					http.Error(w, "name and value are required", http.StatusBadRequest)
+					return
+				}
+				if len(req.Name) > 128 || strings.ContainsAny(req.Name, "/\\") {
+					http.Error(w, "invalid secret name", http.StatusBadRequest)
+					return
+				}
+				item, e := secretManager.Put(ctx, who.Tenant, strings.TrimSpace(req.Name), req.Value, req.Metadata)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				writeJSON(w, map[string]any{"secret": item, "stored": true})
+				return
+			}
+			if strings.HasPrefix(path, "/secrets/") && r.Method == http.MethodDelete {
+				name := strings.TrimPrefix(path, "/secrets/")
+				if name == "" || strings.ContainsAny(name, "/\\") {
+					http.Error(w, "invalid secret name", http.StatusBadRequest)
+					return
+				}
+				if e := secretManager.Delete(ctx, who.Tenant, name); e != nil {
+					http.Error(w, e.Error(), http.StatusNotFound)
+					return
+				}
+				writeJSON(w, map[string]any{"name": name, "deleted": true})
+				return
+			}
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		if path == "/members" {

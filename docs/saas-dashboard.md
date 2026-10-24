@@ -117,6 +117,22 @@ The dashboard read and simulation contracts are also represented in
 [`docs/api/openapi.json`](api/openapi.json), including both API-key and OIDC
 Bearer authentication schemes.
 
+## Tenant secrets and deployment
+
+Owners can store provider API keys, MCP credentials and other integration
+secrets from Settings. `POST /api/v1/dashboard/secrets` accepts a name and
+value; list responses contain metadata only and never return the value. The
+default local backend encrypts values with AES-GCM using
+`HARNESSMESH_SECRET_KEY`. Set `HARNESSMESH_SECRET_BACKEND=vault` together
+with `VAULT_ADDR`, `VAULT_TOKEN` and `HARNESSMESH_VAULT_MOUNT` to use
+HashiCorp Vault KV v2 instead.
+
+`make local-up` starts the local Compose stack. `make vault-up` starts the
+development-only Vault profile. `make k8s-validate`, `make k8s-apply` and
+`make k3d-up` provide the Kubernetes/k3d path. Production clusters should
+replace the included single-replica PostgreSQL StatefulSet with managed HA
+PostgreSQL and use an externally managed Vault.
+
 ## Usage and cost boundary
 
 Usage visibility is available, including observation and job counts and the

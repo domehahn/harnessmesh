@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build extension compose-config backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension compose-config local-up local-down vault-up vault-down k8s-validate k8s-apply k3d-up k3d-down backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -37,6 +37,31 @@ compose-config:
 	HARNESSMESH_PROVIDER_TOKEN=make-provider-token \
 	HARNESSMESH_UID=$$(id -u) HARNESSMESH_GID=$$(id -g) \
 		docker compose config --quiet
+
+local-up:
+	docker compose -f compose.yaml -f compose.production.yaml --profile mcp --profile bridge --profile console up -d --build
+
+local-down:
+	docker compose -f compose.yaml -f compose.production.yaml --profile mcp --profile bridge --profile console down
+
+vault-up:
+	docker compose --profile vault up -d harnessmesh-vault
+
+vault-down:
+	docker compose --profile vault down
+
+k8s-validate:
+	kubectl kustomize deploy/k8s >/dev/null
+
+k8s-apply:
+	kubectl apply -k deploy/k8s
+
+k3d-up:
+	k3d cluster create harnessmesh --agents $${K3D_AGENTS:-1} --wait
+	$(MAKE) k8s-apply
+
+k3d-down:
+	k3d cluster delete harnessmesh
 
 backup-restore-smoke:
 	./scripts/backup-restore-smoke.sh

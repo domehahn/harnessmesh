@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harnessmesh-config
+data:
+  HARNESSMESH_SECRET_BACKEND: "vault"
+  HARNESSMESH_VAULT_MOUNT: "secret"
+  VAULT_ADDR: "http://vault:8200"
+  HARNESSMESH_POSTGRES_DB: "harnessmesh"
+  HARNESSMESH_POSTGRES_USER: "harnessmesh"
+  HARNESSMESH_DB_PATH: "/data/harnessmesh.db"

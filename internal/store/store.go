@@ -391,6 +391,27 @@ type DirectoryStore interface {
 	ListAPIKeys(context.Context, string) ([]APIKeyRecord, error)
 }
 
+// SecretStore persists encrypted tenant secret material. Implementations must
+// never expose the ciphertext through administrative list endpoints; the
+// secrets service controls encryption and access policy above this seam.
+type SecretRecord struct {
+	ID         string    `json:"id"`
+	TenantID   string    `json:"tenant_id"`
+	Name       string    `json:"name"`
+	Ciphertext []byte    `json:"-"`
+	Nonce      []byte    `json:"-"`
+	Metadata   string    `json:"metadata,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type SecretStore interface {
+	PutSecret(context.Context, *SecretRecord) error
+	ListSecrets(context.Context, string) ([]SecretRecord, error)
+	GetSecret(context.Context, string, string) (*SecretRecord, error)
+	DeleteSecret(context.Context, string, string) error
+}
+
 type ExperimentRecord struct {
 	ID            string
 	Tenant        string
@@ -1309,6 +1330,23 @@ func (s *SQLiteStore) migrate() error {
 					created_at TIMESTAMP NOT NULL
 				);
 				CREATE INDEX IF NOT EXISTS idx_approval_audit_approval ON approval_audit(approval_id, created_at);
+			`,
+		},
+		{
+			version: 21,
+			sql: `
+				CREATE TABLE IF NOT EXISTS tenant_secrets (
+					id TEXT PRIMARY KEY,
+					tenant_id TEXT NOT NULL,
+					name TEXT NOT NULL,
+					ciphertext BLOB NOT NULL,
+					nonce BLOB NOT NULL,
+					metadata TEXT NOT NULL DEFAULT '{}',
+					created_at TIMESTAMP NOT NULL,
+					updated_at TIMESTAMP NOT NULL,
+					UNIQUE(tenant_id, name)
+				);
+				CREATE INDEX IF NOT EXISTS idx_tenant_secrets_tenant ON tenant_secrets(tenant_id, name);
 			`,
 		},
 	}
