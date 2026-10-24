@@ -138,6 +138,12 @@ closed if the configured Vault backend is unavailable or local encrypted
 storage has no `HARNESSMESH_SECRET_KEY`. This prevents a production control
 plane from starting with a dashboard that cannot manage credentials.
 
+For local OIDC testing, `make keycloak-up` starts the development Keycloak
+profile and imports the HarnessMesh realm. Configure the introspection URL,
+client ID and client secret from `.env.example` before starting MCP. The
+realm is intentionally a local harness; production requires a managed realm,
+TLS, trusted redirect URIs and provider-managed MFA.
+
 ## Usage and cost boundary
 
 Usage visibility is available, including observation and job counts and the

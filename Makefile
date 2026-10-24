@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build extension compose-config local-up local-down vault-up vault-down k8s-validate k8s-apply k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension compose-config local-up local-down vault-up vault-down keycloak-up keycloak-down k8s-validate k8s-apply k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -49,6 +49,12 @@ vault-up:
 
 vault-down:
 	docker compose --profile vault down
+
+keycloak-up:
+	docker compose --profile keycloak up -d harnessmesh-keycloak
+
+keycloak-down:
+	docker compose --profile keycloak down
 
 k8s-validate:
 	kubectl kustomize deploy/k8s >/dev/null

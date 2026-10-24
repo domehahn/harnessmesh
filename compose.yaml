@@ -57,6 +57,9 @@ services:
       VAULT_ADDR: ${VAULT_ADDR:-http://harnessmesh-vault:8200}
       VAULT_TOKEN: ${VAULT_TOKEN:-}
       HARNESSMESH_VAULT_MOUNT: ${HARNESSMESH_VAULT_MOUNT:-secret}
+      HARNESSMESH_DASHBOARD_OAUTH_INTROSPECTION_URL: ${HARNESSMESH_DASHBOARD_OAUTH_INTROSPECTION_URL:-}
+      HARNESSMESH_DASHBOARD_OAUTH_CLIENT_ID: ${HARNESSMESH_DASHBOARD_OAUTH_CLIENT_ID:-harnessmesh-dashboard}
+      HARNESSMESH_DASHBOARD_OAUTH_CLIENT_SECRET: ${HARNESSMESH_DASHBOARD_OAUTH_CLIENT_SECRET:-}
     read_only: true
     tmpfs:
       - /tmp:size=256m
@@ -224,6 +227,27 @@ services:
       timeout: 3s
       retries: 12
 
+  # Local OIDC/MFA integration harness. Importing the realm makes the
+  # introspection contract reproducible; production must use a managed
+  # Keycloak deployment and a non-development client secret.
+  harnessmesh-keycloak:
+    profiles: ["keycloak"]
+    image: quay.io/keycloak/keycloak:26.0
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-dev-admin-password}
+    command: ["start-dev", "--http-port=8080", "--import-realm"]
+    ports:
+      - "127.0.0.1:${HARNESSMESH_KEYCLOAK_PORT:-8080}:8080"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+      - harnessmesh-keycloak-data:/opt/keycloak/data
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
   # Run an online SQLite backup and copy the append-only knowledge archive.
   # Usage: docker compose --profile backup run --rm harnessmesh-backup
   harnessmesh-backup:
@@ -277,3 +301,4 @@ volumes:
   # durability requirements. Never mounted read_only.
   harnessmesh-data:
   harnessmesh-vault-data:
+  harnessmesh-keycloak-data:

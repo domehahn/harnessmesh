@@ -85,6 +85,12 @@ The central operational entry points are `make local-up`, `make local-down`,
 and the required out-of-band secret setup are documented in
 [`deploy/k8s/README.md`](deploy/k8s/README.md).
 
+For local OIDC introspection, copy the OIDC values from `.env.example`, set a
+Keycloak admin password, and run `make keycloak-up`. The realm import is in
+[`deploy/keycloak/harnessmesh-realm.json`](deploy/keycloak/harnessmesh-realm.json).
+The imported client is for local testing only; configure MFA and client
+credentials in the managed Keycloak realm for production.
+
 Für den React-Login einmalig einen lokalen Tenant und API-Key im Docker-Volume
 des laufenden MCP-Containers anlegen. Der ausgegebene Key wird nur einmal
 angezeigt. Die CLI muss im Container laufen, damit sie dieselbe SQLite-Datenbank
