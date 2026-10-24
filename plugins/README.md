@@ -61,6 +61,9 @@ make local-up
 
 The dashboard Settings → Agent & MCP marketplace shows discovered plugins,
 version, capabilities, risk, hash/signature state and a live health probe.
+Refreshing that view re-scans the configured directory and registers newly
+valid plugins for subsequent sessions; already running sessions are not
+silently rebound.
 After activation, add the plugin name as an agent `kind`/`adapter` in the
 normal HarnessMesh config; no Go code change is required. The adapter SDK
 catalog also exposes the plugin descriptor to orchestration and routing.

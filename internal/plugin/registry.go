@@ -143,6 +143,26 @@ func RegisterFromEnvironment() error {
 	return err
 }
 
+// RefreshFromEnvironment re-scans the configured plugin directory and
+// updates the catalog/adapter registry. Existing harness instances are not
+// rebound; new sessions see the refreshed adapter set safely.
+func RefreshFromEnvironment() error {
+	root := strings.TrimSpace(os.Getenv("HARNESSMESH_PLUGIN_DIR"))
+	if root == "" {
+		root = "plugins"
+	}
+	version := strings.TrimSpace(os.Getenv("HARNESSMESH_VERSION"))
+	if version == "" {
+		version = "0.1.0"
+	}
+	trusted, err := TrustedKeysFromEnvironment()
+	if err != nil {
+		return err
+	}
+	_, err = RegisterDirectory(root, Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version, TrustedPublicKeys: trusted})
+	return err
+}
+
 func TrustedKeysFromEnvironment() ([]ed25519.PublicKey, error) {
 	raw := strings.TrimSpace(os.Getenv("HARNESSMESH_PLUGIN_TRUSTED_KEYS"))
 	if raw == "" {

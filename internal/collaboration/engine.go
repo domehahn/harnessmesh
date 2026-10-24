@@ -227,6 +227,7 @@ func (e *Engine) ConfiguredMCPServers() []map[string]any {
 }
 
 func (e *Engine) ConfiguredPlugins() []map[string]any {
+	_ = plugin.RefreshFromEnvironment()
 	items := plugin.Probe(context.Background())
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
