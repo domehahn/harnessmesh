@@ -25,6 +25,7 @@ profile and provides the same tenant-scoped control plane with:
 - routing recommendations, provider-quota projection and deterministic Simulation Lab;
 - tenant members, roles and API-key issuance/revocation;
 - a credential-free adapter registry contract for built-in and external agent integrations;
+- a registrable Provider Backend SDK with policy-checked fallback resolution;
 - deep links, local pagination, keyboard-accessible navigation and authenticated E2E coverage.
 
 The console stores credentials only in browser session storage. It polls the
