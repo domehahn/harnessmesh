@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -588,6 +589,56 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				writeJSON(w, member)
 				return
 			}
+		}
+		if strings.HasPrefix(path, "/members/") && (r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
+			if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			subject, e := url.PathUnescape(strings.TrimPrefix(path, "/members/"))
+			if e != nil || strings.TrimSpace(subject) == "" {
+				http.Error(w, "invalid member subject", http.StatusBadRequest)
+				return
+			}
+			membership, e := identityStore.GetMembership(ctx, who.Tenant, subject)
+			if e != nil || membership == nil {
+				http.Error(w, "member not found", http.StatusNotFound)
+				return
+			}
+			if r.Method == http.MethodDelete {
+				membership.Status = "inactive"
+			} else {
+				var req struct {
+					Role   string `json:"role"`
+					Status string `json:"status"`
+				}
+				if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req) != nil {
+					http.Error(w, "invalid member update", http.StatusBadRequest)
+					return
+				}
+				if req.Role != "" {
+					if !tenant.ValidRole(req.Role) {
+						http.Error(w, "invalid role", http.StatusBadRequest)
+						return
+					}
+					membership.Role = req.Role
+				}
+				if req.Status != "" {
+					switch req.Status {
+					case "active", "inactive", "invited":
+						membership.Status = req.Status
+					default:
+						http.Error(w, "invalid member status", http.StatusBadRequest)
+						return
+					}
+				}
+			}
+			if e := identityStore.SetMembership(ctx, membership); e != nil {
+				http.Error(w, e.Error(), http.StatusConflict)
+				return
+			}
+			writeJSON(w, membership)
+			return
 		}
 		if path == "/keys" {
 			directory, ok := st.(store.DirectoryStore)
