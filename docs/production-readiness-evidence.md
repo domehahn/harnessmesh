@@ -22,3 +22,16 @@ environment produces a dated artifact.
 The open rows are external-state gates, not silently treated as passing. The
 single-node pilot must not be promoted to a general multi-instance or
 enterprise-identity claim without those artifacts.
+
+## Latest repository verification
+
+On 2026-10-25, the full `make production-readiness` gate completed with
+`PRODUCTION_READY=PASS`. This included build, vet, unit, race, fuzz, contract,
+authentication, model-catalog, write/edit, recovery, concurrency,
+observability, redaction, zero-credit/billing, simulation, frontend build,
+frontend smoke, frontend E2E (8/8), and frontend audit checks.
+
+This result is repository evidence for the deterministic checks above. It does
+not close the deployment-dependent rows in this matrix: those still require
+dated artifacts from the selected Linux runtime, identity provider, secret
+manager, managed database, staging monitoring, and external client fixtures.
