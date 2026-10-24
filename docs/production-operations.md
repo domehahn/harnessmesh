@@ -1,0 +1,215 @@
+# Production Operations
+
+This runbook targets the supported single-node production profile. It does not
+claim high availability or multi-tenant isolation.
+
+## Minimum operating objectives
+
+Suggested initial SLOs; operators should tune them with real staging data:
+
+| Signal | Initial objective | Alert condition |
+| --- | --- | --- |
+| MCP/Bridge availability | 99.9% monthly | `/readyz` fails for 2 minutes |
+| Provider availability | 99.9% monthly | `/readyz` fails for 2 minutes |
+| Task completion | 95% successful terminal outcomes | 15-minute rolling rate below target |
+| Backup freshness | less than 24 hours | oldest successful backup exceeds 24 hours |
+| Dead letters | zero unreviewed high-severity entries | any high-severity entry or sustained growth |
+| Disk usage | below 70% normal operation | warning at 70%, critical at 85% |
+
+## Start and verify
+
+Use the production configuration and overlay only after replacing the example
+agent commands, workspace path, and credentials:
+
+```bash
+export HARNESSMESH_MCP_TOKEN="<random-token-at-least-32-bytes>"
+export HARNESSMESH_ADMIN_TOKEN="<different-random-token-at-least-32-bytes>"
+export HARNESSMESH_BRIDGE_TOKEN="<random-token-at-least-32-bytes>"
+export HARNESSMESH_PROVIDER_TOKEN="<random-token-at-least-32-bytes>"
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp up -d
+```
+
+To deploy the React SaaS console together with MCP, enable the `console`
+profile. The console is bound to loopback and should be published only through
+the deployment's TLS reverse proxy:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile console up -d
+curl -fsS http://127.0.0.1:3000/
+```
+
+The production overlay constrains the console by default to 0.5 CPU, 128 MiB
+RAM, and 64 processes. Tune these values only after observing the deployment:
+
+```sh
+export HARNESSMESH_CONSOLE_CPUS=0.5
+export HARNESSMESH_CONSOLE_MEMORY_LIMIT=128m
+export HARNESSMESH_CONSOLE_PIDS_LIMIT=64
+```
+
+All services in the production overlay use bounded Docker JSON logs (10 MiB per
+file, five files). Forward logs to the deployment's central collector before
+discarding local container logs.
+
+For Docker/Kubernetes secret mounts, use `HARNESSMESH_MCP_TOKEN_FILE`,
+`HARNESSMESH_BRIDGE_TOKEN_FILE`, or `HARNESSMESH_PROVIDER_TOKEN_FILE`. The
+separate admin token remains required as `HARNESSMESH_ADMIN_TOKEN` by the
+production Compose overlay. A direct token environment variable takes
+precedence over its file variant.
+
+For federated deployments, MCP and Bridge also support RFC 7662 OAuth
+introspection via `HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL` and
+`HARNESSMESH_BRIDGE_OAUTH_INTROSPECTION_URL`. Bridge can require a scope with
+`HARNESSMESH_BRIDGE_REQUIRED_SCOPE`; MCP can require one with
+`HARNESSMESH_MCP_REQUIRED_SCOPE`. Introspection failures fail closed.
+
+The SaaS dashboard is served at `/dashboard`. Dashboard API requests require
+`X-HarnessMesh-API-Key` and are rate limited per client. Tune the default limit
+of 120 requests per minute with:
+
+```sh
+export HARNESSMESH_DASHBOARD_RATE_LIMIT=240
+```
+
+The browser keeps the API key only in session storage; the logout control
+removes it immediately.
+
+Verify:
+
+```bash
+curl -fsS http://127.0.0.1:8787/healthz
+curl -fsS http://127.0.0.1:8787/readyz
+curl -fsS http://127.0.0.1:8788/readyz
+docker compose -f compose.yaml -f compose.production.yaml ps
+```
+
+Do not expose the loopback ports directly to the Internet. Put a TLS-terminating
+reverse proxy or approved tunnel in front of remote MCP, and enforce network
+egress separately for control-plane and inference backends. Managed agents in
+the production profile use Bubblewrap private network namespaces; verify this
+with a staging task that attempts an outbound connection and confirm it fails.
+The target runtime must permit the required user/network namespaces; if it does
+not, the agent fails closed and must not be admitted as a production executor.
+Run `HARNESSMESH_ISOLATION_IMAGE=<exact-image> make runtime-isolation-check`
+before the first rollout and after runtime changes.
+See [target-runtime-qualification.md](target-runtime-qualification.md) for
+the complete release checklist and failure policy.
+
+The dashboard Simulation Lab is a deterministic release-safety aid, not a load
+test. Run `make simulation` in CI and use the authenticated console view to
+inspect the same fault contracts. Run-bundle exports are redacted evidence
+artifacts; retain them according to the deployment's audit policy.
+
+## Daily checks
+
+For PostgreSQL provisioning, apply repository migrations before starting the
+application:
+
+```sh
+HARNESSMESH_POSTGRES_PASSWORD='use-a-secret-manager' \
+HARNESSMESH_ADMIN_TOKEN='...' \
+HARNESSMESH_MCP_TOKEN='...' \
+docker compose -f compose.yaml -f compose.production.yaml --profile postgres run --rm harnessmesh-postgres-migrate
+```
+
+The PostgreSQL profile is a single-node operational baseline. HA, managed
+backups, PITR and failover still require the selected infrastructure provider.
+
+Large evidence and report payloads should use the artifact boundary described in
+[`docs/artifact-storage.md`](artifact-storage.md), not database blobs.
+
+- Confirm `/readyz` for every enabled service.
+- Check `/metrics` for errors, active streams, rate-limit denials, circuit
+  breakers, retries, and dead letters.
+- Confirm the latest backup directory and checksum manifest exist.
+- Check disk, memory, process count, and container restart counts.
+- Review unresolved high-severity findings and pending approvals.
+
+Prometheus rule and Grafana dashboard starting points are versioned under
+`deploy/monitoring/`. Import them into the deployment's monitoring stack and
+verify alert delivery in staging; the repository does not assume a particular
+Prometheus/Grafana installation.
+
+## Incident actions
+
+### Suspected credential compromise
+
+1. Stop remote MCP/Bridge exposure.
+2. Revoke and replace MCP, Admin, Bridge, Provider, tunnel, and backend tokens.
+3. Preserve audit logs and the current database/archive before cleanup.
+4. Restart with the production overlay and verify all readiness endpoints.
+
+### Credential rotation drill
+
+Run this procedure in staging before a production rollout:
+
+1. Record the active token fingerprint outside the application logs.
+2. Generate replacement MCP, admin, Bridge, Provider, and tunnel credentials.
+3. Replace mounted secret files atomically, or update the configured secret
+   manager version; never edit a secret in the repository. HarnessMesh reloads
+   `*_TOKEN_FILE` values on each authenticated request.
+4. Verify the new credential succeeds while the old credential returns `401`.
+   Direct environment tokens require a restart because process environments are
+   immutable.
+5. For OAuth introspection, revoke the token at the authorization server and
+   verify the next request is rejected without a HarnessMesh restart.
+6. Preserve the rotation timestamp and result in the audit/change record.
+
+The drill is complete only when old credentials fail, new credentials work,
+and no token value appears in logs, metrics, backups, or evidence excerpts.
+
+### Runaway agent or unsafe repository change
+
+1. Use the emergency stop/human-control mechanism and stop the executor.
+2. Preserve the session, evidence, logs, and current tree fingerprint.
+3. Do not commit or reuse stale evidence.
+4. Review the change through MeshCommit after the workspace is restored.
+
+### Provider outage
+
+1. Confirm `/readyz`, backend health, and provider error metrics.
+2. Verify fallback policy does not select a forbidden metered backend.
+3. Let circuit breakers and bounded retries drain naturally.
+4. Escalate to an operator decision if the task deadline or budget is reached.
+
+### Restore
+
+1. Stop MCP, Bridge, and Provider services.
+2. Run `HARNESSMESH_RESTORE_RTO_SECONDS=<target> make backup-restore-smoke` in
+   CI or use a selected production backup; retain the reported elapsed RTO.
+3. Restore only with `HARNESSMESH_RESTORE_SERVICES_STOPPED=1` and `--confirm`.
+4. Verify checksums, SQLite integrity, `/readyz`, knowledge counts, and a read-only session query.
+5. Preserve pre-restore copies until the incident is closed.
+
+## Release gate
+
+Before a production release, require:
+
+- clean `go test`, race, vet, fuzz, vulnerability, and Compose gates;
+- successful backup/restore smoke and staging restore drill;
+- no unresolved critical security findings;
+- production config validation with strong tokens and sandbox requirements;
+- documented rollback version and verified backup;
+- an operator available for the first real task after rollout.
+
+## Launch acceptance checklist
+
+Complete these items before opening the service to customer traffic:
+
+- [ ] DNS and TLS terminate at the approved edge; loopback ports are not public.
+- [ ] Strong, unique MCP, Bridge, Provider, Admin, database, and API-key
+      credentials are stored in the deployment secret manager.
+- [ ] PostgreSQL migrations and a backup/restore drill have succeeded for the
+      exact release image.
+- [ ] The `mcp`, `console`, and any enabled provider/bridge services report
+      healthy and ready status.
+- [ ] The React console loads through the edge and tenant API-key access is
+      verified with a non-production test tenant.
+- [ ] A job submission, approval decision, session read, and usage read have
+      each been exercised end-to-end.
+- [ ] Prometheus/Grafana alerts have been tested, including readiness failure,
+      error growth, dead letters, rate-limit denials, and backup staleness.
+- [ ] Runtime isolation has passed on the target host and the rollback image,
+      migration plan, and on-call owner are recorded.

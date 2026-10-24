@@ -152,7 +152,7 @@ func (a *CopilotCLIAdapter) Invoke(parent context.Context, req InvokeRequest) (I
 	}
 
 	env := agentEnv(a.cfg, a.switchyard)
-	run, runErr := executil.RunWithPolicy(ctx, dir, env, "", executil.SandboxPolicy{AllowedPaths: a.cfg.AllowedPaths, DeniedPaths: a.cfg.DeniedPaths}, bin, args...)
+	run, runErr := executil.RunWithPolicy(ctx, dir, env, "", executil.SandboxPolicy{AllowedCommands: a.cfg.AllowedCommands, AllowedPaths: a.cfg.AllowedPaths, DeniedPaths: a.cfg.DeniedPaths, NetworkMode: a.cfg.NetworkMode}, bin, args...)
 
 	sessionID := req.SessionID
 	if sessionID == "" {

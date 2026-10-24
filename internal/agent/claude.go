@@ -146,7 +146,7 @@ func (a *ClaudeCodeAdapter) Invoke(parent context.Context, req InvokeRequest) (I
 		dir = a.cfg.WorkingDir
 	}
 	env := agentEnv(a.cfg, a.switchyard)
-	run, err := executil.RunWithPolicy(ctx, dir, env, "", executil.SandboxPolicy{AllowedPaths: a.cfg.AllowedPaths, DeniedPaths: a.cfg.DeniedPaths}, binary, args...)
+	run, err := executil.RunWithPolicy(ctx, dir, env, "", executil.SandboxPolicy{AllowedCommands: a.cfg.AllowedCommands, AllowedPaths: a.cfg.AllowedPaths, DeniedPaths: a.cfg.DeniedPaths, NetworkMode: a.cfg.NetworkMode}, binary, args...)
 	if err != nil {
 		raw := strings.TrimSpace(run.Stdout + "\n" + run.Stderr)
 		var out claudeJSON

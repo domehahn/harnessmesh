@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/contextpack"
+	"github.com/domehahn/harnessmesh/internal/tenant"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -38,6 +39,7 @@ const (
 type Record struct {
 	SchemaVersion int             `json:"schema_version"`
 	ID            string          `json:"id"`
+	TenantID      string          `json:"tenant_id,omitempty"`
 	Timestamp     time.Time       `json:"timestamp"`
 	SessionID     string          `json:"session_id,omitempty"`
 	SpaceID       string          `json:"space_id,omitempty"`
@@ -66,6 +68,7 @@ type Record struct {
 }
 
 type SearchOptions struct {
+	TenantID       string
 	SessionID      string
 	SpaceID        string
 	Kind           string
@@ -178,7 +181,18 @@ func Open(path string) (*Archive, error) {
 	if a.projectID == "" {
 		a.projectID = filepath.Base(filepath.Dir(path))
 	}
-	if rawKey := os.Getenv("HARNESSMESH_KNOWLEDGE_KEY"); rawKey != "" {
+	rawKey := os.Getenv("HARNESSMESH_KNOWLEDGE_KEY")
+	if rawKey == "" {
+		if keyFile := strings.TrimSpace(os.Getenv("HARNESSMESH_KNOWLEDGE_KEY_FILE")); keyFile != "" {
+			keyBytes, readErr := os.ReadFile(keyFile)
+			if readErr != nil {
+				_ = f.Close()
+				return nil, fmt.Errorf("read knowledge encryption key file: %w", readErr)
+			}
+			rawKey = strings.TrimSpace(string(keyBytes))
+		}
+	}
+	if rawKey != "" {
 		a.aead, err = encryptionForKey(rawKey)
 		if err != nil {
 			_ = f.Close()
@@ -218,6 +232,11 @@ func (a *Archive) Append(ctx context.Context, record Record) error {
 	}
 	if record.SchemaVersion == 0 {
 		record.SchemaVersion = 1
+	}
+	if record.TenantID == "" {
+		if identity, err := tenant.FromContext(ctx); err == nil {
+			record.TenantID = identity.Tenant
+		}
 	}
 	if record.Timestamp.IsZero() {
 		record.Timestamp = time.Now().UTC()
@@ -403,6 +422,12 @@ func (a *Archive) indexedOffsets(terms []string) (map[int64]struct{}, bool) {
 }
 
 func (a *Archive) Search(ctx context.Context, query string, opts SearchOptions) ([]Record, error) {
+	if identity, err := tenant.FromContext(ctx); err == nil {
+		if opts.TenantID != "" && opts.TenantID != identity.Tenant {
+			return nil, tenant.ErrTenantMismatch
+		}
+		opts.TenantID = identity.Tenant
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := a.flushLocked(); err != nil {
@@ -494,6 +519,9 @@ func (a *Archive) Search(ctx context.Context, query string, opts SearchOptions) 
 			var record Record
 			if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
 				return nil, fmt.Errorf("decode knowledge record: %w", err)
+			}
+			if opts.TenantID != "" && record.TenantID != opts.TenantID {
+				continue
 			}
 			if opts.SessionID != "" && record.SessionID != opts.SessionID {
 				continue
@@ -601,6 +629,21 @@ func vectorSimilarity(query, text string) float64 {
 // CompactBefore rewrites the archive and removes records older than before.
 // The replacement is atomic on filesystems supporting atomic rename.
 func (a *Archive) CompactBefore(ctx context.Context, before time.Time) (int64, error) {
+	return a.compact(ctx, before, "")
+}
+
+// CompactTenantBefore removes only records belonging to the authenticated
+// tenant. Records from all other tenants are preserved in the rewritten
+// archive.
+func (a *Archive) CompactTenantBefore(ctx context.Context, before time.Time) (int64, error) {
+	identity, err := tenant.FromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return a.compact(ctx, before, identity.Tenant)
+}
+
+func (a *Archive) compact(ctx context.Context, before time.Time, tenantID string) (int64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := a.flushLocked(); err != nil {
@@ -614,7 +657,7 @@ func (a *Archive) CompactBefore(ctx context.Context, before time.Time) (int64, e
 	}
 	var kept int64
 	err = a.forEachRecordLocked(ctx, func(record Record) error {
-		if !before.IsZero() && record.Timestamp.Before(before) {
+		if (tenantID == "" || record.TenantID == tenantID) && !before.IsZero() && record.Timestamp.Before(before) {
 			return nil
 		}
 		if err := out.Append(ctx, record); err != nil {
@@ -746,6 +789,30 @@ func (a *Archive) Stats(ctx context.Context) (Stats, error) {
 	}
 	a.records = records
 	return Stats{Path: a.path, Bytes: info.Size(), Blocks: blocks, Compression: "zstd", Encrypted: a.aead != nil, Indexed: a.indexFile != nil, IndexPath: a.indexPath, Records: records}, nil
+}
+
+// StatsForTenant returns only tenant-owned record counts. Global archive
+// metadata is intentionally omitted because the archive may be shared.
+func (a *Archive) StatsForTenant(ctx context.Context) (Stats, error) {
+	identity, err := tenant.FromContext(ctx)
+	if err != nil {
+		return Stats{}, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.flushLocked(); err != nil {
+		return Stats{}, err
+	}
+	var records int64
+	if err := a.forEachRecordLocked(ctx, func(record Record) error {
+		if record.TenantID == identity.Tenant {
+			records++
+		}
+		return nil
+	}); err != nil {
+		return Stats{}, err
+	}
+	return Stats{Compression: "zstd", Encrypted: a.aead != nil, Records: records}, nil
 }
 
 // Verify scans every frame and record without materializing the archive.

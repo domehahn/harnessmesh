@@ -8,6 +8,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
+	"github.com/domehahn/harnessmesh/internal/tenant"
 )
 
 // DefaultChannels returns the canonical default channels for any collaboration space.
@@ -157,6 +158,9 @@ func (s *SpaceService) CreateSpace(ctx context.Context, id, workspaceID, title, 
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
+	if identity, err := tenant.FromContext(ctx); err == nil {
+		space.Metadata["tenant"] = identity.Tenant
+	}
 
 	if err := s.store.SaveSpace(ctx, space); err != nil {
 		return nil, fmt.Errorf("failed to save space: %w", err)
@@ -185,6 +189,26 @@ func (s *SpaceService) GetSpace(ctx context.Context, id string) (*protocol.Colla
 
 func (s *SpaceService) ListSpaces(ctx context.Context) ([]*protocol.CollaborationSpace, error) {
 	return s.store.ListSpaces(ctx)
+}
+
+func (s *SpaceService) GetMessages(ctx context.Context, spaceID, channelID, threadID string, limit int) ([]*protocol.PeerEnvelope, error) {
+	return s.store.GetSpaceMessages(ctx, spaceID, channelID, threadID, limit)
+}
+
+func (s *SpaceService) ConfiguredAgents() []map[string]any {
+	agents := make([]map[string]any, 0, len(s.cfg.Agents))
+	for name, agent := range s.cfg.Agents {
+		adapter := agent.Adapter
+		if adapter == "" {
+			adapter = agent.Kind
+		}
+		execution := agent.ExecutionMode
+		if execution == "" {
+			execution = protocol.ExecutionModeManaged
+		}
+		agents = append(agents, map[string]any{"id": name, "adapter": adapter, "role": agent.Role, "mode": agent.Mode, "execution_mode": execution, "writable": agent.Writable, "capabilities": agent.Capabilities})
+	}
+	return agents
 }
 
 func (s *SpaceService) PauseSpace(ctx context.Context, id string) error {

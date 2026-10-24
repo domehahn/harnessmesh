@@ -49,6 +49,19 @@ func TestParseV1Config(t *testing.T) {
 	}
 }
 
+func TestValidateBearerTokenStrongPolicy(t *testing.T) {
+	t.Setenv("HARNESSMESH_REQUIRE_STRONG_TOKENS", "1")
+	if err := ValidateBearerToken("short-token"); err == nil {
+		t.Fatal("expected short bearer token to be rejected")
+	}
+	if err := ValidateBearerToken("12345678901234567890123456789012"); err != nil {
+		t.Fatalf("expected 32-byte token to pass: %v", err)
+	}
+	if err := ValidateBearerToken("1234567890123456789012345678901 "); err == nil {
+		t.Fatal("expected whitespace-containing token to be rejected")
+	}
+}
+
 func TestParseV2Config(t *testing.T) {
 	raw := []byte(`{
 		"version": 2,
@@ -113,6 +126,63 @@ func TestSingleWriterConstraint(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "single-writer invariant violated") {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestRequireAgentSandboxFailsClosed(t *testing.T) {
+	raw := []byte(`{
+        "version": 2,
+        "security": {"require_agent_sandbox": true},
+        "agents": {"executor": {"adapter": "fake", "role": "executor", "writable": true}}
+    }`)
+	if _, err := Parse(raw); err == nil {
+		t.Fatal("expected production sandbox requirement to reject an unbounded agent")
+	}
+}
+
+func TestRequireAgentSandboxAcceptsBoundedAgent(t *testing.T) {
+	raw := []byte(`{
+        "version": 2,
+        "security": {"require_agent_sandbox": true},
+        "agents": {"executor": {
+            "adapter": "fake", "role": "executor", "writable": true,
+            "allowed_commands": ["fake"], "allowed_paths": ["/workspace"]
+        }}
+    }`)
+	if _, err := Parse(raw); err != nil {
+		t.Fatalf("expected bounded agent configuration to validate: %v", err)
+	}
+}
+
+func TestRequireAgentNetworkIsolationFailsClosed(t *testing.T) {
+	raw := []byte(`{
+        "version": 2,
+        "security": {"require_agent_network_isolation": true},
+        "agents": {"executor": {
+            "adapter": "fake", "role": "executor", "writable": true,
+            "allowed_commands": ["fake"], "allowed_paths": ["/workspace"]
+        }}
+    }`)
+	if _, err := Parse(raw); err == nil || !strings.Contains(err.Error(), "network_mode=none") {
+		t.Fatalf("expected network isolation requirement to reject host mode, got %v", err)
+	}
+}
+
+func TestRequireAgentNetworkIsolationAcceptsNone(t *testing.T) {
+	raw := []byte(`{
+        "version": 2,
+        "security": {"require_agent_sandbox": true, "require_agent_network_isolation": true},
+        "agents": {"executor": {
+            "adapter": "fake", "role": "executor", "writable": true,
+            "allowed_commands": ["fake"], "allowed_paths": ["/workspace"], "network_mode": "none"
+        }}
+    }`)
+	cfg, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("expected isolated agent configuration to validate: %v", err)
+	}
+	if cfg.Agents["executor"].NetworkMode != "none" {
+		t.Fatalf("expected network_mode none, got %q", cfg.Agents["executor"].NetworkMode)
 	}
 }
 

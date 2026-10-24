@@ -22,6 +22,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/modelrouting"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
+	"github.com/domehahn/harnessmesh/internal/tenant"
 )
 
 type EngineConfig struct {
@@ -153,6 +154,9 @@ func (e *Engine) KnowledgeStats(ctx context.Context) (knowledge.Stats, error) {
 	if !ok || ks.KnowledgeArchive() == nil {
 		return knowledge.Stats{}, errors.New("knowledge archive is not available")
 	}
+	if _, err := tenant.FromContext(ctx); err == nil {
+		return ks.KnowledgeArchive().StatsForTenant(ctx)
+	}
 	return ks.KnowledgeArchive().Stats(ctx)
 }
 
@@ -174,6 +178,9 @@ func (e *Engine) KnowledgeCompact(ctx context.Context, before time.Time) (int64,
 	ks, ok := e.store.(knowledgeStore)
 	if !ok || ks.KnowledgeArchive() == nil {
 		return 0, errors.New("knowledge archive is not available")
+	}
+	if _, err := tenant.FromContext(ctx); err == nil {
+		return ks.KnowledgeArchive().CompactTenantBefore(ctx, before)
 	}
 	return ks.KnowledgeArchive().CompactBefore(ctx, before)
 }
@@ -315,8 +322,13 @@ func (e *Engine) CreateSession(ctx context.Context, sessionID, task string) (*st
 		}
 	}
 
+	tenantID := ""
+	if identity, identityErr := tenant.FromContext(ctx); identityErr == nil {
+		tenantID = identity.Tenant
+	}
 	sess := &store.Session{
 		ID:                sessionID,
+		TenantID:          tenantID,
 		RepoRoot:          e.repo,
 		Task:              task,
 		Status:            "active",
@@ -403,7 +415,7 @@ func (e *Engine) reserveBudget(ctx context.Context, sessionID string, estInputTo
 	e.budgetMu.Lock()
 	defer e.budgetMu.Unlock()
 
-	sess, err := e.store.GetSession(ctx, sessionID)
+	sess, err := e.getSession(ctx, sessionID)
 	if err != nil {
 		var notFound *protocol.SessionNotFoundError
 		if errors.As(err, &notFound) || errors.Is(err, sql.ErrNoRows) {
@@ -518,7 +530,7 @@ func (e *Engine) commitBudget(ctx context.Context, res *budgetReservation, actua
 	estOutput := res.estOutput
 	estCost := res.estCost
 
-	sess, err := e.store.GetSession(ctx, sessionID)
+	sess, err := e.getSession(ctx, sessionID)
 	if err != nil {
 		var notFound *protocol.SessionNotFoundError
 		if errors.As(err, &notFound) || errors.Is(err, sql.ErrNoRows) {
@@ -612,7 +624,7 @@ func (e *Engine) rollbackBudget(ctx context.Context, res *budgetReservation) err
 	estOutput := res.estOutput
 	estCost := res.estCost
 
-	sess, err := e.store.GetSession(ctx, sessionID)
+	sess, err := e.getSession(ctx, sessionID)
 	if err != nil {
 		var notFound *protocol.SessionNotFoundError
 		if errors.As(err, &notFound) || errors.Is(err, sql.ErrNoRows) {
@@ -674,7 +686,7 @@ func (e *Engine) recordBudgetUsage(ctx context.Context, sessionID string, inputT
 	e.budgetMu.Lock()
 	defer e.budgetMu.Unlock()
 
-	sess, err := e.store.GetSession(ctx, sessionID)
+	sess, err := e.getSession(ctx, sessionID)
 	if err != nil || sess == nil {
 		return err
 	}
@@ -818,13 +830,23 @@ func (e *Engine) checkChannelAccess(space *protocol.CollaborationSpace, ch *prot
 	return nil
 }
 
-func (e *Engine) GetSession(ctx context.Context, sessionID string) (*store.Session, error) {
+func (e *Engine) getSession(ctx context.Context, sessionID string) (*store.Session, error) {
+	if identity, err := tenant.FromContext(ctx); err == nil {
+		return e.store.GetSessionForTenant(ctx, sessionID, identity.Tenant)
+	}
 	return e.store.GetSession(ctx, sessionID)
+}
+
+func (e *Engine) GetSession(ctx context.Context, sessionID string) (*store.Session, error) {
+	return e.getSession(ctx, sessionID)
 }
 
 func (e *Engine) StopSession(ctx context.Context, sessionID, reason string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if _, err := e.getSession(ctx, sessionID); err != nil {
+		return err
+	}
 
 	err := e.store.UpdateSessionStatus(ctx, sessionID, "completed", reason)
 	if err != nil {
@@ -1035,7 +1057,7 @@ func (e *Engine) Ask(ctx context.Context, sessionID, caller string, req protocol
 	}
 
 	e.mu.Lock()
-	sess, err := e.store.GetSession(ctx, sessionID)
+	sess, err := e.getSession(ctx, sessionID)
 	if err != nil {
 		e.mu.Unlock()
 		return nil, err
@@ -1229,7 +1251,7 @@ func (e *Engine) Ask(ctx context.Context, sessionID, caller string, req protocol
 
 func (e *Engine) executeSingleReview(ctx context.Context, sessionID, caller, targetPeer string, req protocol.ReviewRequestPayload, depth int) (retResult *protocol.ReviewResultPayload, retErr error) {
 	e.mu.Lock()
-	sess, err := e.store.GetSession(ctx, sessionID)
+	sess, err := e.getSession(ctx, sessionID)
 	if err != nil {
 		e.mu.Unlock()
 		return nil, err
@@ -1391,7 +1413,7 @@ func (e *Engine) RequestReview(ctx context.Context, sessionID, caller string, re
 	}
 
 	e.mu.Lock()
-	sess, err := e.store.GetSession(ctx, sessionID)
+	sess, err := e.getSession(ctx, sessionID)
 	if err != nil {
 		e.mu.Unlock()
 		return nil, err
@@ -1716,7 +1738,7 @@ func (e *Engine) Reply(ctx context.Context, sessionID, caller string, rep protoc
 
 // Status handles peer.status
 func (e *Engine) Status(ctx context.Context, sessionID string) (*protocol.StatusPayload, error) {
-	sess, err := e.store.GetSession(ctx, sessionID)
+	sess, err := e.getSession(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -1950,7 +1972,7 @@ func (e *Engine) Converse(ctx context.Context, sessionID, caller string, req pro
 	}
 
 	e.mu.Lock()
-	sess, err := e.store.GetSession(ctx, sessionID)
+	sess, err := e.getSession(ctx, sessionID)
 	if err != nil {
 		e.mu.Unlock()
 		return nil, err

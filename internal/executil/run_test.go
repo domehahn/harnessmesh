@@ -17,3 +17,10 @@ func TestSandboxPolicyRejectsCommandsAndPaths(t *testing.T) {
 		t.Fatal("expected RunWithPolicy rejection")
 	}
 }
+
+func TestSandboxPolicyAllowsConfiguredCommand(t *testing.T) {
+	policy := SandboxPolicy{AllowedCommands: []string{"/usr/bin/git"}, AllowedPaths: []string{"/tmp/project"}}
+	if err := policy.Validate("/tmp/project/subdir", "git"); err != nil {
+		t.Fatalf("expected basename-equivalent command to be allowed: %v", err)
+	}
+}

@@ -1,4 +1,17 @@
 services:
+  # Fresh Docker volumes are created as root-owned. Initialize the shared
+  # SQLite volume before the unprivileged MCP/bridge services start.
+  harnessmesh-data-init:
+    profiles: ["mcp", "bridge"]
+    build:
+      context: .
+    user: "0:0"
+    volumes:
+      - harnessmesh-data:/data
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown -R 10001:10001 /data"]
+    restart: "no"
+
   harnessmesh:
     build:
       context: .
@@ -67,11 +80,14 @@ services:
       - --listen
       - 0.0.0.0:8787
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/readyz"]
       interval: 10s
       timeout: 3s
       retries: 6
       start_period: 10s
+    depends_on:
+      harnessmesh-data-init:
+        condition: service_completed_successfully
 
   # Local REST+WebSocket bridge for the VS Code extension. Not started by
   # default; enable explicitly with `docker compose --profile bridge up`.
@@ -117,11 +133,14 @@ services:
       - --listen
       - 0.0.0.0:8788
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8788/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8788/readyz"]
       interval: 10s
       timeout: 3s
       retries: 6
       start_period: 10s
+    depends_on:
+      harnessmesh-data-init:
+        condition: service_completed_successfully
 
   # Codex-compatible model-provider gateway (POST /v1/responses). Not
   # started by default; enable explicitly with `docker compose --profile
@@ -142,11 +161,11 @@ services:
     working_dir: /workspace
     volumes:
       - ${HARNESSMESH_REPO:-.}:/workspace
-      - ${HARNESSMESH_PROVIDER_CONFIG:-configs/codex-chatgpt.example.json}:/etc/harnessmesh/harnessmesh.json:ro
+      - ${HARNESSMESH_PROVIDER_CONFIG:-./configs/codex-chatgpt.example.json}:/etc/harnessmesh/harnessmesh.json:ro
       # The loopback OAuth callback runs on the host. Sharing this directory
       # lets the container reuse the host-authorized SIWC credential and
       # refresh it when necessary.
-      - ${HARNESSMESH_SIWC_HOME:-.harnessmesh}:/data/.harnessmesh
+      - ${HARNESSMESH_SIWC_HOME:-./.harnessmesh}:/data/.harnessmesh
     environment:
       HOME: /data
       HARNESSMESH_PROVIDER_TOKEN: ${HARNESSMESH_PROVIDER_TOKEN:?HARNESSMESH_PROVIDER_TOKEN must be set}
