@@ -27,7 +27,7 @@ jobs:
         run: docker build --tag harnessmesh-console:scan ./frontend
 
       - name: Scan MCP image
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: harnessmesh:mcp-scan
           format: sarif
@@ -38,7 +38,7 @@ jobs:
 
       - name: Scan console image
         if: always()
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: harnessmesh-console:scan
           format: sarif
