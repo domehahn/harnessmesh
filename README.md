@@ -2847,3 +2847,7 @@ bin/harnessmesh --help
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
+
+Use of the HarnessMesh name and branding is governed by
+[TRADEMARKS.md](TRADEMARKS.md). The Apache license covers the code, not project
+names, logos, or implied endorsement.
