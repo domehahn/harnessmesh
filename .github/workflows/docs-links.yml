@@ -1,0 +1,24 @@
+name: Documentation Links
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '47 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check documentation links
+        uses: lycheeverse/lychee-action@v2.4.0
+        with:
+          args: --verbose --no-progress --exclude-mail --exclude '127\\.0\\.0\\.1|localhost|gitlab\\.com/domehahn/harnessmesh' README.md docs .github
+          fail: true

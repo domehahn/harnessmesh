@@ -53,3 +53,6 @@
 - name: observability
   color: c2e0c6
   description: Metrics, logs and monitoring
+- name: large-change
+  color: e99695
+  description: Large change surface requiring extra review
