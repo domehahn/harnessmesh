@@ -1,0 +1,113 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "HarnessMesh External HTTP APIs",
+    "version": "1.0.0",
+    "description": "Versioned bridge and provider contracts. MCP is negotiated separately at /mcp."
+  },
+  "servers": [
+    {"url": "http://127.0.0.1:8788", "description": "Local Bridge"},
+    {"url": "http://127.0.0.1:8789", "description": "Local Provider"}
+  ],
+  "tags": [
+    {"name": "Bridge"},
+    {"name": "Provider"},
+    {"name": "Dashboard"}
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {"tags": ["Bridge", "Provider"], "security": [], "responses": {"200": {"description": "Process is alive", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Health"}}}}}}
+    },
+    "/readyz": {
+      "get": {"tags": ["Bridge", "Provider"], "security": [], "responses": {"200": {"description": "Dependencies are ready", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Ready"}}}}, "503": {"description": "Dependency is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}}}
+    },
+    "/api/v1/workspaces": {
+      "get": {"tags": ["Bridge"], "security": [{"BearerAuth": []}], "responses": {"200": {"description": "Workspace list", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Workspace"}}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/api/v1/messages": {
+      "post": {"tags": ["Bridge"], "security": [{"BearerAuth": []}], "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateMessage"}}}}, "responses": {"200": {"description": "Message created"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/api/v1/tasks": {
+      "get": {"tags": ["Bridge"], "security": [{"BearerAuth": []}], "responses": {"200": {"description": "Task list"}, "401": {"$ref": "#/components/responses/Unauthorized"}}},
+      "post": {"tags": ["Bridge"], "security": [{"BearerAuth": []}], "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateTask"}}}}, "responses": {"200": {"description": "Task created"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/api/v1/tasks/{taskId}": {
+      "parameters": [{"$ref": "#/components/parameters/TaskId"}],
+      "get": {"tags": ["Bridge"], "security": [{"BearerAuth": []}], "responses": {"200": {"description": "Task"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "404": {"$ref": "#/components/responses/NotFound"}}},
+      "patch": {"tags": ["Bridge"], "security": [{"BearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TaskAction"}}}}, "responses": {"200": {"description": "Task updated"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/api/v1/findings": {
+      "get": {"tags": ["Bridge"], "security": [{"BearerAuth": []}], "responses": {"200": {"description": "Finding list"}, "401": {"$ref": "#/components/responses/Unauthorized"}}},
+      "post": {"tags": ["Bridge"], "security": [{"BearerAuth": []}], "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Finding"}}}}, "responses": {"200": {"description": "Finding created"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/v1/models": {
+      "get": {"tags": ["Provider"], "security": [{"BearerAuth": []}], "responses": {"200": {"description": "Provider model catalog"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/v1/responses": {
+      "post": {"tags": ["Provider"], "security": [{"BearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model", "input"], "properties": {"model": {"type": "string"}, "input": {}, "stream": {"type": "boolean"}}, "additionalProperties": true}}}}, "responses": {"200": {"description": "Responses API result or SSE stream"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "429": {"description": "Rate limited"}, "502": {"description": "Backend unavailable"}}}
+    },
+    "/api/v1/dashboard/summary": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Tenant-scoped dashboard summary"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "429": {"description": "Rate limited"}}}
+    },
+    "/api/v1/dashboard/sessions/{sessionId}/events/stream": {
+      "parameters": [{"name": "sessionId", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Server-Sent Events stream of persisted session events", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "404": {"$ref": "#/components/responses/NotFound"}}}
+    },
+    "/api/v1/dashboard/incident": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Tenant-scoped incident posture"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/api/v1/dashboard/optimization": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Usage, quality, quota and routing projection"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/api/v1/dashboard/agents": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Configured non-secret agent catalog"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/api/v1/dashboard/marketplace": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Tenant-scoped credential-free agent and MCP catalog"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/api/v1/dashboard/spaces": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Tenant collaboration spaces"}, "401": {"$ref": "#/components/responses/Unauthorized"}}},
+      "post": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}, "purpose": {"type": "string"}, "workspace_id": {"type": "string"}, "writer_participant": {"type": "string"}, "participants": {"type": "object"}}, "additionalProperties": false}}}}, "responses": {"200": {"description": "Created collaboration space"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/api/v1/dashboard/spaces/{spaceId}/messages": {
+      "parameters": [{"name": "spaceId", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "parameters": [{"name": "channel", "in": "query", "schema": {"type": "string", "default": "general"}}, {"name": "thread", "in": "query", "schema": {"type": "string"}}], "responses": {"200": {"description": "Space message transcript"}, "401": {"$ref": "#/components/responses/Unauthorized"}}},
+      "post": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["message"], "properties": {"channel": {"type": "string"}, "from": {"type": "string"}, "to": {"type": "string"}, "message": {"type": "string"}, "mentions": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false}}}}, "responses": {"200": {"description": "Published message"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/api/v1/dashboard/secrets": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Tenant secret metadata; values are never returned"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "503": {"description": "Secret backend unavailable"}}},
+      "post": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["name", "value"], "properties": {"name": {"type": "string", "maxLength": 128}, "value": {"type": "string", "writeOnly": true}, "metadata": {"type": "object", "additionalProperties": {"type": "string"}}}, "additionalProperties": false}}}}, "responses": {"201": {"description": "Secret stored; value is not returned"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/api/v1/dashboard/secrets/{name}": {
+      "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "delete": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Secret deleted"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/api/v1/dashboard/simulation": {
+      "get": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "responses": {"200": {"description": "Deterministic safety scenario catalog"}, "401": {"$ref": "#/components/responses/Unauthorized"}}},
+      "post": {"tags": ["Dashboard"], "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["scenario_id", "observation"], "properties": {"scenario_id": {"type": "string"}, "observation": {"type": "object"}}, "additionalProperties": false}}}}, "responses": {"200": {"description": "Deterministic scenario result"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    }
+  },
+  "components": {
+    "securitySchemes": {"BearerAuth": {"type": "http", "scheme": "bearer"}, "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-HarnessMesh-API-Key"}},
+    "parameters": {
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": false, "schema": {"type": "string", "minLength": 1, "maxLength": 256}},
+      "TaskId": {"name": "taskId", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}
+    },
+    "responses": {
+      "BadRequest": {"description": "Malformed or rejected request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Unauthorized": {"description": "Authentication required or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Forbidden": {"description": "Policy or authorization failure", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "NotFound": {"description": "Resource not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    },
+    "schemas": {
+      "Health": {"type": "object", "required": ["status"], "properties": {"status": {"const": "ok"}}, "additionalProperties": false},
+      "Ready": {"type": "object", "required": ["status"], "properties": {"status": {"enum": ["ready", "not_ready"]}, "reason": {"type": "string"}}, "additionalProperties": false},
+      "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["message"], "properties": {"message": {"type": "string"}, "class": {"type": "string"}}, "additionalProperties": true}}, "additionalProperties": false},
+      "Workspace": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "repo": {"type": "string"}}, "additionalProperties": true},
+      "CreateMessage": {"type": "object", "required": ["space_id", "channel_id", "message"], "properties": {"space_id": {"type": "string"}, "channel_id": {"type": "string"}, "thread_id": {"type": "string"}, "message": {"type": "string", "minLength": 1}, "from": {"type": "string"}}, "additionalProperties": false},
+      "CreateTask": {"type": "object", "required": ["space_id", "title"], "properties": {"space_id": {"type": "string"}, "title": {"type": "string", "minLength": 1}, "description": {"type": "string"}, "author_participant": {"type": "string"}}, "additionalProperties": false},
+      "TaskAction": {"type": "object", "required": ["action"], "properties": {"action": {"enum": ["pause", "resume", "abort"]}, "reason": {"type": "string"}}, "additionalProperties": false},
+      "Finding": {"type": "object", "required": ["session_id", "id", "severity", "category", "claim"], "properties": {"session_id": {"type": "string"}, "id": {"type": "string"}, "severity": {"type": "string"}, "category": {"type": "string"}, "claim": {"type": "string"}}, "additionalProperties": true}
+    }
+  }
+}

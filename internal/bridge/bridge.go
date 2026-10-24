@@ -13,7 +13,6 @@ package bridge
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +23,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/auth"
 	"github.com/domehahn/harnessmesh/internal/collaboration"
+	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 )
 
@@ -39,6 +40,7 @@ const (
 type Config struct {
 	Listen           string
 	Token            string
+	TokenFile        string
 	AllowedOrigins   []string
 	WebSocketEnabled bool
 	// Caller is the participant identity the bridge acts as when talking to
@@ -47,6 +49,11 @@ type Config struct {
 	// architecture - see docs/chatgpt-integration.md).
 	Caller    string
 	RateLimit int
+	// OAuthIntrospectionURL enables RFC 7662 bearer-token validation when the
+	// static Token is omitted. RequiredScope optionally gates all API calls.
+	OAuthIntrospectionURL string
+	OAuthClientSecret     string
+	RequiredScope         string
 }
 
 // Server is the bridge's HTTP(+WebSocket) server.
@@ -108,6 +115,17 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if s.engine == nil || s.engine.Store() == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready", "reason": "engine unavailable"})
+			return
+		}
+		if _, err := s.engine.Store().ListSpaces(r.Context()); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready", "reason": "store unavailable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
@@ -187,17 +205,24 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) authorized(r *http.Request) bool {
-	if s.cfg.Token == "" {
+	if s.cfg.Token == "" && s.cfg.TokenFile == "" && s.cfg.OAuthIntrospectionURL == "" {
 		// Fail closed: an unconfigured bridge accepts no requests, matching
 		// the MCP server's "no unauthenticated remote endpoint" invariant.
 		return false
 	}
-	auth := r.Header.Get("Authorization")
-	token := strings.TrimPrefix(auth, "Bearer ")
-	if token == auth { // no "Bearer " prefix
+	authHeader := r.Header.Get("Authorization")
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	if token == authHeader { // no "Bearer " prefix
 		token = r.URL.Query().Get("token")
 	}
-	return subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) == 1
+	if auth.MatchToken(s.cfg.Token, s.cfg.TokenFile, token) {
+		return true
+	}
+	if s.cfg.OAuthIntrospectionURL == "" {
+		return false
+	}
+	info, ok := auth.IntrospectToken(r.Context(), s.cfg.OAuthIntrospectionURL, token, s.cfg.OAuthClientSecret)
+	return ok && auth.HasScope(info, s.cfg.RequiredScope)
 }
 
 func (s *Server) allowRequest(now time.Time) bool {
@@ -229,8 +254,17 @@ func (s *Server) Close() {
 
 // Serve starts the HTTP(+WS) listener and blocks until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context) error {
-	if s.cfg.Token == "" {
-		return fmt.Errorf("bridge requires a bearer token (Config.Token) - refusing to serve unauthenticated")
+	if s.cfg.Token == "" && s.cfg.TokenFile == "" && s.cfg.OAuthIntrospectionURL == "" {
+		return fmt.Errorf("bridge requires a bearer token or OAuth introspection URL")
+	}
+	if s.cfg.Token != "" || s.cfg.TokenFile != "" {
+		configured, err := auth.TokenValue(s.cfg.Token, s.cfg.TokenFile)
+		if err != nil {
+			return fmt.Errorf("bridge token rejected: %w", err)
+		}
+		if err := config.ValidateBearerToken(configured); err != nil {
+			return fmt.Errorf("bridge token rejected: %w", err)
+		}
 	}
 	srv := &http.Server{
 		Addr:              s.cfg.Listen,

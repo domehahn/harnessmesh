@@ -78,6 +78,28 @@ In HarnessMesh v0.2.0, agents are defined in the `agents` block of the configura
 ### Workspace Permissions (Single-Writer Invariant)
 - `writable` (boolean): Whether the agent is permitted to make modifications to the workspace worktree.
   > **Invariant**: Exactly one agent per session may have `writable: true`. If multiple writable agents are configured or attempt to participate in the same session, HarnessMesh rejects the session with a typed validation error.
+- `working_dir`: Optional working directory for the managed adapter.
+- `allowed_commands`: Optional executable allowlist enforced before a managed adapter is launched. Production profiles should set this explicitly; an empty list preserves legacy unrestricted-command behavior.
+- `allowed_paths`: Optional path allowlist for the adapter sandbox.
+- `denied_paths`: Optional path denylist for the adapter sandbox.
+- `network_mode`: `none` runs the managed process through Bubblewrap with a
+  private network namespace; production profiles should use this mode.
+
+The repository includes a restrictive starting point in
+`configs/harnessmesh-single-node-production.example.json`. Adjust the
+workspace path and executable names for the deployment, then validate the
+configuration before use. The allowlist controls which harness executable
+HarnessMesh launches; it is not a replacement for OS/container sandboxing.
+
+Set `security.require_agent_sandbox` to `true` in production profiles. When
+enabled, configuration loading fails unless every managed agent has both an
+`allowed_commands` and an `allowed_paths` list.
+
+Set `security.require_agent_network_isolation` to `true` to additionally
+require `network_mode: "none"` for every managed agent. Runtime execution then
+fails closed if `bwrap` is missing or cannot create the private network
+namespace. The production image includes Bubblewrap; deployment smoke tests
+must verify the namespace restriction before admitting real tasks.
 
 ### Capabilities Block
 Defines what actions the agent can perform during collaboration:

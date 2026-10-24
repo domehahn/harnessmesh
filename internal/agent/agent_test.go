@@ -100,6 +100,21 @@ func TestNewHarnessCapabilities(t *testing.T) {
 	}
 }
 
+func TestRegisteredAdapterDescriptorsAreStableAndCredentialFree(t *testing.T) {
+	descriptors := RegisteredAdapterDescriptors()
+	if len(descriptors) == 0 {
+		t.Fatal("expected builtin adapter descriptors")
+	}
+	for i, descriptor := range descriptors {
+		if descriptor.Name == "" || descriptor.Version == "" {
+			t.Fatalf("descriptor %d is incomplete: %+v", i, descriptor)
+		}
+		if i > 0 && descriptors[i-1].Name > descriptor.Name {
+			t.Fatalf("descriptors are not sorted: %+v", descriptors)
+		}
+	}
+}
+
 func TestFakeAdapter_EnforcesMaxTokens(t *testing.T) {
 	fakeAdapter := NewFakeAdapter("fake", config.AgentConfig{})
 	ctx := context.Background()

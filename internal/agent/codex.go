@@ -179,7 +179,7 @@ func (a *CodexAdapter) Invoke(parent context.Context, req InvokeRequest) (Invoke
 	if req.MaxTokens > 0 {
 		env["OPENAI_MAX_TOKENS"] = fmt.Sprint(req.MaxTokens)
 	}
-	run, runErr := executil.RunWithPolicy(ctx, dir, env, req.Prompt, executil.SandboxPolicy{AllowedPaths: a.cfg.AllowedPaths, DeniedPaths: a.cfg.DeniedPaths}, binPath, args...)
+	run, runErr := executil.RunWithPolicy(ctx, dir, env, req.Prompt, executil.SandboxPolicy{AllowedCommands: a.cfg.AllowedCommands, AllowedPaths: a.cfg.AllowedPaths, DeniedPaths: a.cfg.DeniedPaths, NetworkMode: a.cfg.NetworkMode}, binPath, args...)
 
 	sessionID, usage, fallbackText := parseCodexJSONL(run.Stdout)
 	lastRaw, _ := os.ReadFile(lastMessagePath)
