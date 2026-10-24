@@ -6,6 +6,7 @@ harnessmesh.json
 *.log
 .DS_Store
 node_modules/
+artifacts/videos/
 .idea/
 .vscode/
 coverage.out

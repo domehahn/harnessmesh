@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
     "test:smoke": "node scripts/smoke.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "demo:video": "node scripts/walkthrough-video.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
