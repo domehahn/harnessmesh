@@ -1,0 +1,22 @@
+{
+  "title": "HarnessMesh Production",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {"type": "stat", "title": "Transport availability", "targets": [{"expr": "min(up{job=~\"harnessmesh-(mcp|bridge|provider)\"})"}]},
+    {"type": "timeseries", "title": "Requests / errors", "targets": [
+      {"expr": "rate(harnessmesh_mcp_requests_total[5m])", "legendFormat": "mcp requests"},
+      {"expr": "rate(harnessmesh_mcp_errors_total[5m])", "legendFormat": "mcp errors"},
+      {"expr": "rate(harnessmesh_bridge_requests_total[5m])", "legendFormat": "bridge requests"},
+      {"expr": "rate(harnessmesh_provider_requests_total[5m])", "legendFormat": "provider requests"}
+    ]},
+    {"type": "timeseries", "title": "Authentication and policy denials", "targets": [
+      {"expr": "rate(harnessmesh_bridge_denials_total[5m])", "legendFormat": "bridge denials"},
+      {"expr": "rate(harnessmesh_zero_api_billing_policy_denials_total[5m])", "legendFormat": "billing policy denials"}
+    ]},
+    {"type": "timeseries", "title": "Filesystem remaining", "targets": [
+      {"expr": "node_filesystem_avail_bytes{mountpoint=~\".*/(data|workspace)\"} / node_filesystem_size_bytes{mountpoint=~\".*/(data|workspace)\"}", "legendFormat": "{{mountpoint}}"}
+    ]}
+  ]
+}

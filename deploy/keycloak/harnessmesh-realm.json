@@ -1,0 +1,40 @@
+{
+  "realm": "harnessmesh",
+  "enabled": true,
+  "displayName": "HarnessMesh (local)",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "clients": [
+    {
+      "clientId": "harnessmesh-dashboard",
+      "name": "HarnessMesh Dashboard",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "local-development-client-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "redirectUris": ["http://127.0.0.1:3000/*", "http://localhost:3000/*"],
+      "webOrigins": ["http://127.0.0.1:3000", "http://localhost:3000"],
+      "attributes": {"post.logout.redirect.uris": "+"}
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "tenant",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true"},
+      "protocolMappers": [
+        {
+          "name": "tenant",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {"userinfo.token.claim": "true", "id.token.claim": "true", "access.token.claim": "true", "claim.name": "tenant", "user.attribute": "tenant", "jsonType.label": "String"}
+        }
+      ]
+    }
+  ]
+}

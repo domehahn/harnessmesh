@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	authn "github.com/domehahn/harnessmesh/internal/auth"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/creditguard"
 )
@@ -264,14 +264,14 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
 
-		if s.cfg.Token == "" {
+		if s.cfg.Token == "" && s.cfg.TokenFile == "" {
 			s.errors.Add(1)
 			writeProviderError(w, http.StatusUnauthorized, &UnauthorizedError{})
 			return
 		}
 		auth := r.Header.Get("Authorization")
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if token == auth || subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) != 1 {
+		if token == auth || !authn.MatchToken(s.cfg.Token, s.cfg.TokenFile, token) {
 			s.errors.Add(1)
 			writeProviderError(w, http.StatusUnauthorized, &UnauthorizedError{})
 			return
@@ -638,8 +638,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // Serve starts the gateway and blocks until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context, listen string) error {
-	if s.cfg.Token == "" {
+	if s.cfg.Token == "" && s.cfg.TokenFile == "" {
 		return fmt.Errorf("provider gateway requires a bearer token - refusing to serve unauthenticated")
+	}
+	configured, err := authn.TokenValue(s.cfg.Token, s.cfg.TokenFile)
+	if err != nil {
+		return fmt.Errorf("provider token rejected: %w", err)
+	}
+	if err := config.ValidateBearerToken(configured); err != nil {
+		return fmt.Errorf("provider token rejected: %w", err)
 	}
 	srv := &http.Server{
 		Addr:              listen,

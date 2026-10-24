@@ -1,0 +1,6 @@
+apiVersion: v2
+name: harnessmesh
+description: HarnessMesh control plane and durable worker runtime
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

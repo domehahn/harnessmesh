@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,12 +19,17 @@ import (
 
 	"github.com/domehahn/harnessmesh/internal/agent"
 	"github.com/domehahn/harnessmesh/internal/bridge"
+	"github.com/domehahn/harnessmesh/internal/codeintel"
 	"github.com/domehahn/harnessmesh/internal/collaboration"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/creditguard"
+	"github.com/domehahn/harnessmesh/internal/identity"
+	"github.com/domehahn/harnessmesh/internal/jobs"
 	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/mcp"
+	"github.com/domehahn/harnessmesh/internal/mcpgateway"
+	"github.com/domehahn/harnessmesh/internal/mcpregistry"
 	"github.com/domehahn/harnessmesh/internal/modelrouting"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/report"
@@ -59,6 +65,8 @@ func main() {
 		err = changeCmd(os.Args[2:])
 	case "mcp":
 		err = mcpCmd(os.Args[2:])
+	case "code":
+		err = codeCmd(os.Args[2:])
 	case "bridge":
 		err = bridgeCmd(os.Args[2:])
 	case "provider":
@@ -75,6 +83,12 @@ func main() {
 		err = evidenceCmd(os.Args[2:])
 	case "knowledge":
 		err = knowledgeCmd(os.Args[2:])
+	case "jobs":
+		err = jobsCmd(os.Args[2:])
+	case "postgres":
+		err = postgresCmd(os.Args[2:])
+	case "tenant":
+		err = tenantCmd(os.Args[2:])
 	case "config":
 		err = configCmd(os.Args[2:])
 	case "integrate":
@@ -118,6 +132,8 @@ Usage:
   harnessmesh change <create|list|show|prepare|verify|evidence|gate|commit|abort> [options]
   harnessmesh integrate <antigravity|chatgpt|codex-provider> [--config <path>] [--repo <path>] [--dry-run]
   harnessmesh mcp serve [--repo <path>] [--config <path>] [--session <id>] [--caller <name>] [--endpoint <path>]
+  harnessmesh mcp registry <list|validate|check> [options]
+  harnessmesh code <search|impact> [--repo <path>] [options]
   harnessmesh mcp install <claude|codex|antigravity|copilot> [--scope <project|user>]
   harnessmesh bridge serve [--repo <path>] [--config <path>] [--caller <name>] [--listen <addr>]
   harnessmesh provider serve [--config <path>] [--listen <addr>] [--token <token>]
@@ -131,6 +147,9 @@ Usage:
   harnessmesh findings <session-id> [--json]
 	harnessmesh evidence <session-id> [--json]
 	harnessmesh knowledge <search|import|remember|stats|compact|verify|index|export|restore|rotate-key|watch> [options]
+  harnessmesh jobs <submit|list|webhook> [options]
+  harnessmesh postgres migrate --dsn <postgres-dsn>
+  harnessmesh tenant <create|member|key> [options]
   harnessmesh config <validate|migrate|print> [options]
   harnessmesh switchyard <doctor|routes|config validate> [options]
   harnessmesh smoke-test antigravity-codex [--config <path>]
@@ -140,6 +159,208 @@ Usage:
 
 Run 'harnessmesh <command> --help' for details on a specific command.
 `, version)
+}
+
+func postgresCmd(args []string) error {
+	if len(args) == 0 || args[0] != "migrate" {
+		return errors.New("usage: harnessmesh postgres migrate --dsn <postgres-dsn>")
+	}
+	fs := flag.NewFlagSet("postgres migrate", flag.ContinueOnError)
+	dsn := fs.String("dsn", os.Getenv("HARNESSMESH_POSTGRES_DSN"), "PostgreSQL connection string")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*dsn) == "" {
+		return errors.New("--dsn or HARNESSMESH_POSTGRES_DSN is required")
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	_, db, err := store.OpenPostgresRepositories(ctx, *dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	fmt.Fprintln(os.Stdout, "postgres migrations applied")
+	return nil
+}
+
+func tenantCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh tenant <create|member|key>")
+	}
+	fs := flag.NewFlagSet("tenant "+args[0], flag.ContinueOnError)
+	dbPath := fs.String("db", "", "SQLite database path")
+	id := fs.String("id", "", "tenant identifier")
+	slug := fs.String("slug", "", "tenant slug")
+	name := fs.String("name", "", "tenant display name")
+	subject := fs.String("subject", "", "principal subject")
+	role := fs.String("role", "member", "membership role")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	st, err := store.OpenSQLite(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	ctx := context.Background()
+	switch args[0] {
+	case "create":
+		if *id == "" || *slug == "" || *name == "" {
+			return errors.New("--id, --slug, and --name are required")
+		}
+		t := &store.TenantRecord{ID: *id, Slug: *slug, Name: *name}
+		if err := st.CreateTenant(ctx, t); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(t)
+	case "member":
+		if *id == "" || *subject == "" {
+			return errors.New("--id (tenant id) and --subject are required")
+		}
+		if err := st.UpsertPrincipal(ctx, &store.PrincipalRecord{Subject: *subject}); err != nil {
+			return err
+		}
+		m := &store.MembershipRecord{TenantID: *id, Subject: *subject, Role: *role}
+		if err := st.SetMembership(ctx, m); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(m)
+	case "key":
+		if *id == "" || *subject == "" {
+			return errors.New("--id (tenant id) and --subject are required")
+		}
+		secret, record, err := (identity.Service{Store: st}).IssueAPIKey(ctx, *id, *subject)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"api_key": secret, "record": record})
+	default:
+		return fmt.Errorf("unknown tenant action %q", args[0])
+	}
+}
+
+func jobsCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh jobs <submit|list|worker|webhook>")
+	}
+	fs := flag.NewFlagSet("jobs "+args[0], flag.ContinueOnError)
+	dbPath := fs.String("db", "", "SQLite database path (default: configured HarnessMesh database)")
+	tenant := fs.String("tenant", "", "tenant identifier")
+	kind := fs.String("kind", "", "job kind")
+	payload := fs.String("payload", "{}", "JSON payload")
+	status := fs.String("status", "", "filter status")
+	limit := fs.Int("limit", 100, "maximum jobs")
+	listen := fs.String("listen", "127.0.0.1:8790", "webhook listen address")
+	owner := fs.String("owner", "", "worker owner identity")
+	poll := fs.Duration("poll", time.Second, "worker poll interval")
+	concurrency := fs.Int("concurrency", 1, "worker concurrency")
+	handler := fs.String("handler", "noop", "worker handler (noop only; unknown kinds fail closed)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	var st store.Store
+	closeStore := func() {}
+	if dsn := strings.TrimSpace(os.Getenv("HARNESSMESH_POSTGRES_DSN")); dsn != "" {
+		repositories, db, openErr := store.OpenPostgresRepositories(context.Background(), dsn)
+		if openErr != nil {
+			return openErr
+		}
+		postgresStore, storeErr := store.NewPostgresStore(repositories)
+		if storeErr != nil {
+			_ = db.Close()
+			return storeErr
+		}
+		st = postgresStore
+		closeStore = func() { _ = db.Close() }
+	} else {
+		sqliteStore, openErr := store.OpenSQLite(*dbPath)
+		if openErr != nil {
+			return openErr
+		}
+		st = sqliteStore
+		closeStore = func() { _ = sqliteStore.Close() }
+	}
+	defer closeStore()
+	ctx := context.Background()
+	switch args[0] {
+	case "worker":
+		if *owner == "" {
+			*owner = fmt.Sprintf("worker-%d", os.Getpid())
+		}
+		if *handler != "noop" {
+			return fmt.Errorf("unsupported worker handler %q; only noop is built in", *handler)
+		}
+		runtime := jobs.Runtime{Store: st, Owner: *owner, Lease: 2 * time.Minute, MaxAttempts: 3, Backoff: 5 * time.Second}
+		serveCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		fmt.Fprintf(os.Stderr, "HarnessMesh durable worker %s polling every %s with concurrency %d\n", *owner, *poll, *concurrency)
+		return runtime.Run(serveCtx, jobs.WorkerConfig{PollInterval: *poll, Concurrency: *concurrency}, func(ctx context.Context, job store.DurableJob) error {
+			if job.Kind != "noop" {
+				return fmt.Errorf("no handler registered for job kind %q", job.Kind)
+			}
+			return nil
+		})
+	case "webhook":
+		secret := strings.TrimSpace(os.Getenv("HARNESSMESH_WEBHOOK_SECRET"))
+		if secret == "" {
+			return errors.New("HARNESSMESH_WEBHOOK_SECRET is required")
+		}
+		srv := &http.Server{Addr: *listen, Handler: jobs.WebhookHandler{Runtime: jobs.Runtime{Store: st, Owner: "webhook", MaxAttempts: 3}, Secret: []byte(secret)}}
+		serveCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		go func() {
+			<-serveCtx.Done()
+			shutdownCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
+			defer stop()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
+		fmt.Fprintf(os.Stderr, "HarnessMesh job webhook listening on %s\n", *listen)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
+	case "submit":
+		if *tenant == "" || *kind == "" {
+			return errors.New("--tenant and --kind are required")
+		}
+		if !json.Valid([]byte(*payload)) {
+			return errors.New("--payload must be valid JSON")
+		}
+		job := &store.DurableJob{ID: fmt.Sprintf("job_%d", time.Now().UnixNano()), Tenant: *tenant, Kind: *kind, Payload: json.RawMessage(*payload)}
+		if err := st.CreateJob(ctx, job); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(job)
+	case "list":
+		jobs, err := st.ListJobs(ctx, *tenant, *status, *limit)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(jobs)
+	default:
+		return fmt.Errorf("unknown jobs action %q", args[0])
+	}
+}
+
+// secretEnvValue reads a secret from the direct environment variable or,
+// when configured, from a file such as a Docker/Kubernetes secret mount.
+// Direct environment values win so explicit process configuration remains
+// predictable. Secret files are trimmed because mounted secret files usually
+// end with a newline.
+func secretEnvValue(name string) (string, error) {
+	if value := os.Getenv(name); value != "" {
+		return strings.TrimSpace(value), nil
+	}
+	path := strings.TrimSpace(os.Getenv(name + "_FILE"))
+	if path == "" {
+		return "", nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", name+"_FILE", err)
+	}
+	return strings.TrimSpace(string(raw)), nil
 }
 
 func knowledgeCmd(args []string) error {
@@ -454,14 +675,17 @@ func mcpCmd(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, `Usage:
   harnessmesh mcp serve [--repo <path>] [--config <path>] [--session <id>] [--caller <name>]
+  harnessmesh mcp registry <list|validate|check> [options]
   harnessmesh mcp install <claude|codex> [--scope <project|user>]
 `)
-		return errors.New("subcommand required: serve or install")
+		return errors.New("subcommand required: serve, registry, or install")
 	}
 
 	switch args[0] {
 	case "serve":
 		return mcpServe(args[1:])
+	case "registry":
+		return mcpRegistryCmd(args[1:])
 	case "install":
 		return mcpInstall(args[1:])
 	default:
@@ -469,7 +693,81 @@ func mcpCmd(args []string) error {
 	}
 }
 
+func mcpRegistryCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh mcp registry <list|validate|check>")
+	}
+	fs := flag.NewFlagSet("mcp registry", flag.ContinueOnError)
+	configPath := fs.String("config", "harnessmesh.json", "config file")
+	server := fs.String("server", "", "registered server name")
+	tool := fs.String("tool", "", "MCP tool name")
+	policy := fs.String("policy", "", "policy name")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	cfg, err := loadConfigOrDefault(*configPath)
+	if err != nil {
+		return err
+	}
+	registry, err := mcpregistry.New(cfg.MCP)
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "validate":
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"valid": true})
+	case "list":
+		return json.NewEncoder(os.Stdout).Encode(registry.List())
+	case "check":
+		if *server == "" || *tool == "" {
+			return errors.New("--server and --tool are required")
+		}
+		decision := registry.Check(*server, *tool, *policy)
+		if err := json.NewEncoder(os.Stdout).Encode(decision); err != nil {
+			return err
+		}
+		if !decision.Allowed {
+			return errors.New(decision.Reason)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown registry action %q", args[0])
+	}
+}
+
+func codeCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh code <search|impact>")
+	}
+	fs := flag.NewFlagSet("code "+args[0], flag.ContinueOnError)
+	repo := fs.String("repo", ".", "repository path")
+	query := fs.String("query", "", "symbol or file query")
+	limit := fs.Int("limit", 20, "maximum results")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	idx, err := codeintel.Build(*repo)
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "search":
+		if strings.TrimSpace(*query) == "" {
+			return errors.New("--query is required")
+		}
+		return json.NewEncoder(os.Stdout).Encode(idx.Search(*query, *limit))
+	case "impact":
+		if strings.TrimSpace(*query) == "" {
+			return errors.New("--query is required")
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"symbol": *query, "files": idx.Impact(*query)})
+	default:
+		return fmt.Errorf("unknown code action %q", args[0])
+	}
+}
+
 func mcpServe(args []string) error {
+	tokenDefault := strings.TrimSpace(os.Getenv("HARNESSMESH_MCP_TOKEN"))
 	fs := flag.NewFlagSet("mcp serve", flag.ContinueOnError)
 	repo := fs.String("repo", ".", "repository path")
 	configPath := fs.String("config", "harnessmesh.json", "config file")
@@ -477,7 +775,7 @@ func mcpServe(args []string) error {
 	caller := fs.String("caller", "claude", "caller agent name")
 	listen := fs.String("listen", "", "optional remote HTTP listen address, e.g. 127.0.0.1:8787")
 	endpoint := fs.String("endpoint", "/mcp", "MCP streamable HTTP endpoint path")
-	token := fs.String("token", os.Getenv("HARNESSMESH_MCP_TOKEN"), "remote MCP bearer token")
+	token := fs.String("token", tokenDefault, "remote MCP bearer token")
 	tlsCert := fs.String("tls-cert", os.Getenv("HARNESSMESH_MCP_TLS_CERT"), "TLS certificate for remote MCP")
 	tlsKey := fs.String("tls-key", os.Getenv("HARNESSMESH_MCP_TLS_KEY"), "TLS private key for remote MCP")
 	if err := fs.Parse(args); err != nil {
@@ -497,12 +795,37 @@ func mcpServe(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	st, err := store.OpenSQLite("")
-	if err != nil {
-		return fmt.Errorf("open sqlite store: %w", err)
+	if registry, registryErr := mcpregistry.New(cfg.MCP); registryErr != nil {
+		return fmt.Errorf("validate MCP registry: %w", registryErr)
+	} else if len(registry.List()) > 0 {
+		fmt.Fprintf(os.Stderr, "MCP registry loaded (%d declared servers, default_deny=%v)\n", len(registry.List()), cfg.MCP.DefaultDeny)
 	}
-	defer st.Close()
+
+	var st store.Store
+	closeStore := func() {}
+	if dsn := strings.TrimSpace(os.Getenv("HARNESSMESH_POSTGRES_DSN")); dsn != "" {
+		repositories, db, openErr := store.OpenPostgresRepositories(context.Background(), dsn)
+		if openErr != nil {
+			return fmt.Errorf("open postgres store: %w", openErr)
+		}
+		postgresStore, storeErr := store.NewPostgresStore(repositories)
+		if storeErr != nil {
+			_ = db.Close()
+			return fmt.Errorf("compose postgres store: %w", storeErr)
+		}
+		st = postgresStore
+		closeStore = func() { _ = db.Close() }
+		fmt.Fprintln(os.Stderr, "MCP persistence: postgres")
+	} else {
+		sqliteStore, openErr := store.OpenSQLite("")
+		if openErr != nil {
+			return fmt.Errorf("open sqlite store: %w", openErr)
+		}
+		st = sqliteStore
+		closeStore = func() { _ = sqliteStore.Close() }
+		fmt.Fprintln(os.Stderr, "MCP persistence: sqlite")
+	}
+	defer closeStore()
 
 	harnesses := make(map[string]agent.Harness)
 	for name, aCfg := range cfg.Agents {
@@ -526,6 +849,24 @@ func mcpServe(args []string) error {
 	defer eng.Close()
 
 	server := mcp.NewServer(eng, *sessionID, *caller)
+	if registry, registryErr := mcpregistry.New(cfg.MCP); registryErr != nil {
+		return fmt.Errorf("validate MCP registry: %w", registryErr)
+	} else if len(registry.List()) > 0 {
+		gateway := mcpgateway.New(registry, os.Getenv("HARNESSMESH_MCP_GATEWAY_POLICY"), func(event mcpgateway.AuditEvent) {
+			raw, _ := json.Marshal(event)
+			fmt.Fprintf(os.Stderr, "MCP_GATEWAY_AUDIT %s\n", raw)
+		})
+		gatewayTools, gatewayErr := gateway.ListTools(context.Background())
+		if gatewayErr != nil {
+			if os.Getenv("HARNESSMESH_MCP_GATEWAY_STRICT") == "1" {
+				return fmt.Errorf("discover external MCP tools: %w", gatewayErr)
+			}
+			fmt.Fprintf(os.Stderr, "WARNING: external MCP discovery unavailable: %v\n", gatewayErr)
+		} else {
+			server.SetGateway(gateway, gatewayTools)
+			fmt.Fprintf(os.Stderr, "MCP gateway loaded (%d external tools, policy=%q)\n", len(gatewayTools), os.Getenv("HARNESSMESH_MCP_GATEWAY_POLICY"))
+		}
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if *listen != "" {
@@ -554,12 +895,13 @@ func bridgeCmd(args []string) error {
 // harness-construction path as `mcp serve` - external (ChatGPT) agents are
 // never built into the invocable harness map here either.
 func bridgeServe(args []string) error {
+	tokenDefault := strings.TrimSpace(os.Getenv("HARNESSMESH_BRIDGE_TOKEN"))
 	fs := flag.NewFlagSet("bridge serve", flag.ContinueOnError)
 	repo := fs.String("repo", ".", "repository path")
 	configPath := fs.String("config", "harnessmesh.json", "config file")
 	caller := fs.String("caller", "", "participant identity the bridge acts as (defaults to config.bridge or the configured writable executor)")
 	listen := fs.String("listen", "", "bridge listen address (default 127.0.0.1:8788 or config.bridge.listen)")
-	token := fs.String("token", os.Getenv("HARNESSMESH_BRIDGE_TOKEN"), "bridge bearer token")
+	token := fs.String("token", tokenDefault, "bridge bearer token")
 	websocketEnabled := fs.Bool("websocket", true, "enable the /api/v1/events/ws endpoint")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -596,7 +938,7 @@ func bridgeServe(args []string) error {
 	if bridgeToken == "" {
 		bridgeToken = cfg.Bridge.Token
 	}
-	if bridgeToken == "" {
+	if bridgeToken == "" && strings.TrimSpace(os.Getenv("HARNESSMESH_BRIDGE_TOKEN_FILE")) == "" {
 		return errors.New("bridge requires a bearer token: pass --token, set HARNESSMESH_BRIDGE_TOKEN, or configure bridge.token")
 	}
 
@@ -640,11 +982,15 @@ func bridgeServe(args []string) error {
 	wsEnabled := *websocketEnabled
 
 	srv := bridge.NewServer(eng, bridge.Config{
-		Listen:           listenAddr,
-		Token:            bridgeToken,
-		AllowedOrigins:   cfg.Bridge.AllowedOrigins,
-		WebSocketEnabled: wsEnabled,
-		Caller:           callerName,
+		Listen:                listenAddr,
+		Token:                 bridgeToken,
+		TokenFile:             os.Getenv("HARNESSMESH_BRIDGE_TOKEN_FILE"),
+		AllowedOrigins:        cfg.Bridge.AllowedOrigins,
+		WebSocketEnabled:      wsEnabled,
+		Caller:                callerName,
+		OAuthIntrospectionURL: os.Getenv("HARNESSMESH_BRIDGE_OAUTH_INTROSPECTION_URL"),
+		OAuthClientSecret:     os.Getenv("HARNESSMESH_BRIDGE_OAUTH_CLIENT_SECRET"),
+		RequiredScope:         os.Getenv("HARNESSMESH_BRIDGE_REQUIRED_SCOPE"),
 	})
 	defer srv.Close()
 

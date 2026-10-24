@@ -110,10 +110,11 @@ func tryOpenBrowser(target string) error {
 // serve` and `bridge serve` - the provider plane and the collaboration
 // plane share no server-side state.
 func providerServe(args []string) error {
+	tokenDefault := strings.TrimSpace(os.Getenv("HARNESSMESH_PROVIDER_TOKEN"))
 	fs := flag.NewFlagSet("provider serve", flag.ContinueOnError)
 	configPath := fs.String("config", "harnessmesh.json", "config file")
 	listen := fs.String("listen", "", "listen address (default 127.0.0.1:8789 or config.provider.listen)")
-	token := fs.String("token", os.Getenv("HARNESSMESH_PROVIDER_TOKEN"), "provider gateway bearer token")
+	token := fs.String("token", tokenDefault, "provider gateway bearer token")
 	metadataOnly := fs.Bool("metadata-only", false, "test-only: serve models/health and reject /responses (requires HARNESSMESH_METADATA_ONLY_TEST=1)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -136,10 +137,11 @@ func providerServe(args []string) error {
 	}
 
 	gwCfg := cfg.Provider
+	gwCfg.TokenFile = os.Getenv("HARNESSMESH_PROVIDER_TOKEN_FILE")
 	if *token != "" {
 		gwCfg.Token = *token
 	}
-	if gwCfg.Token == "" {
+	if gwCfg.Token == "" && gwCfg.TokenFile == "" {
 		return errors.New("provider gateway requires a bearer token: pass --token, set HARNESSMESH_PROVIDER_TOKEN, or configure provider.token")
 	}
 

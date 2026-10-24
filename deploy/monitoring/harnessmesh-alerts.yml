@@ -1,0 +1,63 @@
+groups:
+  - name: harnessmesh-production
+    interval: 30s
+    rules:
+      - alert: HarnessMeshTransportDown
+        expr: up{job=~"harnessmesh-(mcp|bridge|provider)"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: harnessmesh
+        annotations:
+          summary: HarnessMesh transport is unavailable
+          description: "{{ $labels.job }} has been unreachable for more than two minutes."
+
+      - alert: HarnessMeshMCPErrorRateHigh
+        expr: rate(harnessmesh_mcp_errors_total[5m]) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: harnessmesh-mcp
+        annotations:
+          summary: HarnessMesh MCP error rate is elevated
+          description: "MCP errors exceed 0.05 requests/second for ten minutes."
+
+      - alert: HarnessMeshBridgeErrorRateHigh
+        expr: rate(harnessmesh_bridge_errors_total[5m]) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: harnessmesh-bridge
+        annotations:
+          summary: HarnessMesh Bridge error rate is elevated
+          description: "Bridge errors exceed 0.05 requests/second for ten minutes."
+
+      - alert: HarnessMeshProviderErrorRateHigh
+        expr: rate(harnessmesh_provider_errors_total[5m]) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: harnessmesh-provider
+        annotations:
+          summary: HarnessMesh Provider error rate is elevated
+          description: "Provider errors exceed 0.05 requests/second for ten minutes."
+
+      - alert: HarnessMeshAuthDenialsSpiking
+        expr: rate(harnessmesh_bridge_denials_total[5m]) + rate(harnessmesh_zero_api_billing_policy_denials_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: harnessmesh
+        annotations:
+          summary: HarnessMesh policy/auth denials are spiking
+          description: "Review token rotation, caller ACLs, and provider policy decisions."
+
+      - alert: HarnessMeshDiskUsageHigh
+        expr: (node_filesystem_avail_bytes{mountpoint=~".*/(data|workspace)"} / node_filesystem_size_bytes{mountpoint=~".*/(data|workspace)"}) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+          service: harnessmesh
+        annotations:
+          summary: HarnessMesh data volume is nearly full
+          description: "Less than 15% filesystem capacity remains on a HarnessMesh data mount."

@@ -4,10 +4,56 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/domehahn/harnessmesh/internal/config"
 )
+
+type BackendFactory func(name string, cfg config.ProviderBackendConfig) (InferenceBackend, error)
+
+type BackendDescriptor struct {
+	Type       string `json:"type"`
+	Version    string `json:"version"`
+	Metered    bool   `json:"metered"`
+	Credential string `json:"credential,omitempty"`
+}
+
+var backendFactories = map[string]BackendFactory{
+	"openai-compatible": func(name string, cfg config.ProviderBackendConfig) (InferenceBackend, error) {
+		return NewOpenAICompatibleBackend(name, cfg), nil
+	},
+	"openai-api": func(name string, cfg config.ProviderBackendConfig) (InferenceBackend, error) {
+		return NewOpenAIAPIBackend(name, cfg), nil
+	},
+	"codex": func(name string, cfg config.ProviderBackendConfig) (InferenceBackend, error) {
+		return NewCodexInferenceBackend(name, cfg), nil
+	},
+	"bedrock": func(name string, cfg config.ProviderBackendConfig) (InferenceBackend, error) {
+		return NewBedrockBackend(name, cfg), nil
+	},
+	"chatgpt-subscription": func(name string, cfg config.ProviderBackendConfig) (InferenceBackend, error) {
+		return NewSubscriptionBackend(name), nil
+	},
+}
+
+func RegisterBackendType(name string, factory BackendFactory) error {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" || factory == nil {
+		return fmt.Errorf("provider backend type and factory are required")
+	}
+	backendFactories[name] = factory
+	return nil
+}
+
+func RegisteredBackendTypes() []string {
+	out := make([]string, 0, len(backendFactories))
+	for name := range backendFactories {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // IsMeteredBackendType reports whether a provider backend type resolves to
 // a metered LLM backend (the real OpenAI API, or Codex used as an
@@ -104,20 +150,11 @@ func NewRegistry(cfg config.ProviderGatewayConfig, listenAddr string) (*Registry
 }
 
 func buildBackend(name string, bCfg config.ProviderBackendConfig) (InferenceBackend, error) {
-	switch strings.ToLower(bCfg.Type) {
-	case "openai-compatible":
-		return NewOpenAICompatibleBackend(name, bCfg), nil
-	case "openai-api":
-		return NewOpenAIAPIBackend(name, bCfg), nil
-	case "codex":
-		return NewCodexInferenceBackend(name, bCfg), nil
-	case "bedrock":
-		return NewBedrockBackend(name, bCfg), nil
-	case "chatgpt-subscription":
-		return NewSubscriptionBackend(name), nil
-	default:
+	factory, ok := backendFactories[strings.ToLower(strings.TrimSpace(bCfg.Type))]
+	if !ok {
 		return nil, fmt.Errorf("unsupported provider backend type %q", bCfg.Type)
 	}
+	return factory(name, bCfg)
 }
 
 // checkSelfRecursion detects a configured backend base_url that would send

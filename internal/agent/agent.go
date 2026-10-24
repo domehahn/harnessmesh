@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -111,15 +112,37 @@ type Harness interface {
 
 type Factory func(id string, cfg config.AgentConfig, sy config.SwitchyardConfig) (Harness, error)
 
+// AdapterDescriptor is the stable metadata contract used by control-plane
+// catalogs, adapter installers and future external adapter SDKs. Factories
+// remain the execution seam; descriptors never contain credentials.
+type AdapterDescriptor struct {
+	Name         string   `json:"name"`
+	Aliases      []string `json:"aliases,omitempty"`
+	Version      string   `json:"version,omitempty"`
+	Managed      bool     `json:"managed"`
+	External     bool     `json:"external"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
 var (
-	registryMu sync.RWMutex
-	registry   = make(map[string]Factory)
+	registryMu  sync.RWMutex
+	registry    = make(map[string]Factory)
+	descriptors = make(map[string]AdapterDescriptor)
 )
 
 func RegisterAdapter(name string, f Factory) {
+	RegisterAdapterWithDescriptor(name, f, AdapterDescriptor{Name: strings.ToLower(strings.TrimSpace(name)), Version: "builtin", Managed: true})
+}
+
+func RegisterAdapterWithDescriptor(name string, f Factory, descriptor AdapterDescriptor) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
-	registry[strings.ToLower(strings.TrimSpace(name))] = f
+	key := strings.ToLower(strings.TrimSpace(name))
+	registry[key] = f
+	if descriptor.Name == "" {
+		descriptor.Name = key
+	}
+	descriptors[key] = descriptor
 }
 
 func RegisteredAdapters() []string {
@@ -129,6 +152,17 @@ func RegisteredAdapters() []string {
 	for k := range registry {
 		out = append(out, k)
 	}
+	return out
+}
+
+func RegisteredAdapterDescriptors() []AdapterDescriptor {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	out := make([]AdapterDescriptor, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		out = append(out, descriptor)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

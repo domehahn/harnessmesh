@@ -11,7 +11,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The deterministic production gate runs the Go race suite, frontend
+    # install/build/E2E/audit, compose checks and image builds in one job.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -20,8 +22,19 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: gofmt
-        run: test -z "$(gofmt -l .)"
+        run: |
+          formatted_files="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
+          if [ -n "$formatted_files" ]; then
+            printf '%s\n' "$formatted_files"
+            exit 1
+          fi
 
       - name: Test
         run: go test -race ./...
@@ -44,7 +57,9 @@ jobs:
         run: go build ./cmd/harnessmesh
 
       - name: Production readiness gate (deterministic; no OpenAI inference)
-        run: make production-readiness
+        run: |
+          npx --prefix frontend playwright install --with-deps chromium
+          make production-readiness
 
       - name: Validate examples
         run: |
@@ -55,15 +70,41 @@ jobs:
           python3 -m json.tool plugins/.agents/plugins/marketplace.json >/dev/null
           python3 -m json.tool plugins/harnessmesh-codex/plugin.json >/dev/null
           python3 -m json.tool plugins/harnessmesh-codex/mcp.json >/dev/null
+          python3 -m json.tool configs/harnessmesh-single-node-production.example.json >/dev/null
+          python3 -m json.tool docs/api/openapi.json >/dev/null
 
       - name: Validate Compose and operational scripts
         run: |
           HARNESSMESH_MCP_TOKEN=ci-mcp-token \
           HARNESSMESH_BRIDGE_TOKEN=ci-bridge-token \
           HARNESSMESH_PROVIDER_TOKEN=ci-provider-token \
+          HARNESSMESH_ADMIN_TOKEN=ci-admin-token \
+          HARNESSMESH_POSTGRES_PASSWORD=ci-postgres-password \
           HARNESSMESH_UID=10001 HARNESSMESH_GID=10001 \
             docker compose config --quiet
-          sh -n scripts/backup-sqlite.sh scripts/restore-sqlite.sh
+          HARNESSMESH_MCP_TOKEN=ci-mcp-token-012345678901234567890123456789 \
+          HARNESSMESH_BRIDGE_TOKEN=ci-bridge-token-012345678901234567890123456789 \
+          HARNESSMESH_PROVIDER_TOKEN=ci-provider-token-012345678901234567890123456789 \
+          HARNESSMESH_ADMIN_TOKEN=ci-admin-token-012345678901234567890123456789 \
+          HARNESSMESH_POSTGRES_PASSWORD=ci-postgres-password \
+          HARNESSMESH_UID=10001 HARNESSMESH_GID=10001 \
+            docker compose -f compose.yaml -f compose.production.yaml config --quiet
+          sh -n scripts/backup-sqlite.sh scripts/restore-sqlite.sh scripts/backup-restore-smoke.sh scripts/staging-load-smoke.sh
+
+      - name: Validate production console Compose profile
+        run: |
+          HARNESSMESH_POSTGRES_PASSWORD=ci-postgres-password \
+          HARNESSMESH_ADMIN_TOKEN=ci-admin-token \
+          HARNESSMESH_MCP_TOKEN=ci-mcp-token \
+          HARNESSMESH_BRIDGE_TOKEN=ci-bridge-token \
+          HARNESSMESH_PROVIDER_TOKEN=ci-provider-token \
+          HARNESSMESH_UID=10001 HARNESSMESH_GID=10001 \
+            docker compose -f compose.yaml -f compose.production.yaml \
+              --profile mcp --profile bridge --profile provider \
+              --profile console --profile postgres --profile backup config --quiet
+
+      - name: Backup and restore smoke test
+        run: HARNESSMESH_RESTORE_RTO_SECONDS=30 make backup-restore-smoke
 
       - name: Compile VS Code extension
         working-directory: extensions/vscode
@@ -73,3 +114,6 @@ jobs:
 
       - name: Docker build
         run: docker build .
+
+      - name: Docker build React console
+        run: docker build -t harnessmesh-console:ci ./frontend

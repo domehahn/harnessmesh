@@ -38,13 +38,25 @@ HarnessMesh supports MCP protocol revisions `2025-06-18` (default), `2025-03-26`
 ### Authentication
 
 - **Bearer token** (`HARNESSMESH_MCP_TOKEN` / `--token`): mandatory unless OAuth introspection is configured.
+- **Mounted token file** (`HARNESSMESH_MCP_TOKEN_FILE`): read on each request,
+  allowing atomic rotation without a service restart; the direct token wins if
+  both are set.
 - **OAuth2 token introspection** (RFC 7662-style): set `HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL` to validate bearer tokens against an external authorization server; `HARNESSMESH_MCP_OAUTH_CLIENT_SECRET` optionally authenticates the introspection request itself. This is introspection against an external AS, not a full local authorization-code/dynamic-client-registration flow.
+- **Required scope**: `HARNESSMESH_MCP_REQUIRED_SCOPE` optionally requires a
+  scope returned by introspection. Static local bearer tokens are unchanged;
+  introspection failures and missing scopes fail closed.
 - **Caller/project ACLs**: `HARNESSMESH_MCP_CALLERS` and `HARNESSMESH_MCP_PROJECTS` are comma-separated allowlists enforced per request.
 - **Admin dashboard** (`/admin/*`): requires the bearer token plus, optionally, a further `HARNESSMESH_MCP_ADMIN_CALLERS` allowlist.
 
 ### Authorization beyond authentication
 
 Authentication proves *who* is calling; it does not by itself grant write access. Every mutating tool re-validates the caller's claimed identity against the authenticated session (rejecting any `from`/`caller`/`source_*` field that doesn't match), and repository-changing operations (`change.*`) additionally enforce the single-writer invariant against the caller's own `execution_mode`/`writable` configuration - an `execution_mode: external` participant (the ChatGPT-browser role) can never open or commit a change transaction, regardless of what token it authenticates with.
+
+Production deployments should set `HARNESSMESH_ADMIN_TOKEN` separately from
+the MCP bearer token. When set, the separate token is required for the
+authenticated `/admin`, `/admin/operations`, and `/admin/knowledge` endpoints;
+local profiles without it retain the MCP token as the admin credential for
+backward compatibility. The production Compose overlay requires this variable.
 
 ## Exposed tools
 

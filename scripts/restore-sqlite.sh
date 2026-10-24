@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 set -eu
+umask 077
 
 if [ "$#" -ne 2 ] || [ "$2" != "--confirm" ]; then
   echo "usage: harnessmesh-restore /backup/harnessmesh-YYYYmmddTHHMMSSZ --confirm" >&2
@@ -13,9 +14,18 @@ source_knowledge="$source_dir/knowledge.hmkz"
 target_db="$data_dir/harnessmesh.db"
 target_knowledge="$data_dir/knowledge.hmkz"
 
+mkdir -p "$data_dir"
+
 if [ ! -f "$source_db" ]; then
   echo "backup database not found: $source_db" >&2
   exit 1
+fi
+
+if [ -f "$source_dir/SHA256SUMS" ]; then
+	(
+		cd "$source_dir"
+		sha256sum -c SHA256SUMS
+	)
 fi
 
 if [ "${HARNESSMESH_RESTORE_SERVICES_STOPPED:-0}" != "1" ]; then

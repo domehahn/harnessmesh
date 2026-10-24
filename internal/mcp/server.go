@@ -16,11 +16,19 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/auth"
 	"github.com/domehahn/harnessmesh/internal/collaboration"
+	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/creditguard"
+	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/knowledge"
+	"github.com/domehahn/harnessmesh/internal/mcpgateway"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/secrets"
+	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/telemetry"
+	"github.com/domehahn/harnessmesh/internal/tenant"
+	"github.com/domehahn/harnessmesh/internal/webui"
 )
 
 // Supported MCP protocol (spec revision) versions. defaultProtocolVersion is
@@ -57,10 +65,20 @@ type Server struct {
 	rateWindow         time.Time
 	rateCount          int
 	rateLimit          int
+	tenantRateLimit    int
+	tenantRateMu       sync.Mutex
+	tenantWindows      map[string]tenantRateWindow
 	metrics            *telemetry.Registry
 	sessionsMu         sync.Mutex
 	sessions           map[string]*mcpSession
 	terminatedSessions map[string]time.Time
+	gateway            *mcpgateway.Gateway
+	gatewayTools       []ToolDefinition
+}
+
+type tenantRateWindow struct {
+	started time.Time
+	count   int
 }
 
 func (s *Server) recordSession(id string) {
@@ -113,11 +131,48 @@ func (s *Server) ServeHTTPWithTLS(ctx context.Context, listen, token, certFile, 
 }
 
 func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile string) error {
+	tokenFile := os.Getenv("HARNESSMESH_MCP_TOKEN_FILE")
+	configuredToken, tokenErr := auth.TokenValue(token, tokenFile)
+	if tokenErr != nil {
+		return fmt.Errorf("MCP token rejected: %w", tokenErr)
+	}
+	if strings.TrimSpace(configuredToken) != "" {
+		if err := config.ValidateBearerToken(configuredToken); err != nil {
+			return fmt.Errorf("MCP token rejected: %w", err)
+		}
+	}
 	introspectionURL := os.Getenv("HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL")
-	if strings.TrimSpace(token) == "" && introspectionURL == "" {
+	requiredScope := os.Getenv("HARNESSMESH_MCP_REQUIRED_SCOPE")
+	if strings.TrimSpace(configuredToken) == "" && introspectionURL == "" {
 		return fmt.Errorf("remote MCP requires a bearer token or OAuth introspection URL")
 	}
 	mux := http.NewServeMux()
+	if identityStore, ok := s.engine.Store().(store.IdentityStore); ok {
+		mux.Handle("/api/v1/identity/", identity.NewHandler(identityStore))
+	}
+	mux.Handle("/dashboard/", webui.Handler())
+	var secretManager secrets.Manager
+	var secretManagerErr error
+	if strings.EqualFold(os.Getenv("HARNESSMESH_SECRET_BACKEND"), "vault") {
+		if configured, err := secrets.NewVaultFromEnv(); err == nil {
+			secretManager = configured
+		} else {
+			secretManagerErr = err
+		}
+	} else if secretStore, ok := s.engine.Store().(store.SecretStore); ok {
+		if configured, err := secrets.NewLocal(secretStore, os.Getenv("HARNESSMESH_SECRET_KEY")); err == nil {
+			secretManager = configured
+		} else {
+			secretManagerErr = err
+		}
+	}
+	if os.Getenv("HARNESSMESH_REQUIRE_STRONG_TOKENS") == "1" && secretManager == nil {
+		if secretManagerErr == nil {
+			secretManagerErr = fmt.Errorf("secret backend is not configured")
+		}
+		return fmt.Errorf("production secret backend rejected: %w", secretManagerErr)
+	}
+	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine, secretManager, s.engine))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -125,6 +180,22 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if s.engine == nil || s.engine.Store() == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"not_ready","reason":"engine unavailable"}`))
+			return
+		}
+		if _, err := s.engine.Store().ListSpaces(r.Context()); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"not_ready","reason":"store unavailable"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
@@ -193,13 +264,30 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 			return
 		}
 		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		authorized := token != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1
+		currentToken, currentErr := auth.TokenValue(token, tokenFile)
+		authorized := currentErr == nil && currentToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(currentToken)) == 1
 		if !authorized && introspectionURL != "" {
-			authorized = introspectOAuthToken(r.Context(), introspectionURL, provided, os.Getenv("HARNESSMESH_MCP_OAUTH_CLIENT_SECRET"))
+			info, introspected := auth.IntrospectToken(r.Context(), introspectionURL, provided, os.Getenv("HARNESSMESH_MCP_OAUTH_CLIENT_SECRET"))
+			authorized = introspected && auth.HasScope(info, requiredScope)
+			if authorized && info.Tenant != "" {
+				r = r.WithContext(tenant.WithIdentity(r.Context(), tenant.Identity{Subject: info.Subject, Tenant: info.Tenant, Roles: info.Roles, Scopes: info.Scopes}))
+			}
+		}
+		if !authorized {
+			if apiIdentity, apiOK := s.authenticateAPIKey(r.Context(), r.Header.Get("X-HarnessMesh-API-Key")); apiOK {
+				authorized = true
+				r = r.WithContext(tenant.WithIdentity(r.Context(), apiIdentity))
+			}
 		}
 		if !authorized {
 			s.errors.Add(1)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if identity, identityErr := tenant.FromContext(r.Context()); identityErr == nil && !s.allowTenantRequest(identity.Tenant, time.Now()) {
+			s.errors.Add(1)
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "tenant rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}
 		s.requests.Add(1)
@@ -291,6 +379,7 @@ func isAllowedCORSOrigin(origin string) bool {
 // It supports POST, GET (SSE or info), DELETE (session termination), and OPTIONS (CORS preflight).
 func (s *Server) StreamableHTTPHandler(token string) http.Handler {
 	introspectionURL := os.Getenv("HARNESSMESH_MCP_OAUTH_INTROSPECTION_URL")
+	requiredScope := os.Getenv("HARNESSMESH_MCP_REQUIRED_SCOPE")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// CORS headers
 		origin := r.Header.Get("Origin")
@@ -326,9 +415,26 @@ func (s *Server) StreamableHTTPHandler(token string) http.Handler {
 
 		// Authentication
 		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		authorized := token != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1
+		currentToken, currentErr := auth.TokenValue(token, os.Getenv("HARNESSMESH_MCP_TOKEN_FILE"))
+		authorized := currentErr == nil && currentToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(currentToken)) == 1
 		if !authorized && introspectionURL != "" {
-			authorized = introspectOAuthToken(r.Context(), introspectionURL, provided, os.Getenv("HARNESSMESH_MCP_OAUTH_CLIENT_SECRET"))
+			info, introspected := auth.IntrospectToken(r.Context(), introspectionURL, provided, os.Getenv("HARNESSMESH_MCP_OAUTH_CLIENT_SECRET"))
+			authorized = introspected && auth.HasScope(info, requiredScope)
+			if authorized && info.Tenant != "" {
+				r = r.WithContext(tenant.WithIdentity(r.Context(), tenant.Identity{Subject: info.Subject, Tenant: info.Tenant, Roles: info.Roles, Scopes: info.Scopes}))
+			}
+		}
+		if !authorized {
+			if apiIdentity, apiOK := s.authenticateAPIKey(r.Context(), r.Header.Get("X-HarnessMesh-API-Key")); apiOK {
+				authorized = true
+				r = r.WithContext(tenant.WithIdentity(r.Context(), apiIdentity))
+			}
+		}
+		if identity, identityErr := tenant.FromContext(r.Context()); identityErr == nil && !s.allowTenantRequest(identity.Tenant, time.Now()) {
+			s.errors.Add(1)
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "tenant rate limit exceeded", http.StatusTooManyRequests)
+			return
 		}
 		if !authorized {
 			s.errors.Add(1)
@@ -487,6 +593,15 @@ func (s *Server) StreamableHTTPHandler(token string) http.Handler {
 }
 
 func (s *Server) adminAuthorized(r *http.Request, token string) bool {
+	adminToken := strings.TrimSpace(os.Getenv("HARNESSMESH_ADMIN_TOKEN"))
+	adminTokenFile := os.Getenv("HARNESSMESH_ADMIN_TOKEN_FILE")
+	loadedAdminToken, err := auth.TokenValue(adminToken, adminTokenFile)
+	if adminToken != "" || strings.TrimSpace(adminTokenFile) != "" {
+		if err != nil || config.ValidateBearerToken(loadedAdminToken) != nil {
+			return false
+		}
+		token = loadedAdminToken
+	}
 	provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if token == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
 		return false
@@ -499,31 +614,16 @@ func (s *Server) adminAuthorized(r *http.Request, token string) bool {
 	return ok
 }
 
-func introspectOAuthToken(ctx context.Context, endpoint, token, clientSecret string) bool {
-	if token == "" {
-		return false
+func (s *Server) authenticateAPIKey(ctx context.Context, presented string) (tenant.Identity, bool) {
+	if s.engine == nil || strings.TrimSpace(presented) == "" {
+		return tenant.Identity{}, false
 	}
-	form := url.Values{"token": []string{token}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return false
+	identityStore, ok := s.engine.Store().(store.IdentityStore)
+	if !ok {
+		return tenant.Identity{}, false
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if clientSecret != "" {
-		req.Header.Set("Authorization", "Bearer "+clientSecret)
-	}
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false
-	}
-	var result struct {
-		Active bool `json:"active"`
-	}
-	return json.NewDecoder(resp.Body).Decode(&result) == nil && result.Active
+	resolved, err := (identity.Service{Store: identityStore}).AuthenticateAPIKey(ctx, presented)
+	return resolved, err == nil
 }
 
 func NewServer(engine *collaboration.Engine, sessionID, caller string) *Server {
@@ -544,7 +644,24 @@ func NewServer(engine *collaboration.Engine, sessionID, caller string) *Server {
 	if configured, err := strconv.Atoi(os.Getenv("HARNESSMESH_MCP_RATE_LIMIT")); err == nil && configured > 0 {
 		server.rateLimit = configured
 	}
+	server.tenantRateLimit = server.rateLimit
+	if configured, err := strconv.Atoi(os.Getenv("HARNESSMESH_MCP_TENANT_RATE_LIMIT")); err == nil && configured > 0 {
+		server.tenantRateLimit = configured
+	}
+	server.tenantWindows = make(map[string]tenantRateWindow)
 	return server
+}
+
+// SetGateway attaches already-discovered external tools. Discovery is kept
+// outside ListTools so an unavailable optional upstream cannot stall the MCP
+// handshake; callers can refresh this set explicitly during startup or via an
+// operator action.
+func (s *Server) SetGateway(gateway *mcpgateway.Gateway, tools []mcpgateway.Tool) {
+	s.gateway = gateway
+	s.gatewayTools = make([]ToolDefinition, 0, len(tools))
+	for _, tool := range tools {
+		s.gatewayTools = append(s.gatewayTools, ToolDefinition{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema})
+	}
 }
 
 func (s *Server) allowRequest(now time.Time) bool {
@@ -557,6 +674,25 @@ func (s *Server) allowRequest(now time.Time) bool {
 		return false
 	}
 	s.rateCount++
+	return true
+}
+
+func (s *Server) allowTenantRequest(tenantID string, now time.Time) bool {
+	if tenantID == "" || s.tenantRateLimit <= 0 {
+		return true
+	}
+	s.tenantRateMu.Lock()
+	defer s.tenantRateMu.Unlock()
+	window := s.tenantWindows[tenantID]
+	if window.started.IsZero() || now.Sub(window.started) >= time.Minute {
+		window = tenantRateWindow{started: now}
+	}
+	if window.count >= s.tenantRateLimit {
+		s.tenantWindows[tenantID] = window
+		return false
+	}
+	window.count++
+	s.tenantWindows[tenantID] = window
 	return true
 }
 
@@ -1174,6 +1310,12 @@ func (s *Server) ListTools() []ToolDefinition {
 			}, "required": []string{"change_id"}},
 		},
 	)
+	if s.gateway != nil {
+		// Remote discovery is intentionally not performed during tools/list:
+		// clients must remain responsive when an optional upstream is offline.
+		// Gateway tools are refreshed by SetGatewayTools after startup.
+		tools = append(tools, s.gatewayTools...)
+	}
 	return tools
 }
 
@@ -1295,6 +1437,9 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 			return nil, err
 		}
 		s.sessionID = sess.ID
+	}
+	if strings.Contains(toolName, "__") && s.gateway != nil {
+		return s.gateway.Call(ctx, toolName, argsJSON, s.caller)
 	}
 
 	switch toolName {
