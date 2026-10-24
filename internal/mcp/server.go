@@ -152,14 +152,25 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 	}
 	mux.Handle("/dashboard/", webui.Handler())
 	var secretManager secrets.Manager
+	var secretManagerErr error
 	if strings.EqualFold(os.Getenv("HARNESSMESH_SECRET_BACKEND"), "vault") {
 		if configured, err := secrets.NewVaultFromEnv(); err == nil {
 			secretManager = configured
+		} else {
+			secretManagerErr = err
 		}
 	} else if secretStore, ok := s.engine.Store().(store.SecretStore); ok {
 		if configured, err := secrets.NewLocal(secretStore, os.Getenv("HARNESSMESH_SECRET_KEY")); err == nil {
 			secretManager = configured
+		} else {
+			secretManagerErr = err
 		}
+	}
+	if os.Getenv("HARNESSMESH_REQUIRE_STRONG_TOKENS") == "1" && secretManager == nil {
+		if secretManagerErr == nil {
+			secretManagerErr = fmt.Errorf("secret backend is not configured")
+		}
+		return fmt.Errorf("production secret backend rejected: %w", secretManagerErr)
 	}
 	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine, secretManager))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -138,7 +139,7 @@ func NewVaultFromEnv() (*Vault, error) {
 	return &Vault{Address: addr, Token: tok, Mount: mount, Client: &http.Client{Timeout: 10 * time.Second}}, nil
 }
 func (v *Vault) path(tenant, name string) string {
-	return fmt.Sprintf("%s/v1/%s/data/harnessmesh/%s/%s", v.Address, v.Mount, tenant, name)
+	return fmt.Sprintf("%s/v1/%s/data/harnessmesh/%s/%s", v.Address, v.Mount, url.PathEscape(tenant), url.PathEscape(name))
 }
 func (v *Vault) do(ctx context.Context, method, url string, body any) (map[string]any, error) {
 	var rd io.Reader
@@ -165,7 +166,7 @@ func (v *Vault) do(ctx context.Context, method, url string, body any) (map[strin
 	return out, nil
 }
 func (v *Vault) List(ctx context.Context, tenant string) ([]Item, error) {
-	out, err := v.do(ctx, "LIST", fmt.Sprintf("%s/v1/%s/metadata/harnessmesh/%s", v.Address, v.Mount, tenant), nil)
+	out, err := v.do(ctx, "LIST", fmt.Sprintf("%s/v1/%s/metadata/harnessmesh/%s", v.Address, v.Mount, url.PathEscape(tenant)), nil)
 	if err != nil {
 		return nil, err
 	}
