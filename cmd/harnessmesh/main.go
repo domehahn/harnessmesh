@@ -31,6 +31,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/mcpgateway"
 	"github.com/domehahn/harnessmesh/internal/mcpregistry"
 	"github.com/domehahn/harnessmesh/internal/modelrouting"
+	"github.com/domehahn/harnessmesh/internal/plugin"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/report"
 	"github.com/domehahn/harnessmesh/internal/store"
@@ -581,6 +582,9 @@ func collaborate(args []string) error {
 	if err != nil {
 		return err
 	}
+	if _, err := plugin.RegisterDirectory(pluginRoot(), plugin.Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version}); err != nil {
+		return fmt.Errorf("load agent plugins: %w", err)
+	}
 	if *executorName != "" {
 		cfg.Workflow.Executor = *executorName
 	}
@@ -669,6 +673,14 @@ func collaborate(args []string) error {
 		fmt.Printf("Report: %s\n", filepath.Join(runDir, "report.md"))
 	}
 	return err
+}
+
+func pluginRoot() string {
+	root := strings.TrimSpace(os.Getenv("HARNESSMESH_PLUGIN_DIR"))
+	if root == "" {
+		return "plugins"
+	}
+	return root
 }
 
 func mcpCmd(args []string) error {
@@ -794,6 +806,9 @@ func mcpServe(args []string) error {
 	cfg, err := loadConfigOrDefault(*configPath)
 	if err != nil {
 		return err
+	}
+	if _, err := plugin.RegisterDirectory(pluginRoot(), plugin.Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version}); err != nil {
+		return fmt.Errorf("load agent plugins: %w", err)
 	}
 	if registry, registryErr := mcpregistry.New(cfg.MCP); registryErr != nil {
 		return fmt.Errorf("validate MCP registry: %w", registryErr)

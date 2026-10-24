@@ -44,6 +44,7 @@ type Messenger interface {
 
 type MarketplaceCatalog interface {
 	ConfiguredMCPServers() []map[string]any
+	ConfiguredPlugins() []map[string]any
 }
 
 func orchestratorAgents(orchestrator Orchestrator) []map[string]any {
@@ -429,10 +430,12 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 		}
 		if path == "/marketplace" && r.Method == http.MethodGet {
 			items := []map[string]any{}
+			plugins := []map[string]any{}
 			if marketplace != nil {
 				items = marketplace.ConfiguredMCPServers()
+				plugins = marketplace.ConfiguredPlugins()
 			}
-			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestratorAgents(orchestrator), "mcp_servers": items})
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestratorAgents(orchestrator), "mcp_servers": items, "plugins": plugins})
 			return
 		}
 		if strings.HasPrefix(path, "/secrets") {

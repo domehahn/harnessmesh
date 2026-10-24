@@ -4,6 +4,12 @@
 
 HarnessMesh connects coding agents such as **Claude Code**, **OpenAI Codex**, **Google Antigravity**, **GitHub Copilot CLI**, ChatGPT-connected MCP clients, and custom adapters so they can collaborate through a shared durable control plane instead of relying on human copy/paste between tools.
 
+External agent adapters can be installed without changing Go source code. See
+[`plugins/README.md`](plugins/README.md) and
+[`configs/agent-plugin.example.json`](configs/agent-plugin.example.json) for
+the manifest, newline-delimited stdio protocol, hash/signature policy,
+sandbox limits and activation configuration.
+
 It also provides a separate, bounded **model-provider plane** that lets the official Codex client talk to HarnessMesh over the Responses API wire and route inference to an explicitly configured backend.
 
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.
