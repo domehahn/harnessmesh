@@ -85,6 +85,10 @@ The central operational entry points are `make local-up`, `make local-down`,
 and the required out-of-band secret setup are documented in
 [`deploy/k8s/README.md`](deploy/k8s/README.md).
 
+The durable worker pool can be started separately with `make worker-up` and
+uses PostgreSQL leases when `HARNESSMESH_POSTGRES_DSN` is configured. Multiple
+workers may claim work concurrently without processing the same leased job.
+
 For local OIDC introspection, copy the OIDC values from `.env.example`, set a
 Keycloak admin password, and run `make keycloak-up`. The realm import is in
 [`deploy/keycloak/harnessmesh-realm.json`](deploy/keycloak/harnessmesh-realm.json).

@@ -242,7 +242,7 @@ func tenantCmd(args []string) error {
 
 func jobsCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: harnessmesh jobs <submit|list|webhook>")
+		return errors.New("usage: harnessmesh jobs <submit|list|worker|webhook>")
 	}
 	fs := flag.NewFlagSet("jobs "+args[0], flag.ContinueOnError)
 	dbPath := fs.String("db", "", "SQLite database path (default: configured HarnessMesh database)")
@@ -252,16 +252,55 @@ func jobsCmd(args []string) error {
 	status := fs.String("status", "", "filter status")
 	limit := fs.Int("limit", 100, "maximum jobs")
 	listen := fs.String("listen", "127.0.0.1:8790", "webhook listen address")
+	owner := fs.String("owner", "", "worker owner identity")
+	poll := fs.Duration("poll", time.Second, "worker poll interval")
+	concurrency := fs.Int("concurrency", 1, "worker concurrency")
+	handler := fs.String("handler", "noop", "worker handler (noop only; unknown kinds fail closed)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	st, err := store.OpenSQLite(*dbPath)
-	if err != nil {
-		return err
+	var st store.Store
+	closeStore := func() {}
+	if dsn := strings.TrimSpace(os.Getenv("HARNESSMESH_POSTGRES_DSN")); dsn != "" {
+		repositories, db, openErr := store.OpenPostgresRepositories(context.Background(), dsn)
+		if openErr != nil {
+			return openErr
+		}
+		postgresStore, storeErr := store.NewPostgresStore(repositories)
+		if storeErr != nil {
+			_ = db.Close()
+			return storeErr
+		}
+		st = postgresStore
+		closeStore = func() { _ = db.Close() }
+	} else {
+		sqliteStore, openErr := store.OpenSQLite(*dbPath)
+		if openErr != nil {
+			return openErr
+		}
+		st = sqliteStore
+		closeStore = func() { _ = sqliteStore.Close() }
 	}
-	defer st.Close()
+	defer closeStore()
 	ctx := context.Background()
 	switch args[0] {
+	case "worker":
+		if *owner == "" {
+			*owner = fmt.Sprintf("worker-%d", os.Getpid())
+		}
+		if *handler != "noop" {
+			return fmt.Errorf("unsupported worker handler %q; only noop is built in", *handler)
+		}
+		runtime := jobs.Runtime{Store: st, Owner: *owner, Lease: 2 * time.Minute, MaxAttempts: 3, Backoff: 5 * time.Second}
+		serveCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		fmt.Fprintf(os.Stderr, "HarnessMesh durable worker %s polling every %s with concurrency %d\n", *owner, *poll, *concurrency)
+		return runtime.Run(serveCtx, jobs.WorkerConfig{PollInterval: *poll, Concurrency: *concurrency}, func(ctx context.Context, job store.DurableJob) error {
+			if job.Kind != "noop" {
+				return fmt.Errorf("no handler registered for job kind %q", job.Kind)
+			}
+			return nil
+		})
 	case "webhook":
 		secret := strings.TrimSpace(os.Getenv("HARNESSMESH_WEBHOOK_SECRET"))
 		if secret == "" {

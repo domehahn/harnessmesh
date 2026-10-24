@@ -23,3 +23,7 @@ For a hyperscaler replace the included PostgreSQL StatefulSet with managed
 PostgreSQL and use a Vault-compatible secret service or an operator. The
 included manifests are a safe single-replica control-plane baseline, not an
 HA database operator.
+
+The Kustomize overlay also starts two durable workers. They use the same
+PostgreSQL DSN secret and coordinate through database leases; scale them only
+after the target PostgreSQL service has been qualified for the desired load.

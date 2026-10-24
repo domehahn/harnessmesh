@@ -2,7 +2,7 @@ services:
   # Fresh Docker volumes are created as root-owned. Initialize the shared
   # SQLite volume before the unprivileged MCP/bridge services start.
   harnessmesh-data-init:
-    profiles: ["mcp", "bridge"]
+    profiles: ["mcp", "bridge", "worker"]
     build:
       context: .
     user: "0:0"
@@ -146,6 +146,33 @@ services:
       timeout: 3s
       retries: 6
       start_period: 10s
+    depends_on:
+      harnessmesh-data-init:
+        condition: service_completed_successfully
+
+  # Durable worker pool. Multiple replicas coordinate through the configured
+  # store leases; use PostgreSQL for multi-process production deployments.
+  harnessmesh-worker:
+    profiles: ["worker"]
+    build:
+      context: .
+    working_dir: /workspace
+    volumes:
+      - ${HARNESSMESH_REPO:-.}:/workspace
+      - ${HARNESSMESH_MCP_CONFIG:-./harnessmesh.json}:/etc/harnessmesh/harnessmesh.json:ro
+      - harnessmesh-data:/data
+    environment:
+      HOME: /data
+      HARNESSMESH_DB_PATH: /data/harnessmesh.db
+      HARNESSMESH_POSTGRES_DSN: ${HARNESSMESH_POSTGRES_DSN:-}
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    command: ["jobs", "worker", "--owner", "compose-worker", "--concurrency", "${HARNESSMESH_WORKER_CONCURRENCY:-2}"]
     depends_on:
       harnessmesh-data-init:
         condition: service_completed_successfully

@@ -121,6 +121,17 @@ SQLite for local development. The PostgreSQL profile is a single-node
 Compose baseline; production HA/PITR/replication must be supplied by the
 managed PostgreSQL service.
 
+Start the durable worker pool separately with:
+
+```sh
+HARNESSMESH_POSTGRES_DSN='postgres://...' make worker-up
+```
+
+Workers coordinate through PostgreSQL leases. The built-in worker currently
+executes only explicit `noop` jobs; application-specific handlers should be
+registered in the worker process rather than allowing arbitrary commands from
+job payloads.
+
 The PostgreSQL profile is a single-node operational baseline. HA, managed
 backups, PITR and failover still require the selected infrastructure provider.
 

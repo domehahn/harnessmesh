@@ -105,6 +105,19 @@ services:
     stop_grace_period: 30s
     restart: unless-stopped
 
+  harnessmesh-worker:
+    user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
+    read_only: true
+    pids_limit: ${HARNESSMESH_WORKER_PIDS_LIMIT:-128}
+    mem_limit: ${HARNESSMESH_WORKER_MEMORY_LIMIT:-256m}
+    cpus: ${HARNESSMESH_WORKER_CPUS:-1.0}
+    cap_drop: ["ALL"]
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    logging: *production-logging
+    stop_grace_period: 30s
+    restart: unless-stopped
+
   harnessmesh-provider:
     user: "${HARNESSMESH_UID:-10001}:${HARNESSMESH_GID:-10001}"
     read_only: true

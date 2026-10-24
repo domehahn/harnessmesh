@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build extension compose-config local-up local-down vault-up vault-down keycloak-up keycloak-down k8s-validate k8s-apply k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension compose-config local-up local-down worker-up worker-down vault-up vault-down keycloak-up keycloak-down k8s-validate k8s-apply k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -43,6 +43,12 @@ local-up:
 
 local-down:
 	docker compose -f compose.yaml -f compose.production.yaml --profile mcp --profile bridge --profile console down
+
+worker-up:
+	docker compose -f compose.yaml -f compose.production.yaml --profile worker up -d --build harnessmesh-worker
+
+worker-down:
+	docker compose -f compose.yaml -f compose.production.yaml --profile worker down
 
 vault-up:
 	docker compose --profile vault up -d harnessmesh-vault
