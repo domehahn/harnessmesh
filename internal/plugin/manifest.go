@@ -119,6 +119,9 @@ func (m Manifest) validate(dir string, opts Options) (string, bool, bool, error)
 	if transport == "unix" && m.Socket != "" && (filepath.IsAbs(m.Socket) || filepath.Clean(m.Socket) != m.Socket || strings.HasPrefix(m.Socket, ".."+string(filepath.Separator))) {
 		return "", false, false, fmt.Errorf("plugin %q socket must stay inside its plugin directory", m.Name)
 	}
+	if strings.TrimSpace(m.Binary) == "" {
+		return "", false, false, nil // catalog-only marketplace entry
+	}
 	if m.Risk == "" {
 		m.Risk = "high"
 	}
@@ -132,9 +135,6 @@ func (m Manifest) validate(dir string, opts Options) (string, bool, bool, error)
 	}
 	if m.Sandbox.MaxProcesses < 0 || m.Sandbox.MemoryMB < 0 || m.Sandbox.MaxMessageBytes < 0 || m.Sandbox.MaxOutputBytes < 0 || m.Sandbox.TimeoutSeconds < 0 {
 		return "", false, false, fmt.Errorf("plugin %q has negative sandbox resource limits", m.Name)
-	}
-	if strings.TrimSpace(m.Binary) == "" {
-		return "", false, false, nil // catalog-only marketplace entry
 	}
 	if filepath.IsAbs(m.Binary) || filepath.Clean(m.Binary) != m.Binary || strings.HasPrefix(m.Binary, ".."+string(filepath.Separator)) {
 		return "", false, false, fmt.Errorf("plugin %q binary must stay inside its plugin directory", m.Name)

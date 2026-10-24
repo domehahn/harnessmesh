@@ -76,6 +76,8 @@ func main() {
 		err = peerCmd(os.Args[2:])
 	case "agents":
 		err = agentsCmd(os.Args[2:])
+	case "plugins":
+		err = pluginsCmd(os.Args[2:])
 	case "session":
 		err = sessionCmd(os.Args[2:])
 	case "findings":
@@ -144,6 +146,7 @@ Usage:
   harnessmesh peer review --peer <name> [options]
   harnessmesh peer status --session <id>
   harnessmesh agents <list|show <name>>
+  harnessmesh plugins <list|validate> [--dir <path>] [--json]
   harnessmesh session <list|show|messages|resume|stop> [options]
   harnessmesh findings <session-id> [--json]
 	harnessmesh evidence <session-id> [--json]
@@ -160,6 +163,47 @@ Usage:
 
 Run 'harnessmesh <command> --help' for details on a specific command.
 `, version)
+}
+
+func pluginsCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh plugins <list|validate> [--dir <path>] [--json]")
+	}
+	subcmd := args[0]
+	fs := flag.NewFlagSet("plugins "+subcmd, flag.ContinueOnError)
+	dir := fs.String("dir", pluginRoot(), "plugin directory")
+	jsonOutput := fs.Bool("json", false, "emit JSON")
+	requireHash := fs.Bool("require-hash", os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", "require matching SHA-256")
+	requireSignature := fs.Bool("require-signature", os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", "require Ed25519 signature")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	trusted, err := plugin.TrustedKeysFromEnvironment()
+	if err != nil {
+		return err
+	}
+	items, err := plugin.Discover(*dir, plugin.Options{RequireHash: *requireHash, RequireSignature: *requireSignature, HarnessMeshVersion: version, TrustedPublicKeys: trusted})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(items)
+	}
+	if subcmd != "list" && subcmd != "validate" {
+		return fmt.Errorf("unknown plugins subcommand %q", subcmd)
+	}
+	fmt.Printf("%-24s %-10s %-12s %-12s %s\n", "PLUGIN", "VERSION", "STATE", "HEALTH", "ERROR")
+	invalid := false
+	for _, item := range items {
+		fmt.Printf("%-24s %-10s %-12s %-12s %s\n", item.Manifest.Name, item.Manifest.Version, item.State, item.Health, item.Error)
+		if item.Manifest.Binary != "" && item.State != "ready" && item.State != "disabled" {
+			invalid = true
+		}
+	}
+	if subcmd == "validate" && invalid {
+		return errors.New("one or more executable plugins failed validation")
+	}
+	return nil
 }
 
 func postgresCmd(args []string) error {

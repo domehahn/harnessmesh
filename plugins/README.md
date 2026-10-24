@@ -59,6 +59,13 @@ export HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE=1 # optional, recommended in product
 make local-up
 ```
 
+Validate the same admission rules in CI or before a deployment:
+
+```sh
+harnessmesh plugins validate --dir plugins --require-hash
+harnessmesh plugins list --dir plugins --json
+```
+
 The dashboard Settings → Agent & MCP marketplace shows discovered plugins,
 version, capabilities, risk, hash/signature state and a live health probe.
 Refreshing that view re-scans the configured directory and registers newly
