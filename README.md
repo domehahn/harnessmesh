@@ -2,7 +2,7 @@
 
 [![GitHub CI](https://github.com/domehahn/harnessmesh/actions/workflows/ci.yml/badge.svg)](https://github.com/domehahn/harnessmesh/actions/workflows/ci.yml)
 [![GitLab pipeline](https://gitlab.com/domehahn/harnessmesh/badges/main/pipeline.svg)](https://gitlab.com/domehahn/harnessmesh/-/pipelines)
-[![Go Reference](https://pkg.go.dev/badge/github.com/domehahn/harnessmesh.svg)](https://pkg.go.dev/github.com/domehahn/harnessmesh)
+[![Go Reference](https://pkg.go.dev/badge/github.com/domehahn/harnessmesh.svg)](https://pkg.go.dev/github.com/domehahn/harnessmesh/cmd/harnessmesh)
 [![Latest release](https://img.shields.io/github/v/release/domehahn/harnessmesh?sort=semver)](https://github.com/domehahn/harnessmesh/releases/latest)
 
 **A persistent, evidence-driven collaboration fabric, change-control plane, and Codex-compatible provider gateway for AI coding harnesses.**
