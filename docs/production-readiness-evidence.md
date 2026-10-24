@@ -35,3 +35,6 @@ This result is repository evidence for the deterministic checks above. It does
 not close the deployment-dependent rows in this matrix: those still require
 dated artifacts from the selected Linux runtime, identity provider, secret
 manager, managed database, staging monitoring, and external client fixtures.
+
+Use [production-evidence-template.md](production-evidence-template.md) for a
+redacted, release-scoped record of those external checks.
