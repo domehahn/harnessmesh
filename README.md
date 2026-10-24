@@ -91,6 +91,15 @@ Keycloak admin password, and run `make keycloak-up`. The realm import is in
 The imported client is for local testing only; configure MFA and client
 credentials in the managed Keycloak realm for production.
 
+To use PostgreSQL instead of SQLite locally, set
+`HARNESSMESH_POSTGRES_DSN=postgres://...` and start with the `postgres`
+profile. The MCP process selects PostgreSQL automatically from that DSN:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile console --profile postgres up --build -d
+```
+
 Für den React-Login einmalig einen lokalen Tenant und API-Key im Docker-Volume
 des laufenden MCP-Containers anlegen. Der ausgegebene Key wird nur einmal
 angezeigt. Die CLI muss im Container laufen, damit sie dieselbe SQLite-Datenbank
@@ -1468,7 +1477,7 @@ SQLite/WAL is the default transactional backend and stores collaboration/session
 
 The knowledge archive remains a separate append-only historical store.
 
-A storage `BackendFactory` exists as an extension seam for deployments that provide other backends. SQLite is the implemented default. PostgreSQL control-plane slices for SaaS identity, durable jobs, sessions, spaces/channels/threads, collaboration records, approvals, decisions, MeshCommit proof state and experiment/performance records are available through `store.PostgresRepositorySet`; the complete legacy `store.Store` replacement and production wiring remain incremental work.
+A storage `BackendFactory` exists as an extension seam for deployments that provide other backends. SQLite remains the default for local single-node runs. The MCP server uses the composed PostgreSQL `store.Store` implementation whenever `HARNESSMESH_POSTGRES_DSN` is set; otherwise it uses SQLite. Production Compose enables PostgreSQL through the `postgres` profile, while HA, PITR, replicas and managed database operations remain properties of the target database service.
 
 ---
 

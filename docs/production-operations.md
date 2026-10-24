@@ -114,6 +114,12 @@ HARNESSMESH_MCP_TOKEN='...' \
 docker compose -f compose.yaml -f compose.production.yaml --profile postgres run --rm harnessmesh-postgres-migrate
 ```
 
+Set `HARNESSMESH_POSTGRES_DSN` on the MCP service to activate the composed
+PostgreSQL store. Without that variable the MCP process intentionally uses
+SQLite for local development. The PostgreSQL profile is a single-node
+Compose baseline; production HA/PITR/replication must be supplied by the
+managed PostgreSQL service.
+
 The PostgreSQL profile is a single-node operational baseline. HA, managed
 backups, PITR and failover still require the selected infrastructure provider.
 

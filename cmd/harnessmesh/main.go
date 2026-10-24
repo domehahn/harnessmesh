@@ -762,11 +762,31 @@ func mcpServe(args []string) error {
 		fmt.Fprintf(os.Stderr, "MCP registry loaded (%d declared servers, default_deny=%v)\n", len(registry.List()), cfg.MCP.DefaultDeny)
 	}
 
-	st, err := store.OpenSQLite("")
-	if err != nil {
-		return fmt.Errorf("open sqlite store: %w", err)
+	var st store.Store
+	closeStore := func() {}
+	if dsn := strings.TrimSpace(os.Getenv("HARNESSMESH_POSTGRES_DSN")); dsn != "" {
+		repositories, db, openErr := store.OpenPostgresRepositories(context.Background(), dsn)
+		if openErr != nil {
+			return fmt.Errorf("open postgres store: %w", openErr)
+		}
+		postgresStore, storeErr := store.NewPostgresStore(repositories)
+		if storeErr != nil {
+			_ = db.Close()
+			return fmt.Errorf("compose postgres store: %w", storeErr)
+		}
+		st = postgresStore
+		closeStore = func() { _ = db.Close() }
+		fmt.Fprintln(os.Stderr, "MCP persistence: postgres")
+	} else {
+		sqliteStore, openErr := store.OpenSQLite("")
+		if openErr != nil {
+			return fmt.Errorf("open sqlite store: %w", openErr)
+		}
+		st = sqliteStore
+		closeStore = func() { _ = sqliteStore.Close() }
+		fmt.Fprintln(os.Stderr, "MCP persistence: sqlite")
 	}
-	defer st.Close()
+	defer closeStore()
 
 	harnesses := make(map[string]agent.Harness)
 	for name, aCfg := range cfg.Agents {
