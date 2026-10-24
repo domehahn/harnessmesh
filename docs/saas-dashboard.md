@@ -67,6 +67,9 @@ Dashboard API requests are rate limited per client; tune the limit with
   collaboration spaces.
 - `GET /api/v1/dashboard/agents` lists the safe, non-secret configured agent
   catalog available for visual orchestration.
+- `GET /api/v1/dashboard/marketplace` lists the credential-free configured
+  agent and MCP catalog with enablement and approval metadata. It does not
+  install or launch arbitrary local processes.
 - `GET /api/v1/dashboard/spaces/{id}` reads a space; `POST` to
   `/lifecycle` pauses, resumes or stops it, and `POST` to `/participants`
   connects an external agent participant with an adapter and activity mode.

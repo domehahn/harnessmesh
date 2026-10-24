@@ -172,7 +172,7 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 		}
 		return fmt.Errorf("production secret backend rejected: %w", secretManagerErr)
 	}
-	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine, secretManager))
+	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine, secretManager, s.engine))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)

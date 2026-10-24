@@ -205,6 +205,26 @@ func (e *Engine) ModelRoutingBackends() map[string]modelrouting.ModelRoutingBack
 	return e.modelBackends
 }
 
+// ConfiguredMCPServers exposes only the non-secret registry catalog needed by
+// the dashboard marketplace view. Credentials and local command arguments are
+// deliberately excluded from the projection.
+func (e *Engine) ConfiguredMCPServers() []map[string]any {
+	if e == nil || e.cfg == nil {
+		return []map[string]any{}
+	}
+	names := make([]string, 0, len(e.cfg.MCP.Servers))
+	for name := range e.cfg.MCP.Servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		server := e.cfg.MCP.Servers[name]
+		out = append(out, map[string]any{"name": name, "type": server.Type, "enabled": server.Enabled, "allowed_tools": server.AllowedTools, "capabilities": server.Capabilities, "requires_approval": server.RequiresApproval, "network_mode": server.NetworkMode})
+	}
+	return out
+}
+
 func (e *Engine) Escalate(sessionID, capability string) {
 	e.economyCtrl.Escalate(sessionID, capability)
 	if e.store != nil && sessionID != "" {

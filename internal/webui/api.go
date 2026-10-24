@@ -42,6 +42,17 @@ type Messenger interface {
 	Publish(context.Context, *protocol.PublishRequest) (*protocol.PublishResponse, error)
 }
 
+type MarketplaceCatalog interface {
+	ConfiguredMCPServers() []map[string]any
+}
+
+func orchestratorAgents(orchestrator Orchestrator) []map[string]any {
+	if orchestrator == nil {
+		return []map[string]any{}
+	}
+	return orchestrator.ConfiguredAgents()
+}
+
 func dashboardPage(r *http.Request) (int, int) {
 	page, pageSize := 1, 50
 	if value, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && value > 0 {
@@ -64,9 +75,13 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 		messenger, _ = integrations[0].(Messenger)
 	}
 	var secretManager secrets.Manager
+	var marketplace MarketplaceCatalog
 	for _, integration := range integrations {
 		if configured, ok := integration.(secrets.Manager); ok {
 			secretManager = configured
+		}
+		if configured, ok := integration.(MarketplaceCatalog); ok {
+			marketplace = configured
 		}
 	}
 	const maxRateLimitClients = 10000
@@ -410,6 +425,14 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				return
 			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestrator.ConfiguredAgents()})
+			return
+		}
+		if path == "/marketplace" && r.Method == http.MethodGet {
+			items := []map[string]any{}
+			if marketplace != nil {
+				items = marketplace.ConfiguredMCPServers()
+			}
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestratorAgents(orchestrator), "mcp_servers": items})
 			return
 		}
 		if strings.HasPrefix(path, "/secrets") {
