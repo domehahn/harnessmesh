@@ -3,9 +3,8 @@ kind: Deployment
 metadata:
   name: harnessmesh-mcp
 spec:
-  # SQLite is the default runtime store in this baseline; use one replica
-  # with a durable volume. A multi-replica deployment requires completing the
-  # Postgres-backed Engine wiring before scaling horizontally.
+  # Keep one replica for the bundled PostgreSQL baseline. Horizontal scaling
+  # requires HA PostgreSQL and a production database operator.
   replicas: 1
   selector:
     matchLabels: { app: harnessmesh-mcp }
@@ -33,20 +32,19 @@ spec:
               valueFrom: { secretKeyRef: { name: harnessmesh-runtime, key: vault-token } }
             - name: HARNESSMESH_POSTGRES_PASSWORD
               valueFrom: { secretKeyRef: { name: harnessmesh-runtime, key: postgres-password } }
+            - name: HARNESSMESH_POSTGRES_DSN
+              valueFrom: { secretKeyRef: { name: harnessmesh-runtime, key: postgres-dsn } }
           readinessProbe: { httpGet: { path: /readyz, port: http }, initialDelaySeconds: 10, periodSeconds: 10 }
           livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 20, periodSeconds: 20 }
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
           volumeMounts:
             - { name: config, mountPath: /etc/harnessmesh }
             - { name: tmp, mountPath: /tmp }
-            - { name: data, mountPath: /data }
       volumes:
         - name: config
           configMap: { name: harnessmesh-runtime-config }
         - name: tmp
           emptyDir: { medium: Memory, sizeLimit: 256Mi }
-        - name: data
-          persistentVolumeClaim: { claimName: harnessmesh-data }
 ---
 apiVersion: v1
 kind: ConfigMap

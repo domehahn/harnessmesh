@@ -8,4 +8,3 @@ data:
   VAULT_ADDR: "http://vault:8200"
   HARNESSMESH_POSTGRES_DB: "harnessmesh"
   HARNESSMESH_POSTGRES_USER: "harnessmesh"
-  HARNESSMESH_DB_PATH: "/data/harnessmesh.db"

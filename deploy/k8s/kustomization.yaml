@@ -5,3 +5,4 @@ resources:
   - namespace.yaml
   - configmap.yaml
   - mcp-deployment.yaml
+  - postgres.yaml
