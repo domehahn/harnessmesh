@@ -2282,8 +2282,7 @@ For clarity:
 - It does not guarantee that SIWC is free or outside ChatGPT/Codex plan allowances.
 - It does not silently use `OPENAI_API_KEY` merely because one exists.
 - It does not claim future Codex model-catalog compatibility without contract/live-metadata verification.
-- It does not claim that the incremental PostgreSQL control-plane slices are already a drop-in replacement for the complete legacy `store.Store` or an object-store backend.
-- PostgreSQL provisioning is explicit via `harnessmesh postgres migrate`; the normal local CLI continues to use SQLite until the application deployment selects and wires the PostgreSQL adapter.
+- It does not claim that PostgreSQL provisioning alone provides HA, PITR, replicas or managed database operations.
 - It does not turn the collaboration bridge or VS Code extension into an LLM runtime; those are state/UI transports.
 - It does not require real OpenAI inference in the deterministic production-readiness gate.
 

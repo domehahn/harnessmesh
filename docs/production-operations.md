@@ -1,7 +1,8 @@
 # Production Operations
 
 This runbook targets the supported single-node production profile. It does not
-claim high availability or multi-tenant isolation.
+claim high availability; tenant isolation is enforced by the authenticated
+control-plane APIs and persistence filters.
 
 ## Minimum operating objectives
 
