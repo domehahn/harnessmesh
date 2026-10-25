@@ -317,6 +317,15 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 	}
 	name, _ := payload["plugin"].(string)
 	name = strings.TrimSpace(name)
+	if (action == "install" || action == "update" || action == "rollback" || action == "uninstall") &&
+		(name == "" ||
+			strings.Contains(name, "/") ||
+			strings.Contains(name, "\\") ||
+			strings.Contains(name, "..") ||
+			filepath.IsAbs(name) ||
+			filepath.VolumeName(name) != "") {
+		return nil, errors.New("invalid plugin name")
+	}
 	sourceID, _ := payload["source_id"].(string)
 	sourceID = strings.TrimSpace(sourceID)
 	if name != "" && (action == "install" || action == "update" || action == "rollback" || action == "uninstall") && !isSafePluginName(name) {
