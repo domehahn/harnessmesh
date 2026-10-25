@@ -53,14 +53,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and publish MCP image
         id: mcp-image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
           tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
       - name: Build and publish console image
         id: console-image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./frontend
           push: true
