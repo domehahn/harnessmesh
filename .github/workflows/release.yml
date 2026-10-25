@@ -36,7 +36,7 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
         run: cosign sign-blob --yes --output-signature dist/SHA256SUMS.sig dist/SHA256SUMS
       - name: Attest CLI binary provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/harnessmesh
       - name: Verify release binary
