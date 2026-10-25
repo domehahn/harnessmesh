@@ -328,16 +328,23 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 		if id == "" || path == "" {
 			return nil, errors.New("source id and path are required")
 		}
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			return nil, err
-		}
 		allowedRoot := strings.TrimSpace(os.Getenv("HARNESSMESH_MARKETPLACE_SOURCE_ROOT"))
 		if allowedRoot == "" {
 			allowedRoot = m.root
 		}
 		allowedRoot, err = filepath.Abs(allowedRoot)
-		if err != nil || !withinPath(allowedRoot, abs) {
+		if err != nil {
+			return nil, err
+		}
+		if filepath.IsAbs(path) {
+			return nil, errors.New("source path must be relative to the configured marketplace source root")
+		}
+		abs := filepath.Join(allowedRoot, path)
+		abs, err = filepath.EvalSymlinks(abs)
+		if err != nil {
+			return nil, errors.New("source path must be an existing directory")
+		}
+		if !withinPath(allowedRoot, abs) {
 			return nil, errors.New("source path is outside the configured marketplace source root")
 		}
 		info, err := os.Stat(abs)
