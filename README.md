@@ -77,9 +77,9 @@ fallback; the React console is the recommended production UI.
 
 ### Walkthrough: CLI and React console
 
-https://github.com/user-attachments/assets/9fa668dd-c7bd-44ea-bb2f-7978c0d43b44
+https://github.com/user-attachments/assets/9a81af7e-7943-4d03-b196-1f20ea4016b9
 
-Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [Walkthrough direkt öffnen oder herunterladen](https://github.com/user-attachments/assets/9fa668dd-c7bd-44ea-bb2f-7978c0d43b44) · [Poster anzeigen](artifacts/videos/harnessmesh-walkthrough-poster.png)
+CLI-Video: Stack starten, Agents anzeigen und eine Session mit Approval-Policy anlegen. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [CLI-Video direkt öffnen](https://github.com/user-attachments/assets/9a81af7e-7943-4d03-b196-1f20ea4016b9).
 
 The walkthrough demonstrates local CLI startup, agent discovery, tenant
 connection, monitoring, approvals, the visual Orchestrator and Simulation Lab.
@@ -174,9 +174,9 @@ Diesen Key in der Console unter `http://127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-30
 
 Danach sind die lokalen Beobachtungspunkte:
 
-https://github.com/user-attachments/assets/9fa668dd-c7bd-44ea-bb2f-7978c0d43b44
+https://github.com/user-attachments/assets/bc1509eb-5629-47d4-85a3-a3a528b4a96c
 
-Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [Walkthrough direkt öffnen oder herunterladen](https://github.com/user-attachments/assets/9fa668dd-c7bd-44ea-bb2f-7978c0d43b44) · [Poster anzeigen](artifacts/videos/harnessmesh-walkthrough-poster.png)
+UI-Video: Tenant verbinden, Monitoring, Approval-Detail, Orchestrator und Simulation bedienen. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [UI-Video direkt öffnen](https://github.com/user-attachments/assets/bc1509eb-5629-47d4-85a3-a3a528b4a96c).
 
 Die Aufnahme zeigt denselben Ablauf kompakt in CLI und React-Konsole. Für eine
 eigene Aufnahme mit aktuellen Demo-Daten:
