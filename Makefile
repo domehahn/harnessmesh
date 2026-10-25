@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build extension plugin-test api-contract compose-config local-up local-down worker-up worker-down marketplace-storage-up marketplace-storage-down vault-up vault-down keycloak-up keycloak-down k8s-validate k8s-apply helm-validate k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension plugin-test api-contract compose-config local-up local-down worker-up worker-down marketplace-storage-up marketplace-storage-down observability-up observability-down vault-up vault-down keycloak-up keycloak-down k8s-validate k8s-apply helm-validate k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -61,6 +61,12 @@ marketplace-storage-up:
 
 marketplace-storage-down:
 	docker compose --profile marketplace stop harnessmesh-minio
+
+observability-up:
+	docker compose --profile observability up -d harnessmesh-otel-collector
+
+observability-down:
+	docker compose --profile observability stop harnessmesh-otel-collector
 
 vault-up:
 	docker compose --profile vault up -d harnessmesh-vault

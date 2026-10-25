@@ -356,6 +356,25 @@ services:
     entrypoint:
       - /usr/local/bin/harnessmesh-restore
 
+  # Local OTLP receiver for logs and traces. The debug exporter writes the
+  # redacted records to collector logs; production can replace this config
+  # with Loki, Jaeger or another OpenTelemetry exporter.
+  harnessmesh-otel-collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.139.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "127.0.0.1:${HARNESSMESH_OTEL_GRPC_PORT:-4317}:4317"
+      - "127.0.0.1:${HARNESSMESH_OTEL_HTTP_PORT:-4318}:4318"
+      - "127.0.0.1:${HARNESSMESH_OTEL_HEALTH_PORT:-13133}:13133"
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13133/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
 volumes:
   # Persistent collaboration-state database (tasks, findings, evidence,
   # reviews, decisions) so it survives container restarts, per HarnessMesh's

@@ -130,6 +130,10 @@ start the stack again. The Vault profile is development-only; production
 uses an externally managed Vault and Kubernetes secrets.
 
 The central operational entry points are `make local-up`, `make local-down`,
+`make observability-up` and `make observability-down`. The observability
+profile starts a local OpenTelemetry Collector on OTLP HTTP `4318`, OTLP gRPC
+`4317` and health port `13133`; configure `HARNESSMESH_OTEL_EXPORT_URL` to
+export the redacted dashboard projection.
 `make k8s-validate`, `make k8s-apply` and `make k3d-up`. Kubernetes manifests
 and the required out-of-band secret setup are documented in
 [`deploy/k8s/README.md`](deploy/k8s/README.md).
