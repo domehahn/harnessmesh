@@ -15,18 +15,17 @@ async function recordCLI(browser) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, recordVideo: { dir: outputDir, size: { width: 1440, height: 900 } } });
   const page = await context.newPage();
   await page.setContent(`
-    <style>body { margin:0; background:#07111f; color:#d7e5f5; font:24px ui-monospace, SFMono-Regular, Menlo, monospace; display:grid; place-items:center; height:100vh } main { width:1120px } .prompt { color:#64d99b } .muted { color:#7f96ad } .cursor { animation: blink 1s steps(2,end) infinite } @keyframes blink { 50% { opacity:0 } }</style>
-    <main><div class="muted">HarnessMesh · CLI walkthrough</div><br>
-    <div><span class="prompt">$</span> cp .env.example .env</div>
-    <div><span class="prompt">$</span> make local-up</div>
-    <div class="muted">✓ MCP, Bridge, Console and worker started</div>
-    <div><span class="prompt">$</span> harnessmesh agents list</div>
-    <div>claude-code   connected   websocket</div>
-    <div>codex         connected   mcp-bridge</div>
-    <div><span class="prompt">$</span> harnessmesh session create --agent claude-code</div>
-    <div class="muted">✓ session created · approval policy enabled</div>
-    <br><div class="muted">CLI control plane ready · next: monitor in the console <span class="cursor">▊</span></div></main>`);
-  await page.waitForTimeout(4500);
+    <style>body { margin:0; background:#07111f; color:#d7e5f5; font:21px ui-monospace, SFMono-Regular, Menlo, monospace; display:grid; place-items:center; height:100vh } main { width:1240px; line-height:1.45 } .prompt { color:#64d99b } .muted { color:#7f96ad } .out { color:#b6c9dc; padding-left:26px } .cursor { animation: blink 1s steps(2,end) infinite } @keyframes blink { 50% { opacity:0 } }</style>
+    <main><div class="muted">HarnessMesh · wichtigste CLI-Kommandos</div><br>
+    <div><span class="prompt">$</span> harnessmesh version</div><div class="out">harnessmesh v0.2.0 · control plane ready</div>
+    <div><span class="prompt">$</span> harnessmesh config validate --config harnessmesh.json</div><div class="out">CONFIG=VALID · tenant and policy configuration accepted</div>
+    <div><span class="prompt">$</span> harnessmesh agents list --config harnessmesh.json</div><div class="out">claude-code   configured · codex   configured · antigravity   configured</div>
+    <div><span class="prompt">$</span> harnessmesh session list</div><div class="out">hm_demo_01   active   claude-code ↔ codex</div>
+    <div><span class="prompt">$</span> harnessmesh collaborate --config configs/antigravity-codex.json --task "Review API" --dry-run</div><div class="out">PLAN=READY · writer=antigravity · reviewer=codex · approvals=enabled</div>
+    <div><span class="prompt">$</span> harnessmesh mcp registry check --config harnessmesh.json --server serena --tool find_symbol --policy developer-readonly</div><div class="out">MCP=ALLOWED · tool lock and policy checks passed</div>
+    <div><span class="prompt">$</span> harnessmesh mcp tools-lock check --file .skil/mcp-tools.lock.json</div><div class="out">TOOL_LOCK=VALID · no drift detected</div>
+    <br><div class="muted">Danach: Console öffnen und denselben Lauf live überwachen <span class="cursor">▊</span></div></main>`);
+  await page.waitForTimeout(9000);
   await saveVideo(context, page, "harnessmesh-cli-walkthrough.webm");
 }
 

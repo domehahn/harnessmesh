@@ -77,9 +77,9 @@ fallback; the React console is the recommended production UI.
 
 ### Walkthrough: CLI and React console
 
-https://github.com/user-attachments/assets/9a81af7e-7943-4d03-b196-1f20ea4016b9
+https://github.com/user-attachments/assets/f9ae97fb-fdb1-4ebb-a628-561236f288d9
 
-CLI-Video: Stack starten, Agents anzeigen und eine Session mit Approval-Policy anlegen. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [CLI-Video direkt öffnen](https://github.com/user-attachments/assets/9a81af7e-7943-4d03-b196-1f20ea4016b9).
+CLI-Video: `version`, `config validate`, `agents list`, `session list`, `collaborate --dry-run`, MCP-Registry-Prüfung und Tool-Lock-Check. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [CLI-Video direkt öffnen](https://github.com/user-attachments/assets/f9ae97fb-fdb1-4ebb-a628-561236f288d9).
 
 The walkthrough demonstrates local CLI startup, agent discovery, tenant
 connection, monitoring, approvals, the visual Orchestrator and Simulation Lab.
