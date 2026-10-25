@@ -146,8 +146,6 @@ services:
     cpus: ${HARNESSMESH_BACKUP_CPUS:-1.0}
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
     logging: *production-logging
 
   harnessmesh-restore:
@@ -158,8 +156,6 @@ services:
     cpus: ${HARNESSMESH_RESTORE_CPUS:-1.0}
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
     logging: *production-logging
 
 volumes:
