@@ -368,7 +368,10 @@ services:
       - "127.0.0.1:${HARNESSMESH_OTEL_HTTP_PORT:-4318}:4318"
       - "127.0.0.1:${HARNESSMESH_OTEL_HEALTH_PORT:-13133}:13133"
     volumes:
-      - ./deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ${HARNESSMESH_OTEL_CONFIG:-./deploy/observability/otel-collector.yaml}:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      HARNESSMESH_OTEL_REMOTE_ENDPOINT: ${HARNESSMESH_OTEL_REMOTE_ENDPOINT:-}
+      HARNESSMESH_OTEL_REMOTE_TOKEN: ${HARNESSMESH_OTEL_REMOTE_TOKEN:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13133/"]
       interval: 10s

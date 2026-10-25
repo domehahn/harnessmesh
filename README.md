@@ -134,6 +134,11 @@ The central operational entry points are `make local-up`, `make local-down`,
 profile starts a local OpenTelemetry Collector on OTLP HTTP `4318`, OTLP gRPC
 `4317` and health port `13133`; configure `HARNESSMESH_OTEL_EXPORT_URL` to
 export the redacted dashboard projection.
+For a remote OTLP backend, set `HARNESSMESH_OTEL_REMOTE_ENDPOINT` and
+`HARNESSMESH_OTEL_REMOTE_TOKEN`, then run `make observability-remote-up`.
+This forwards logs and traces to an OTLP/HTTP-compatible gateway, including
+Jaeger/Tempo or a managed OpenTelemetry service. Keep the token in a secret
+manager; do not commit it.
 `make k8s-validate`, `make k8s-apply` and `make k3d-up`. Kubernetes manifests
 and the required out-of-band secret setup are documented in
 [`deploy/k8s/README.md`](deploy/k8s/README.md).

@@ -68,6 +68,11 @@ Dashboard API requests are rate limited per client; tune the limit with
   `HARNESSMESH_OTEL_LOGS_URL`/`HARNESSMESH_OTEL_TRACES_URL`; use
   `HARNESSMESH_OTEL_EXPORT_TOKEN` for bearer authentication. The console's
   `Export to OTLP Collector` action invokes this endpoint explicitly.
+- For a central backend, use `deploy/observability/otel-collector-remote.yaml`
+  with `HARNESSMESH_OTEL_REMOTE_ENDPOINT` and
+  `HARNESSMESH_OTEL_REMOTE_TOKEN`. It forwards through OTLP/HTTP to an
+  external OpenTelemetry gateway or Jaeger/Tempo-compatible endpoint. Loki
+  labeling and tenant routing should remain in that gateway.
 - `GET /api/v1/dashboard/simulation` returns deterministic safety scenarios;
   `POST` evaluates an observation without invoking an external agent or model.
 - `GET /api/v1/dashboard/approvals/{id}` returns the approval decision context
