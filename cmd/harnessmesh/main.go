@@ -35,10 +35,11 @@ import (
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/report"
 	"github.com/domehahn/harnessmesh/internal/store"
+	appversion "github.com/domehahn/harnessmesh/internal/version"
 	"github.com/domehahn/harnessmesh/internal/workflow"
 )
 
-var version = "0.2.0"
+var version = appversion.Version
 
 func main() {
 	if len(os.Args) < 2 {
@@ -78,6 +79,8 @@ func main() {
 		err = agentsCmd(os.Args[2:])
 	case "plugins":
 		err = pluginsCmd(os.Args[2:])
+	case "marketplace":
+		err = marketplaceCmd(os.Args[2:])
 	case "session":
 		err = sessionCmd(os.Args[2:])
 	case "findings":
@@ -147,6 +150,7 @@ Usage:
   harnessmesh peer status --session <id>
   harnessmesh agents <list|show <name>>
   harnessmesh plugins <list|validate> [--dir <path>] [--json]
+  harnessmesh marketplace <search|import|source|install|approve|activate|deactivate|update|rollback|uninstall> [options]
   harnessmesh session <list|show|messages|resume|stop> [options]
   harnessmesh findings <session-id> [--json]
 	harnessmesh evidence <session-id> [--json]
@@ -204,6 +208,80 @@ func pluginsCmd(args []string) error {
 		return errors.New("one or more executable plugins failed validation")
 	}
 	return nil
+}
+
+func marketplaceCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh marketplace <search|import|source|install|approve|activate|deactivate|update|rollback|uninstall>")
+	}
+	if args[0] == "import" {
+		fs := flag.NewFlagSet("marketplace import", flag.ContinueOnError)
+		path := fs.String("file", "", "Codex marketplace.json")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if strings.TrimSpace(*path) == "" {
+			return errors.New("--file is required")
+		}
+		entries, err := plugin.ImportCodexMarketplace(*path)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"plugins": entries})
+	}
+	fs := flag.NewFlagSet("marketplace", flag.ContinueOnError)
+	root := fs.String("dir", pluginRoot(), "plugin/artifact directory")
+	tenantID := fs.String("tenant", os.Getenv("HARNESSMESH_TENANT"), "tenant id")
+	subject := fs.String("subject", os.Getenv("HARNESSMESH_SUBJECT"), "actor subject")
+	query := fs.String("query", "", "search query")
+	name := fs.String("plugin", "", "plugin name")
+	sourceID := fs.String("source-id", "local", "source id")
+	sourcePath := fs.String("path", "", "source path")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*tenantID) == "" {
+		*tenantID = "local"
+	}
+	if strings.TrimSpace(*subject) == "" {
+		*subject = "cli"
+	}
+	db, err := store.OpenSQLite("")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	manager := plugin.NewMarketplace(*root, db)
+	ctx := context.Background()
+	switch args[0] {
+	case "search":
+		result, err := manager.Snapshot(ctx, *tenantID, *query)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	case "source":
+		if strings.TrimSpace(*sourcePath) == "" {
+			return errors.New("--path is required")
+		}
+		result, err := manager.Mutate(ctx, *tenantID, *subject, "source_register", map[string]any{"id": *sourceID, "path": *sourcePath, "name": *sourceID})
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	case "install", "approve", "activate", "deactivate", "update", "rollback", "uninstall":
+		if strings.TrimSpace(*name) == "" {
+			return errors.New("--plugin is required")
+		}
+		payload := map[string]any{"plugin": *name, "source_id": *sourceID}
+		result, err := manager.Mutate(ctx, *tenantID, *subject, args[0], payload)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	default:
+		return fmt.Errorf("unknown marketplace command %q", args[0])
+	}
 }
 
 func postgresCmd(args []string) error {
@@ -736,9 +814,10 @@ func mcpCmd(args []string) error {
 		fmt.Fprintf(os.Stderr, `Usage:
   harnessmesh mcp serve [--repo <path>] [--config <path>] [--session <id>] [--caller <name>]
   harnessmesh mcp registry <list|validate|check> [options]
+  harnessmesh mcp tools-lock <generate|check> --file <path>
   harnessmesh mcp install <claude|codex> [--scope <project|user>]
 `)
-		return errors.New("subcommand required: serve, registry, or install")
+		return errors.New("subcommand required: serve, registry, tools-lock, or install")
 	}
 
 	switch args[0] {
@@ -746,11 +825,49 @@ func mcpCmd(args []string) error {
 		return mcpServe(args[1:])
 	case "registry":
 		return mcpRegistryCmd(args[1:])
+	case "tools-lock":
+		return mcpToolsLockCmd(args[1:])
 	case "install":
 		return mcpInstall(args[1:])
 	default:
 		return fmt.Errorf("unknown mcp subcommand %q", args[0])
 	}
+}
+
+func mcpToolsLockCmd(args []string) error {
+	if len(args) == 0 || (args[0] != "generate" && args[0] != "check") {
+		return errors.New("usage: harnessmesh mcp tools-lock <generate|check> --file <path>")
+	}
+	fs := flag.NewFlagSet("mcp tools-lock", flag.ContinueOnError)
+	file := fs.String("file", "", "tool lock file")
+	toolsFile := fs.String("tools-file", "", "optional JSON file containing ToolDefinition objects, including external gateway tools")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*file) == "" {
+		return errors.New("--file is required")
+	}
+	tools := []mcp.ToolDefinition{}
+	if strings.TrimSpace(*toolsFile) != "" {
+		raw, readErr := os.ReadFile(*toolsFile)
+		if readErr != nil {
+			return readErr
+		}
+		if err := json.Unmarshal(raw, &tools); err != nil {
+			return fmt.Errorf("decode tools file: %w", err)
+		}
+	} else {
+		server := mcp.NewServer(nil, "", "lock-generator")
+		tools = server.ListTools()
+	}
+	if args[0] == "generate" {
+		return mcp.GenerateToolLock(*file, tools)
+	}
+	if err := mcp.VerifyToolLock(*file, tools); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "MCP_TOOL_LOCK=PASS tools=%d\n", len(tools))
+	return nil
 }
 
 func mcpRegistryCmd(args []string) error {
@@ -893,6 +1010,7 @@ func mcpServe(args []string) error {
 		fmt.Fprintln(os.Stderr, "MCP persistence: sqlite")
 	}
 	defer closeStore()
+	marketplace := plugin.NewMarketplace(pluginRoot(), st)
 
 	harnesses := make(map[string]agent.Harness)
 	for name, aCfg := range cfg.Agents {
@@ -907,11 +1025,12 @@ func mcpServe(args []string) error {
 
 	proj := contextpack.New(absRepo, cfg.Context)
 	eng := collaboration.NewEngine(collaboration.EngineConfig{
-		Config:    cfg,
-		Store:     st,
-		Repo:      absRepo,
-		Projector: proj,
-		Harnesses: harnesses,
+		Config:      cfg,
+		Store:       st,
+		Repo:        absRepo,
+		Projector:   proj,
+		Harnesses:   harnesses,
+		Marketplace: marketplace,
 	})
 	defer eng.Close()
 
@@ -1331,7 +1450,7 @@ func integrateChatGPT(args []string) error {
 	}
 
 	fmt.Println("================================================================")
-	fmt.Println("  HarnessMesh v0.4.0 — ChatGPT Web Custom MCP App Integration")
+	fmt.Printf("  HarnessMesh v%s — ChatGPT Web Custom MCP App Integration\n", version)
 	fmt.Println("================================================================")
 	fmt.Printf("Repository:     %s\n", absRepo)
 	fmt.Printf("Profile:        %s\n", absConfig)

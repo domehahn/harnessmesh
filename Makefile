@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build extension plugin-test api-contract compose-config local-up local-down worker-up worker-down vault-up vault-down keycloak-up keycloak-down k8s-validate k8s-apply helm-validate k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension plugin-test api-contract compose-config local-up local-down worker-up worker-down marketplace-storage-up marketplace-storage-down vault-up vault-down keycloak-up keycloak-down k8s-validate k8s-apply helm-validate k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -26,7 +26,7 @@ security:
 
 build:
 	mkdir -p bin
-	go build -trimpath -ldflags="-X main.version=$(VERSION)" -o bin/harnessmesh ./cmd/harnessmesh
+	go build -trimpath -ldflags="-X main.version=$(VERSION) -X github.com/domehahn/harnessmesh/internal/version.Version=$(VERSION)" -o bin/harnessmesh ./cmd/harnessmesh
 
 extension:
 	cd extensions/vscode && npm install --no-audit --no-fund && npm run compile
@@ -55,6 +55,12 @@ worker-up:
 
 worker-down:
 	docker compose -f compose.yaml -f compose.production.yaml --profile worker down
+
+marketplace-storage-up:
+	docker compose --profile marketplace up -d harnessmesh-minio harnessmesh-marketplace-bucket
+
+marketplace-storage-down:
+	docker compose --profile marketplace stop harnessmesh-minio
 
 vault-up:
 	docker compose --profile vault up -d harnessmesh-vault

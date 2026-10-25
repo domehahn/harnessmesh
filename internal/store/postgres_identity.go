@@ -35,7 +35,22 @@ CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, tenant_id TEXT NOT NUL
 CREATE INDEX IF NOT EXISTS idx_memberships_subject ON tenant_memberships(subject, status);
 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id, status);
 CREATE TABLE IF NOT EXISTS tenant_secrets (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL, ciphertext BYTEA NOT NULL, nonce BYTEA NOT NULL, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, UNIQUE(tenant_id,name));
-CREATE INDEX IF NOT EXISTS idx_tenant_secrets_tenant ON tenant_secrets(tenant_id,name);`)
+CREATE INDEX IF NOT EXISTS idx_tenant_secrets_tenant ON tenant_secrets(tenant_id,name);
+CREATE TABLE IF NOT EXISTS marketplace_state (id INTEGER PRIMARY KEY CHECK (id=1), state_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL);`)
+	return err
+}
+
+func (s *PostgresSaaSStore) LoadMarketplaceState(ctx context.Context) ([]byte, error) {
+	var raw []byte
+	err := s.db.QueryRowContext(ctx, `SELECT state_json FROM marketplace_state WHERE id=1`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return raw, err
+}
+
+func (s *PostgresSaaSStore) SaveMarketplaceState(ctx context.Context, raw []byte, updatedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO marketplace_state(id,state_json,updated_at) VALUES(1,$1,$2) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,updated_at=EXCLUDED.updated_at`, raw, updatedAt)
 	return err
 }
 

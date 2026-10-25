@@ -6,6 +6,8 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -132,11 +134,58 @@ func NewVaultFromEnv() (*Vault, error) {
 	if addr == "" || tok == "" {
 		return nil, errors.New("VAULT_ADDR and VAULT_TOKEN are required")
 	}
+
+	u, err := url.Parse(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid VAULT_ADDR %q: %w", addr, err)
+	}
+
+	isProduction := os.Getenv("HARNESSMESH_ENV") == "production"
+	if isProduction && u.Scheme != "https" {
+		host := u.Hostname()
+		if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+			return nil, errors.New("production environment requires https:// for VAULT_ADDR")
+		}
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	caCertPath := os.Getenv("VAULT_CACERT")
+	if caCertPath == "" {
+		caCertPath = os.Getenv("HARNESSMESH_VAULT_CACERT")
+	}
+	if caCertPath != "" {
+		caData, err := os.ReadFile(caCertPath)
+		if err != nil {
+			return nil, fmt.Errorf("read VAULT_CACERT file %q: %w", caCertPath, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caData) {
+			return nil, fmt.Errorf("no valid certificates found in VAULT_CACERT %q", caCertPath)
+		}
+		tlsConfig.RootCAs = pool
+	}
+
+	transport := &http.Transport{
+		TLSClientConfig:     tlsConfig,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+
 	mount := os.Getenv("HARNESSMESH_VAULT_MOUNT")
 	if mount == "" {
 		mount = "secret"
 	}
-	return &Vault{Address: addr, Token: tok, Mount: mount, Client: &http.Client{Timeout: 10 * time.Second}}, nil
+	return &Vault{
+		Address: addr,
+		Token:   tok,
+		Mount:   mount,
+		Client: &http.Client{
+			Transport: transport,
+			Timeout:   10 * time.Second,
+		},
+	}, nil
 }
 func (v *Vault) path(tenant, name string) string {
 	return fmt.Sprintf("%s/v1/%s/data/harnessmesh/%s/%s", v.Address, v.Mount, url.PathEscape(tenant), url.PathEscape(name))

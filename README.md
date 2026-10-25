@@ -15,6 +15,32 @@ External agent adapters can be installed without changing Go source code. See
 the manifest, newline-delimited stdio protocol, hash/signature policy,
 sandbox limits and activation configuration.
 
+The managed tenant marketplace lifecycle is documented in
+[`docs/marketplace.md`](docs/marketplace.md). It supports local source
+registration, manifest-gated install/update/rollback, explicit approval,
+tenant activation and audited removal; arbitrary remote executable downloads
+remain disabled by design.
+
+For AI-skill and prompt-injection security, configure the optional
+[`skil`](https://github.com/domehahn/skil) binary with
+`HARNESSMESH_MARKETPLACE_SKIL_BIN`. Marketplace admission then runs
+`skil scan --static-only` before promotion. Findings are fail-closed when
+`HARNESSMESH_MARKETPLACE_REQUIRE_SCANS=1`; secrets and MCP/tool permissions
+are still enforced by HarnessMesh at runtime and are never granted by a scan.
+
+Create and verify the reviewed built-in MCP tool lock with:
+
+```bash
+harnessmesh mcp tools-lock generate --file .skil/mcp-tools.lock.json
+harnessmesh mcp tools-lock check --file .skil/mcp-tools.lock.json
+```
+
+For external gateway tools, pass the reviewed discovery export:
+
+```bash
+harnessmesh mcp tools-lock generate --tools-file gateway-tools.json --file .skil/mcp-tools.lock.json
+```
+
 It also provides a separate, bounded **model-provider plane** that lets the official Codex client talk to HarnessMesh over the Responses API wire and route inference to an explicitly configured backend.
 
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.

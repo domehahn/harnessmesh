@@ -25,9 +25,11 @@ import (
 	"github.com/domehahn/harnessmesh/internal/mcpgateway"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/secrets"
+	"github.com/domehahn/harnessmesh/internal/securitygate"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/telemetry"
 	"github.com/domehahn/harnessmesh/internal/tenant"
+	"github.com/domehahn/harnessmesh/internal/version"
 	"github.com/domehahn/harnessmesh/internal/webui"
 )
 
@@ -74,6 +76,7 @@ type Server struct {
 	terminatedSessions map[string]time.Time
 	gateway            *mcpgateway.Gateway
 	gatewayTools       []ToolDefinition
+	toolLockErr        error
 }
 
 type tenantRateWindow struct {
@@ -275,8 +278,10 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 		}
 		if !authorized {
 			if apiIdentity, apiOK := s.authenticateAPIKey(r.Context(), r.Header.Get("X-HarnessMesh-API-Key")); apiOK {
-				authorized = true
-				r = r.WithContext(tenant.WithIdentity(r.Context(), apiIdentity))
+				if requiredScope == "" || apiIdentity.HasScope(requiredScope) {
+					authorized = true
+					r = r.WithContext(tenant.WithIdentity(r.Context(), apiIdentity))
+				}
 			}
 		}
 		if !authorized {
@@ -426,8 +431,10 @@ func (s *Server) StreamableHTTPHandler(token string) http.Handler {
 		}
 		if !authorized {
 			if apiIdentity, apiOK := s.authenticateAPIKey(r.Context(), r.Header.Get("X-HarnessMesh-API-Key")); apiOK {
-				authorized = true
-				r = r.WithContext(tenant.WithIdentity(r.Context(), apiIdentity))
+				if requiredScope == "" || apiIdentity.HasScope(requiredScope) {
+					authorized = true
+					r = r.WithContext(tenant.WithIdentity(r.Context(), apiIdentity))
+				}
 			}
 		}
 		if identity, identityErr := tenant.FromContext(r.Context()); identityErr == nil && !s.allowTenantRequest(identity.Tenant, time.Now()) {
@@ -592,6 +599,13 @@ func (s *Server) StreamableHTTPHandler(token string) http.Handler {
 	})
 }
 
+func (s *Server) effectiveCaller(ctx context.Context) string {
+	if identity, err := tenant.FromContext(ctx); err == nil && strings.TrimSpace(identity.Subject) != "" {
+		return strings.TrimSpace(identity.Subject)
+	}
+	return s.caller
+}
+
 func (s *Server) adminAuthorized(r *http.Request, token string) bool {
 	adminToken := strings.TrimSpace(os.Getenv("HARNESSMESH_ADMIN_TOKEN"))
 	adminTokenFile := os.Getenv("HARNESSMESH_ADMIN_TOKEN_FILE")
@@ -610,7 +624,8 @@ func (s *Server) adminAuthorized(r *http.Request, token string) bool {
 	if len(allowed) == 0 {
 		return true
 	}
-	_, ok := allowed[s.caller]
+	caller := s.effectiveCaller(r.Context())
+	_, ok := allowed[caller]
 	return ok
 }
 
@@ -662,6 +677,15 @@ func (s *Server) SetGateway(gateway *mcpgateway.Gateway, tools []mcpgateway.Tool
 	for _, tool := range tools {
 		s.gatewayTools = append(s.gatewayTools, ToolDefinition{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema})
 	}
+	s.toolLockErr = s.verifyToolLock()
+}
+
+func (s *Server) verifyToolLock() error {
+	path := strings.TrimSpace(os.Getenv("HARNESSMESH_MCP_TOOL_LOCK"))
+	if path == "" {
+		return nil
+	}
+	return VerifyToolLock(path, s.ListTools())
 }
 
 func (s *Server) allowRequest(now time.Time) bool {
@@ -1320,9 +1344,10 @@ func (s *Server) ListTools() []ToolDefinition {
 }
 
 func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCResponse, error) {
+	caller := s.effectiveCaller(ctx)
 	if len(s.allowedCallers) > 0 {
-		if _, ok := s.allowedCallers[s.caller]; !ok {
-			return nil, fmt.Errorf("caller %q is not allowed for this MCP server", s.caller)
+		if _, ok := s.allowedCallers[caller]; !ok {
+			return nil, fmt.Errorf("caller %q is not allowed for this MCP server", caller)
 		}
 	}
 	var req JSONRPCRequest
@@ -1358,7 +1383,7 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 				},
 				"serverInfo": map[string]any{
 					"name":    "harnessmesh",
-					"version": "0.5.0",
+					"version": version.Version,
 				},
 			},
 		}, nil
@@ -1374,6 +1399,9 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		}, nil
 
 	case "tools/list":
+		if lockErr := s.verifyToolLock(); lockErr != nil {
+			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32001, Message: "MCP tool lock verification failed", Data: lockErr.Error()}}, nil
+		}
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -1383,6 +1411,9 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		}, nil
 
 	case "tools/call":
+		if lockErr := s.verifyToolLock(); lockErr != nil {
+			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32001, Message: "MCP tool lock verification failed", Data: lockErr.Error()}}, nil
+		}
 		var callParams struct {
 			Name      string          `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
@@ -1395,7 +1426,11 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 			}, nil
 		}
 
-		res, err := s.executeTool(ctx, callParams.Name, callParams.Arguments)
+		guardedArgs, guardErr := s.guardToolCall(ctx, callParams.Name, callParams.Arguments)
+		if guardErr != nil {
+			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: ToolCallResult{Content: []ToolCallContent{{Type: "text", Text: "Tool call blocked by runtime security policy: " + guardErr.Error()}}, IsError: true}}, nil
+		}
+		res, err := s.executeTool(ctx, callParams.Name, guardedArgs)
 		if err != nil {
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
@@ -1429,7 +1464,39 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 	}
 }
 
+func (s *Server) guardToolCall(ctx context.Context, toolName string, args json.RawMessage) (json.RawMessage, error) {
+	if !securitygate.CheckEnabled() {
+		return args, nil
+	}
+	caller := s.effectiveCaller(ctx)
+	var structured map[string]any
+	_ = json.Unmarshal(args, &structured)
+	path := firstString(structured, "path", "file", "file_path", "workspace_path")
+	network := firstString(structured, "network", "network_mode", "access")
+	if network == "" && firstString(structured, "url", "uri", "endpoint") != "" {
+		network = "external"
+	}
+	guarded, decision, err := securitygate.CheckContext(ctx, string(args), caller, toolName, path, "mcp.tool", network)
+	if s.engine != nil && decision.Redacted {
+		_ = s.engine.Store().EmitEvent(ctx, s.sessionID, "security.mcp_redaction", map[string]any{"tool": toolName, "caller": caller, "risk_score": decision.RiskScore})
+	}
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(guarded), nil
+}
+
+func firstString(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json.RawMessage) (any, error) {
+	caller := s.effectiveCaller(ctx)
 	if s.sessionID == "" {
 		// Auto-create or resolve active session if not provided
 		sess, err := s.engine.CreateSession(ctx, "", "MCP live collaboration")
@@ -1439,7 +1506,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		s.sessionID = sess.ID
 	}
 	if strings.Contains(toolName, "__") && s.gateway != nil {
-		return s.gateway.Call(ctx, toolName, argsJSON, s.caller)
+		return s.gateway.Call(ctx, toolName, argsJSON, caller)
 	}
 
 	switch toolName {
@@ -1477,13 +1544,13 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &askReq); err != nil {
 			return nil, fmt.Errorf("parse peer.ask args: %w", err)
 		}
-		if askReq.From != "" && askReq.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", askReq.From, s.caller)
+		if askReq.From != "" && askReq.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", askReq.From, caller)
 		}
-		if askReq.Caller != "" && askReq.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", askReq.Caller, s.caller)
+		if askReq.Caller != "" && askReq.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", askReq.Caller, caller)
 		}
-		return s.engine.Ask(ctx, s.sessionID, s.caller, protocol.AskRequest{
+		return s.engine.Ask(ctx, s.sessionID, caller, protocol.AskRequest{
 			Peer:       askReq.Peer,
 			Capability: askReq.Capability,
 			Question:   askReq.Question,
@@ -1509,13 +1576,13 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &revReq); err != nil {
 			return nil, fmt.Errorf("parse peer.request_review args: %w", err)
 		}
-		if revReq.From != "" && revReq.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", revReq.From, s.caller)
+		if revReq.From != "" && revReq.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", revReq.From, caller)
 		}
-		if revReq.Caller != "" && revReq.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", revReq.Caller, s.caller)
+		if revReq.Caller != "" && revReq.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", revReq.Caller, caller)
 		}
-		return s.engine.RequestReview(ctx, s.sessionID, s.caller, protocol.ReviewRequestPayload{
+		return s.engine.RequestReview(ctx, s.sessionID, caller, protocol.ReviewRequestPayload{
 			Peer:             revReq.Peer,
 			Capability:       revReq.Capability,
 			Reviewers:        revReq.Reviewers,
@@ -1536,21 +1603,21 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &fp); err != nil {
 			return nil, fmt.Errorf("parse peer.submit_finding args: %w", err)
 		}
-		if fp.From != "" && fp.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.From, s.caller)
+		if fp.From != "" && fp.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.From, caller)
 		}
-		if fp.Caller != "" && fp.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.Caller, s.caller)
+		if fp.Caller != "" && fp.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.Caller, caller)
 		}
-		if fp.SourceParticipant != "" && fp.SourceParticipant != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.SourceParticipant, s.caller)
+		if fp.SourceParticipant != "" && fp.SourceParticipant != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.SourceParticipant, caller)
 		}
-		if fp.SourceAgent != "" && fp.SourceAgent != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.SourceAgent, s.caller)
+		if fp.SourceAgent != "" && fp.SourceAgent != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", fp.SourceAgent, caller)
 		}
-		fp.FindingPayload.SourceParticipant = s.caller
-		fp.FindingPayload.SourceAgent = s.caller
-		return s.engine.SubmitFinding(ctx, s.sessionID, s.caller, fp.FindingPayload)
+		fp.FindingPayload.SourceParticipant = caller
+		fp.FindingPayload.SourceAgent = caller
+		return s.engine.SubmitFinding(ctx, s.sessionID, caller, fp.FindingPayload)
 
 	case "peer.submit_evidence":
 		var ev struct {
@@ -1561,17 +1628,17 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &ev); err != nil {
 			return nil, fmt.Errorf("parse peer.submit_evidence args: %w", err)
 		}
-		if ev.From != "" && ev.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", ev.From, s.caller)
+		if ev.From != "" && ev.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", ev.From, caller)
 		}
-		if ev.Caller != "" && ev.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", ev.Caller, s.caller)
+		if ev.Caller != "" && ev.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", ev.Caller, caller)
 		}
-		if ev.SourceAgent != "" && ev.SourceAgent != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", ev.SourceAgent, s.caller)
+		if ev.SourceAgent != "" && ev.SourceAgent != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", ev.SourceAgent, caller)
 		}
-		ev.EvidencePayload.SourceAgent = s.caller
-		return s.engine.SubmitEvidence(ctx, s.sessionID, s.caller, ev.EvidencePayload)
+		ev.EvidencePayload.SourceAgent = caller
+		return s.engine.SubmitEvidence(ctx, s.sessionID, caller, ev.EvidencePayload)
 
 	case "peer.challenge":
 		var ch struct {
@@ -1582,17 +1649,17 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &ch); err != nil {
 			return nil, fmt.Errorf("parse peer.challenge args: %w", err)
 		}
-		if ch.From != "" && ch.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof challenger identity %q (authenticated as %q)", ch.From, s.caller)
+		if ch.From != "" && ch.From != caller {
+			return nil, fmt.Errorf("cannot spoof challenger identity %q (authenticated as %q)", ch.From, caller)
 		}
-		if ch.Caller != "" && ch.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof challenger identity %q (authenticated as %q)", ch.Caller, s.caller)
+		if ch.Caller != "" && ch.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof challenger identity %q (authenticated as %q)", ch.Caller, caller)
 		}
-		if ch.Challenger != "" && ch.Challenger != s.caller {
-			return nil, fmt.Errorf("cannot spoof challenger identity %q (authenticated as %q)", ch.Challenger, s.caller)
+		if ch.Challenger != "" && ch.Challenger != caller {
+			return nil, fmt.Errorf("cannot spoof challenger identity %q (authenticated as %q)", ch.Challenger, caller)
 		}
-		ch.ChallengePayload.Challenger = s.caller
-		return s.engine.Challenge(ctx, s.sessionID, s.caller, ch.ChallengePayload)
+		ch.ChallengePayload.Challenger = caller
+		return s.engine.Challenge(ctx, s.sessionID, caller, ch.ChallengePayload)
 
 	case "peer.resolve":
 		var res struct {
@@ -1603,17 +1670,17 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &res); err != nil {
 			return nil, fmt.Errorf("parse peer.resolve args: %w", err)
 		}
-		if res.From != "" && res.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof resolving agent identity %q (authenticated as %q)", res.From, s.caller)
+		if res.From != "" && res.From != caller {
+			return nil, fmt.Errorf("cannot spoof resolving agent identity %q (authenticated as %q)", res.From, caller)
 		}
-		if res.Caller != "" && res.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof resolving agent identity %q (authenticated as %q)", res.Caller, s.caller)
+		if res.Caller != "" && res.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof resolving agent identity %q (authenticated as %q)", res.Caller, caller)
 		}
-		if res.ResolvingAgent != "" && res.ResolvingAgent != s.caller {
-			return nil, fmt.Errorf("cannot spoof resolving agent identity %q (authenticated as %q)", res.ResolvingAgent, s.caller)
+		if res.ResolvingAgent != "" && res.ResolvingAgent != caller {
+			return nil, fmt.Errorf("cannot spoof resolving agent identity %q (authenticated as %q)", res.ResolvingAgent, caller)
 		}
-		res.ResolutionPayload.ResolvingAgent = s.caller
-		return s.engine.Resolve(ctx, s.sessionID, s.caller, res.ResolutionPayload)
+		res.ResolutionPayload.ResolvingAgent = caller
+		return s.engine.Resolve(ctx, s.sessionID, caller, res.ResolutionPayload)
 
 	case "peer.reply":
 		var rep struct {
@@ -1624,13 +1691,13 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &rep); err != nil {
 			return nil, fmt.Errorf("parse peer.reply args: %w", err)
 		}
-		if rep.From != "" && rep.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", rep.From, s.caller)
+		if rep.From != "" && rep.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", rep.From, caller)
 		}
-		if rep.Caller != "" && rep.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", rep.Caller, s.caller)
+		if rep.Caller != "" && rep.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", rep.Caller, caller)
 		}
-		return s.engine.Reply(ctx, s.sessionID, s.caller, rep.ReplyPayload, 1, "")
+		return s.engine.Reply(ctx, s.sessionID, caller, rep.ReplyPayload, 1, "")
 
 	case "peer.converse":
 		var convReq struct {
@@ -1648,13 +1715,13 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &convReq); err != nil {
 			return nil, fmt.Errorf("parse peer.converse args: %w", err)
 		}
-		if convReq.From != "" && convReq.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", convReq.From, s.caller)
+		if convReq.From != "" && convReq.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", convReq.From, caller)
 		}
-		if convReq.Caller != "" && convReq.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", convReq.Caller, s.caller)
+		if convReq.Caller != "" && convReq.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", convReq.Caller, caller)
 		}
-		return s.engine.Converse(ctx, s.sessionID, s.caller, protocol.ConverseRequest{
+		return s.engine.Converse(ctx, s.sessionID, caller, protocol.ConverseRequest{
 			Peer:                 convReq.Peer,
 			Capability:           convReq.Capability,
 			Message:              convReq.Message,
@@ -1672,10 +1739,10 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &pubReq); err != nil {
 			return nil, fmt.Errorf("parse collaboration.publish args: %w", err)
 		}
-		if pubReq.From != "" && pubReq.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", pubReq.From, s.caller)
+		if pubReq.From != "" && pubReq.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", pubReq.From, caller)
 		}
-		pubReq.From = s.caller
+		pubReq.From = caller
 		if pubReq.SpaceID == "" {
 			pubReq.SpaceID = s.sessionID
 		}
@@ -1695,17 +1762,17 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &repReq); err != nil {
 			return nil, fmt.Errorf("parse collaboration.reply args: %w", err)
 		}
-		if repReq.From != "" && repReq.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", repReq.From, s.caller)
+		if repReq.From != "" && repReq.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", repReq.From, caller)
 		}
-		if repReq.Author != "" && repReq.Author != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", repReq.Author, s.caller)
+		if repReq.Author != "" && repReq.Author != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", repReq.Author, caller)
 		}
 		spaceID := repReq.SpaceID
 		if spaceID == "" {
 			spaceID = s.sessionID
 		}
-		return s.engine.PublishReply(ctx, spaceID, repReq.Channel, repReq.ThreadID, s.caller, repReq.Message, repReq.Mentions, repReq.Scope)
+		return s.engine.PublishReply(ctx, spaceID, repReq.Channel, repReq.ThreadID, caller, repReq.Message, repReq.Mentions, repReq.Scope)
 
 	case "collaboration.inbox":
 		var inReq struct {
@@ -1719,7 +1786,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if spaceID == "" {
 			spaceID = s.sessionID
 		}
-		return s.engine.GetInbox(ctx, spaceID, s.caller, nil, inReq.UnreadOnly)
+		return s.engine.GetInbox(ctx, spaceID, caller, nil, inReq.UnreadOnly)
 
 	case "collaboration.channels":
 		var chReq struct {
@@ -1754,10 +1821,10 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &sub); err != nil {
 			return nil, fmt.Errorf("parse collaboration.subscribe args: %w", err)
 		}
-		if sub.ParticipantID != "" && sub.ParticipantID != s.caller {
-			return nil, fmt.Errorf("cannot spoof participant identity %q (authenticated as %q)", sub.ParticipantID, s.caller)
+		if sub.ParticipantID != "" && sub.ParticipantID != caller {
+			return nil, fmt.Errorf("cannot spoof participant identity %q (authenticated as %q)", sub.ParticipantID, caller)
 		}
-		sub.ParticipantID = s.caller
+		sub.ParticipantID = caller
 		if sub.SpaceID == "" {
 			sub.SpaceID = s.sessionID
 		}
@@ -1777,21 +1844,21 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &unsubReq); err != nil {
 			return nil, fmt.Errorf("parse collaboration.unsubscribe args: %w", err)
 		}
-		if unsubReq.ParticipantID != "" && unsubReq.ParticipantID != s.caller {
-			return nil, fmt.Errorf("cannot spoof participant identity %q (authenticated as %q)", unsubReq.ParticipantID, s.caller)
+		if unsubReq.ParticipantID != "" && unsubReq.ParticipantID != caller {
+			return nil, fmt.Errorf("cannot spoof participant identity %q (authenticated as %q)", unsubReq.ParticipantID, caller)
 		}
-		if unsubReq.From != "" && unsubReq.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", unsubReq.From, s.caller)
+		if unsubReq.From != "" && unsubReq.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", unsubReq.From, caller)
 		}
-		if unsubReq.Caller != "" && unsubReq.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", unsubReq.Caller, s.caller)
+		if unsubReq.Caller != "" && unsubReq.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", unsubReq.Caller, caller)
 		}
 		spaceID := unsubReq.SpaceID
 		if spaceID == "" {
 			spaceID = s.sessionID
 		}
 		// Authorization check: verify subscription ownership
-		subs, err := s.engine.Store().GetParticipantSubscriptions(ctx, spaceID, s.caller)
+		subs, err := s.engine.Store().GetParticipantSubscriptions(ctx, spaceID, caller)
 		if err != nil {
 			return nil, fmt.Errorf("lookup subscriptions: %w", err)
 		}
@@ -1803,7 +1870,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 			}
 		}
 		if !owned {
-			return nil, fmt.Errorf("unauthorized: caller %q does not own subscription %q", s.caller, unsubReq.SubscriptionID)
+			return nil, fmt.Errorf("unauthorized: caller %q does not own subscription %q", caller, unsubReq.SubscriptionID)
 		}
 		if err := s.engine.Unsubscribe(ctx, spaceID, unsubReq.SubscriptionID); err != nil {
 			return nil, err
@@ -1827,26 +1894,26 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &decReq); err != nil {
 			return nil, fmt.Errorf("parse collaboration.decide args: %w", err)
 		}
-		if decReq.From != "" && decReq.From != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", decReq.From, s.caller)
+		if decReq.From != "" && decReq.From != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", decReq.From, caller)
 		}
-		if decReq.Caller != "" && decReq.Caller != s.caller {
-			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", decReq.Caller, s.caller)
+		if decReq.Caller != "" && decReq.Caller != caller {
+			return nil, fmt.Errorf("cannot spoof sender identity %q (authenticated as %q)", decReq.Caller, caller)
 		}
-		if decReq.ProposedBy != "" && decReq.ProposedBy != s.caller {
-			return nil, fmt.Errorf("cannot spoof proposer identity %q (authenticated as %q)", decReq.ProposedBy, s.caller)
+		if decReq.ProposedBy != "" && decReq.ProposedBy != caller {
+			return nil, fmt.Errorf("cannot spoof proposer identity %q (authenticated as %q)", decReq.ProposedBy, caller)
 		}
-		if decReq.AcceptedBy != "" && decReq.AcceptedBy != s.caller {
-			return nil, fmt.Errorf("cannot spoof acceptor identity %q (authenticated as %q)", decReq.AcceptedBy, s.caller)
+		if decReq.AcceptedBy != "" && decReq.AcceptedBy != caller {
+			return nil, fmt.Errorf("cannot spoof acceptor identity %q (authenticated as %q)", decReq.AcceptedBy, caller)
 		}
 		spaceID := decReq.SpaceID
 		if spaceID == "" {
 			spaceID = s.sessionID
 		}
 		if decReq.Action == "accept" {
-			return s.engine.AcceptDecision(ctx, spaceID, decReq.DecisionID, s.caller)
+			return s.engine.AcceptDecision(ctx, spaceID, decReq.DecisionID, caller)
 		}
-		return s.engine.CreateDecision(ctx, spaceID, decReq.Title, decReq.Statement, decReq.Rationale, s.caller, decReq.EvidenceReferences)
+		return s.engine.CreateDecision(ctx, spaceID, decReq.Title, decReq.Statement, decReq.Rationale, caller, decReq.EvidenceReferences)
 
 	case "collaboration.status":
 		var stReq struct {
@@ -1887,7 +1954,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err := json.Unmarshal(argsJSON, &req); err != nil {
 			return nil, err
 		}
-		return s.engine.DecideApproval(ctx, req.ApprovalID, s.caller, req.Approved)
+		return s.engine.DecideApproval(ctx, req.ApprovalID, caller, req.Approved)
 
 	case "operations.dead_letters":
 		var req struct {
@@ -2008,7 +2075,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 			req.Kind = "transcript"
 		}
 		if req.Source == "" {
-			req.Source = s.caller
+			req.Source = caller
 		}
 		return s.engine.KnowledgeRemember(ctx, req.Text, req.Kind, req.Source, req.ProjectID, req.Tags)
 
@@ -2042,7 +2109,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		}
 		author := req.Author
 		if author == "" {
-			author = s.caller
+			author = caller
 		}
 		sessID := req.SessionID
 		if sessID == "" {
@@ -2080,7 +2147,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if req.ChangeID == "" {
 			return nil, fmt.Errorf("change_id is required")
 		}
-		return s.engine.PrepareChange(ctx, req.ChangeID, s.caller)
+		return s.engine.PrepareChange(ctx, req.ChangeID, caller)
 
 	case "change.status":
 		var req struct {
@@ -2159,7 +2226,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		}
 		source := req.SourceParticipant
 		if source == "" {
-			source = s.caller
+			source = caller
 		}
 		ev := &protocol.ChangeEvidence{
 			ChangeID:          req.ChangeID,
@@ -2187,7 +2254,7 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if req.ChangeID == "" {
 			return nil, fmt.Errorf("change_id is required")
 		}
-		return s.engine.AbortChange(ctx, req.ChangeID, s.caller, req.Reason)
+		return s.engine.AbortChange(ctx, req.ChangeID, caller, req.Reason)
 
 	case "change.commit_status":
 		var req struct {

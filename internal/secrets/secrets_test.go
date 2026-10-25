@@ -43,3 +43,44 @@ func TestLocalStoresCiphertextAndListsMetadataOnly(t *testing.T) {
 		t.Fatal("plaintext secret was persisted")
 	}
 }
+
+func TestVaultFromEnv_TLSAndProductionValidation(t *testing.T) {
+	t.Run("missing env", func(t *testing.T) {
+		t.Setenv("VAULT_ADDR", "")
+		t.Setenv("VAULT_TOKEN", "")
+		if _, err := NewVaultFromEnv(); err == nil {
+			t.Fatal("expected error when VAULT_ADDR/VAULT_TOKEN are missing")
+		}
+	})
+
+	t.Run("production rejects non-https remote vault", func(t *testing.T) {
+		t.Setenv("VAULT_ADDR", "http://vault.company.internal:8200")
+		t.Setenv("VAULT_TOKEN", "s.test-token")
+		t.Setenv("HARNESSMESH_ENV", "production")
+		if _, err := NewVaultFromEnv(); err == nil {
+			t.Fatal("expected production to reject unencrypted http:// vault address")
+		}
+	})
+
+	t.Run("production permits local loopback http", func(t *testing.T) {
+		t.Setenv("VAULT_ADDR", "http://127.0.0.1:8200")
+		t.Setenv("VAULT_TOKEN", "s.test-token")
+		t.Setenv("HARNESSMESH_ENV", "production")
+		v, err := NewVaultFromEnv()
+		if err != nil {
+			t.Fatalf("unexpected error for local loopback: %v", err)
+		}
+		if v.Address != "http://127.0.0.1:8200" {
+			t.Fatalf("unexpected address: %s", v.Address)
+		}
+	})
+
+	t.Run("invalid ca cert path", func(t *testing.T) {
+		t.Setenv("VAULT_ADDR", "https://vault.company.internal:8200")
+		t.Setenv("VAULT_TOKEN", "s.test-token")
+		t.Setenv("VAULT_CACERT", "/nonexistent/vault-ca.pem")
+		if _, err := NewVaultFromEnv(); err == nil {
+			t.Fatal("expected error for nonexistent CA cert file")
+		}
+	})
+}

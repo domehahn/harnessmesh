@@ -43,7 +43,7 @@ fingerprints, references, redacted output, and measured results.
 - Old credential rejected: yes/no
 - New credential accepted: yes/no
 - Revocation without restart verified: yes/no
-- Vault/KMS version or audit-event reference:
+- Vault secret version or audit-event reference:
 
 ## Recovery and database
 

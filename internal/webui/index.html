@@ -3,10 +3,43 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>HarnessMesh Control Plane</title><link rel="stylesheet" href="/dashboard/assets/styles.css"></head>
 <body>
 <div class="app-shell">
-  <aside class="sidebar"><div class="brand"><span class="brand-mark">H</span><span>HarnessMesh</span></div><div class="tenant-pill" id="tenantLabel">No tenant connected</div><nav id="nav"><button class="nav-item active" data-view="overview">Overview</button><button class="nav-item" data-view="sessions">Sessions</button><button class="nav-item" data-view="jobs">Jobs</button><button class="nav-item" data-view="approvals">Approvals</button><button class="nav-item" data-view="usage">Usage & Billing</button><button class="nav-item" data-view="monitoring">Monitoring</button></nav><div class="sidebar-foot"><span class="status-dot"></span><span id="connectionState">Disconnected</span></div></aside>
-  <main class="main"><header class="topbar"><div><p class="eyebrow">CONTROL PLANE</p><h1 id="pageTitle">Tenant overview</h1></div><div class="top-actions"><button class="icon-button" id="refreshButton" title="Refresh data">↻</button><button class="avatar" id="identityButton">?</button></div></header>
+  <aside class="sidebar"><div class="brand"><span class="brand-mark">H</span><span>HarnessMesh</span></div><div class="tenant-pill" id="tenantLabel">No tenant connected</div><nav id="nav"><button class="nav-item active" data-view="overview">Overview</button><button class="nav-item" data-view="sessions">Sessions</button><button class="nav-item" data-view="jobs">Jobs</button><button class="nav-item" data-view="approvals">Approvals</button><button class="nav-item" data-view="usage">Usage & Billing</button><button class="nav-item" data-view="monitoring">Monitoring</button></nav><div class="sidebar-foot"><div class="foot-status"><span class="status-dot"></span><span id="connectionState">Disconnected</span></div><div class="foot-actions"><button class="link-button" id="sidebarHelp">Hilfe</button><button class="link-button" id="sidebarLogout">Abmelden</button></div></div></aside>
+  <main class="main"><header class="topbar"><div><p class="eyebrow">CONTROL PLANE</p><h1 id="pageTitle">Tenant overview</h1></div><div class="top-actions"><button class="icon-button" id="refreshButton" title="Aktualisieren / Refresh" aria-label="Aktualisieren">↻</button><button class="icon-button" id="helpButton" title="Hilfe & Dokumentation" aria-label="Hilfe">?</button><button class="icon-button" id="logoutButton" title="Abmelden / Logout" aria-label="Abmelden">⎋</button></div></header>
   <section class="connect-card" id="connectCard"><div><strong>Connect your tenant</strong><p>Use a HarnessMesh API key. It stays in this browser session and is never sent anywhere except this server.</p></div><div class="connect-form"><input id="apiKey" type="password" autocomplete="off" placeholder="hm_… API key"><button class="primary" id="connectButton">Connect</button></div><p class="error hidden" id="connectError"></p></section>
   <section id="content" class="content"></section>
   </main>
-</div><script src="/dashboard/assets/app.js" defer></script>
+</div>
+<div class="modal-backdrop hidden" id="helpModal" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header">
+      <div><p class="eyebrow" style="margin:0 0 4px">DOKUMENTATION & HILFE</p><h2 style="margin:0">HarnessMesh Control Plane</h2></div>
+      <button class="modal-close" id="closeHelpModal" title="Schließen" aria-label="Schließen">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="help-card">
+        <h3>Schnellstart</h3>
+        <p>Geben Sie Ihren <code>hm_live_…</code> API-Schlüssel ein, um sich mit Ihrem Mandanten zu verbinden. Der Schlüssel wird sicher in der aktuellen Browsersitzung gehalten.</p>
+      </div>
+      <div class="help-card">
+        <h3>Funktionsübersicht</h3>
+        <ul>
+          <li><strong>Aktualisieren (↻):</strong> Lädt sofort Systemzustand, Metriken und Mandantendaten neu.</li>
+          <li><strong>Hilfe (?):</strong> Zeigt diesen Hilfedialog mit Bedienhinweisen.</li>
+          <li><strong>Abmelden (⎋):</strong> Löscht den gespeicherten API-Schlüssel und beendet die Sitzung sicher.</li>
+          <li><strong>Sessions & Jobs:</strong> Einblick in agentische Workflows und Durable Execution.</li>
+          <li><strong>Approvals:</strong> Vier-Augen-Freigaben für privilegierte Aktionen.</li>
+        </ul>
+      </div>
+      <div class="help-card">
+        <h3>CLI Diagnose</h3>
+        <p>Prüfen Sie Systemkomponenten direkt im Terminal:</p>
+        <ul><li><code>harnessmesh doctor</code></li></ul>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="primary" id="ackHelpModal">Verstanden / Schließen</button>
+    </div>
+  </div>
+</div>
+<script src="/dashboard/assets/app.js" defer></script>
 </body></html>

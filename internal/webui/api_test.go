@@ -31,6 +31,18 @@ func TestDashboardAPIIsTenantScopedAndCanSubmitJob(t *testing.T) {
 	if err := db.SetMembership(ctx, &store.MembershipRecord{TenantID: "tenant-a", Subject: "user-a", Role: "owner"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.SaveSession(ctx, &store.Session{ID: "session-a", TenantID: "tenant-a", Task: "security test", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EmitEvent(ctx, "session-a", "security.blocked", map[string]any{"reason": "prompt injection", "risk_score": 0.95, "secret": "must-not-be-returned"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSession(ctx, &store.Session{ID: "session-other", TenantID: "tenant-other", Task: "other tenant", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EmitEvent(ctx, "session-other", "security.blocked", map[string]any{"reason": "must not leak", "risk_score": 1}); err != nil {
+		t.Fatal(err)
+	}
 	key, _, err := (identity.Service{Store: db}).IssueAPIKey(ctx, "tenant-a", "user-a")
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +99,29 @@ func TestDashboardAPIIsTenantScopedAndCanSubmitJob(t *testing.T) {
 	}
 	if optimization.Tenant != "tenant-a" || optimization.Credits.Available {
 		t.Fatalf("unexpected optimization projection: %+v", optimization)
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/assurance/events", nil)
+	r.Header.Set("X-HarnessMesh-API-Key", key)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("assurance events status=%d body=%s", w.Code, w.Body.String())
+	}
+	var assurance struct {
+		Tenant string `json:"tenant"`
+		Events []struct {
+			SessionID string         `json:"session_id"`
+			Payload   map[string]any `json:"payload"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &assurance); err != nil {
+		t.Fatal(err)
+	}
+	if assurance.Tenant != "tenant-a" || len(assurance.Events) != 1 || assurance.Events[0].SessionID != "session-a" || assurance.Events[0].Payload["reason"] != "prompt injection" {
+		t.Fatalf("unexpected assurance events: %+v", assurance)
+	}
+	if _, leaked := assurance.Events[0].Payload["secret"]; leaked {
+		t.Fatal("assurance events leaked an unapproved payload field")
 	}
 	r = httptest.NewRequest(http.MethodPost, "/api/v1/dashboard/approvals/approval-1", bytes.NewBufferString(`{"status":"approved"}`))
 	r.Header.Set("X-HarnessMesh-API-Key", key)

@@ -24,15 +24,57 @@ type SandboxPolicy struct {
 	DeniedPaths     []string
 	MaxOutputBytes  int
 	NetworkMode     string // "host" (default) or "none"
+	PassEnv         []string
+}
+
+// DefaultSafeEnvKeys defines host environment variables permitted to be inherited
+// by sandboxed agent processes.
+var DefaultSafeEnvKeys = map[string]bool{
+	"PATH":            true,
+	"HOME":            true,
+	"USER":            true,
+	"LOGNAME":         true,
+	"SHELL":           true,
+	"TMPDIR":          true,
+	"TMP":             true,
+	"TEMP":            true,
+	"LANG":            true,
+	"LC_ALL":          true,
+	"LC_CTYPE":        true,
+	"LC_MESSAGES":     true,
+	"TERM":            true,
+	"TZ":              true,
+	"GOROOT":          true,
+	"GOPATH":          true,
+	"GOCACHE":         true,
+	"GOPROXY":         true,
+	"GOPRIVATE":       true,
+	"GONOPROXY":       true,
+	"GONOSUMDB":       true,
+	"XDG_CACHE_HOME":  true,
+	"XDG_CONFIG_HOME": true,
+	"XDG_DATA_HOME":   true,
+	"SSL_CERT_FILE":   true,
+	"SSL_CERT_DIR":    true,
+	"SYSTEMROOT":      true,
+	"WINDIR":          true,
 }
 
 func (p SandboxPolicy) Validate(dir, command string) error {
 	if len(p.AllowedCommands) > 0 {
 		allowed := false
+		hasSep := strings.Contains(command, string(filepath.Separator))
 		for _, candidate := range p.AllowedCommands {
-			if candidate == command || filepath.Base(candidate) == filepath.Base(command) {
-				allowed = true
-				break
+			if !hasSep {
+				if candidate == command || filepath.Base(candidate) == command {
+					allowed = true
+					break
+				}
+			} else {
+				if filepath.Clean(candidate) == filepath.Clean(command) {
+					allowed = true
+					break
+				}
 			}
 		}
 		if !allowed {
@@ -42,6 +84,9 @@ func (p SandboxPolicy) Validate(dir, command string) error {
 	realDir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
+	}
+	if evaluated, evalErr := filepath.EvalSymlinks(realDir); evalErr == nil {
+		realDir = evaluated
 	}
 	for _, denied := range p.DeniedPaths {
 		if matchesPath(realDir, denied) {
@@ -64,36 +109,94 @@ func (p SandboxPolicy) Validate(dir, command string) error {
 }
 
 func matchesPath(value, pattern string) bool {
-	pattern, _ = filepath.Abs(pattern)
+	cleanPattern, _ := filepath.Abs(pattern)
+	if evalPattern, err := filepath.EvalSymlinks(cleanPattern); err == nil {
+		cleanPattern = evalPattern
+	}
 	value = filepath.Clean(value)
-	pattern = filepath.Clean(pattern)
-	return value == pattern || strings.HasPrefix(value, pattern+string(filepath.Separator))
+	cleanPattern = filepath.Clean(cleanPattern)
+	return value == cleanPattern || strings.HasPrefix(value, cleanPattern+string(filepath.Separator))
+}
+
+// SanitizeHostEnv filters the host environment to only include safe standard variables
+// and any explicitly requested variables in extraAllowed, strictly stripping control plane
+// secrets (e.g. HARNESSMESH_*, VAULT_*).
+func SanitizeHostEnv(extraAllowed []string) []string {
+	allowed := make(map[string]bool, len(DefaultSafeEnvKeys)+len(extraAllowed))
+	for k := range DefaultSafeEnvKeys {
+		allowed[k] = true
+	}
+	for _, k := range extraAllowed {
+		allowed[k] = true
+	}
+
+	var res []string
+	for _, item := range os.Environ() {
+		eq := strings.IndexByte(item, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := item[:eq]
+		if isForbiddenControlPlaneKey(key) {
+			continue
+		}
+		if allowed[key] {
+			res = append(res, item)
+		}
+	}
+	return res
+}
+
+// StripControlPlaneSecrets removes known control plane secrets from an environment slice.
+func StripControlPlaneSecrets(base []string) []string {
+	var res []string
+	for _, item := range base {
+		eq := strings.IndexByte(item, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := item[:eq]
+		if isForbiddenControlPlaneKey(key) {
+			continue
+		}
+		res = append(res, item)
+	}
+	return res
+}
+
+func isForbiddenControlPlaneKey(key string) bool {
+	upper := strings.ToUpper(key)
+	if strings.HasPrefix(upper, "HARNESSMESH_") || strings.HasPrefix(upper, "VAULT_") {
+		return true
+	}
+	if upper == "DATABASE_URL" || upper == "PGPASSWORD" || upper == "POSTGRES_PASSWORD" {
+		return true
+	}
+	return false
 }
 
 func RunWithPolicy(ctx context.Context, dir string, env map[string]string, stdin string, policy SandboxPolicy, name string, args ...string) (Result, error) {
 	if err := policy.Validate(dir, name); err != nil {
 		return Result{}, err
 	}
+	baseEnv := SanitizeHostEnv(policy.PassEnv)
 	if policy.NetworkMode == "none" {
 		wrapper, err := exec.LookPath("bwrap")
 		if err != nil {
 			return Result{}, fmt.Errorf("network-isolated execution requires bubblewrap (bwrap): %w", err)
 		}
-		// Bubblewrap creates a private network namespace while retaining a
-		// read-only view of the image and a writable view only of the agent's
-		// configured working directory. If the OS sandbox is unavailable,
-		// execution fails closed instead of silently using host networking.
 		absDir, err := filepath.Abs(dir)
 		if err != nil {
 			return Result{}, fmt.Errorf("resolve network-isolated working directory: %w", err)
+		}
+		if evaluated, evalErr := filepath.EvalSymlinks(absDir); evalErr == nil {
+			absDir = evaluated
 		}
 		wrappedArgs := []string{
 			"--die-with-parent", "--new-session", "--unshare-net",
 			"--tmpfs", "/",
 			"--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
 		}
-		// Keep the runtime and configuration read-only, but do not expose
-		// arbitrary application data (including mounted secret volumes).
 		for _, path := range []string{"/usr", "/bin", "/sbin", "/lib", "/etc"} {
 			if _, statErr := os.Stat(path); statErr == nil {
 				wrappedArgs = append(wrappedArgs, "--ro-bind", path, path)
@@ -104,16 +207,20 @@ func RunWithPolicy(ctx context.Context, dir string, env map[string]string, stdin
 			"--chdir", "/workspace", "--", name,
 		)
 		wrappedArgs = append(wrappedArgs, args...)
-		return Run(ctx, dir, env, stdin, wrapper, wrappedArgs...)
+		return runWithBaseEnv(ctx, dir, baseEnv, env, stdin, wrapper, wrappedArgs...)
 	}
-	return Run(ctx, dir, env, stdin, name, args...)
+	return runWithBaseEnv(ctx, dir, baseEnv, env, stdin, name, args...)
 }
 
 func Run(ctx context.Context, dir string, env map[string]string, stdin string, name string, args ...string) (Result, error) {
+	return runWithBaseEnv(ctx, dir, StripControlPlaneSecrets(os.Environ()), env, stdin, name, args...)
+}
+
+func runWithBaseEnv(ctx context.Context, dir string, baseEnv []string, env map[string]string, stdin string, name string, args ...string) (Result, error) {
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Env = mergeEnv(os.Environ(), env)
+	cmd.Env = mergeEnv(baseEnv, env)
 
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)

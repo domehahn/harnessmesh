@@ -31,6 +31,8 @@ type Manifest struct {
 	Binary                string        `json:"binary,omitempty"`
 	Aliases               []string      `json:"aliases,omitempty"`
 	Capabilities          []string      `json:"capabilities,omitempty"`
+	Dependencies          []Dependency  `json:"dependencies,omitempty"`
+	Conflicts             []Conflict    `json:"conflicts,omitempty"`
 	Risk                  string        `json:"risk,omitempty"`
 	Enabled               bool          `json:"enabled"`
 	SHA256                string        `json:"sha256,omitempty"`

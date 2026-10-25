@@ -21,3 +21,26 @@ func TestTenantContextFailsClosed(t *testing.T) {
 		t.Fatal("expected unauthenticated context")
 	}
 }
+
+func TestIdentityHasScope(t *testing.T) {
+	member := Identity{Subject: "member", Tenant: "t1", Roles: map[string]bool{"member": true}, Scopes: map[string]bool{"mcp:read": true}}
+	if !member.HasScope("mcp:read") {
+		t.Fatal("expected member to have mcp:read scope")
+	}
+	if member.HasScope("mcp:write") {
+		t.Fatal("member must not have mcp:write scope")
+	}
+	if !member.HasScope("") {
+		t.Fatal("empty scope should always be allowed")
+	}
+
+	admin := Identity{Subject: "admin", Tenant: "t1", Roles: map[string]bool{"admin": true}}
+	if !admin.HasScope("mcp:write") {
+		t.Fatal("admin must have all scopes")
+	}
+
+	owner := Identity{Subject: "owner", Tenant: "t1", Roles: map[string]bool{"owner": true}}
+	if !owner.HasScope("any:scope") {
+		t.Fatal("owner must have all scopes")
+	}
+}

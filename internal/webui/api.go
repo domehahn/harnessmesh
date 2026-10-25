@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/governance"
 	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/replay"
 	"github.com/domehahn/harnessmesh/internal/runbundle"
 	"github.com/domehahn/harnessmesh/internal/secrets"
 	"github.com/domehahn/harnessmesh/internal/simulation"
@@ -46,6 +49,26 @@ type Messenger interface {
 type MarketplaceCatalog interface {
 	ConfiguredMCPServers() []map[string]any
 	ConfiguredPlugins() []map[string]any
+}
+
+type AssuranceCatalog interface {
+	AssuranceGraph() map[string]any
+}
+
+// MarketplaceManager is the audited lifecycle boundary for marketplace
+// actions. The dashboard never installs files directly and never accepts an
+// unauthenticated tenant identifier from the request body.
+type MarketplaceManager interface {
+	Snapshot(context.Context, string, string) (map[string]any, error)
+	Mutate(context.Context, string, string, string, map[string]any) (map[string]any, error)
+}
+
+type MarketplaceRegistry interface {
+	RegistrySnapshot(context.Context) (map[string]any, error)
+}
+
+type MarketplaceArtifactReader interface {
+	GetArtifact(context.Context, string) (io.ReadCloser, error)
 }
 
 func orchestratorAgents(orchestrator Orchestrator) []map[string]any {
@@ -78,12 +101,20 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 	}
 	var secretManager secrets.Manager
 	var marketplace MarketplaceCatalog
+	var marketplaceManager MarketplaceManager
+	var assuranceCatalog AssuranceCatalog
 	for _, integration := range integrations {
 		if configured, ok := integration.(secrets.Manager); ok {
 			secretManager = configured
 		}
 		if configured, ok := integration.(MarketplaceCatalog); ok {
 			marketplace = configured
+		}
+		if configured, ok := integration.(MarketplaceManager); ok {
+			marketplaceManager = configured
+		}
+		if configured, ok := integration.(AssuranceCatalog); ok {
+			assuranceCatalog = configured
 		}
 	}
 	const maxRateLimitClients = 10000
@@ -471,6 +502,20 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 			return
 		}
 		if path == "/marketplace" && r.Method == http.MethodGet {
+			if marketplaceManager != nil {
+				query := r.URL.Query().Get("q")
+				data, e := marketplaceManager.Snapshot(ctx, who.Tenant, query)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				data["agents"] = orchestratorAgents(orchestrator)
+				if marketplace != nil {
+					data["mcp_servers"] = marketplace.ConfiguredMCPServers()
+				}
+				writeJSON(w, data)
+				return
+			}
 			items := []map[string]any{}
 			plugins := []map[string]any{}
 			if marketplace != nil {
@@ -478,6 +523,119 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				plugins = marketplace.ConfiguredPlugins()
 			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestratorAgents(orchestrator), "mcp_servers": items, "plugins": plugins})
+			return
+		}
+		if path == "/assurance/graph" && r.Method == http.MethodGet {
+			if assuranceCatalog == nil {
+				http.Error(w, "assurance graph unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			writeJSON(w, assuranceCatalog.AssuranceGraph())
+			return
+		}
+		if path == "/assurance/events" && r.Method == http.MethodGet {
+			sessions, e := st.ListSessionsForTenant(ctx, who.Tenant)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			type securityEvent struct {
+				SessionID string         `json:"session_id"`
+				EventType string         `json:"event_type"`
+				Timestamp time.Time      `json:"timestamp"`
+				Payload   map[string]any `json:"payload,omitempty"`
+			}
+			events := make([]securityEvent, 0)
+			for _, session := range sessions {
+				if session == nil {
+					continue
+				}
+				items, eventErr := st.GetEvents(ctx, session.ID)
+				if eventErr != nil {
+					continue
+				}
+				for _, item := range items {
+					if !strings.HasPrefix(item.EventType, "security.") {
+						continue
+					}
+					// Explicitly project the safe fields. Never expose the stored
+					// event payload wholesale because future event producers may add
+					// prompt, tool-argument or credential fields.
+					safe := make(map[string]any, 5)
+					for _, key := range []string{"source", "allowed", "reason", "risk_score", "findings"} {
+						if value, ok := item.Payload[key]; ok {
+							safe[key] = value
+						}
+					}
+					events = append(events, securityEvent{SessionID: item.SessionID, EventType: item.EventType, Timestamp: item.Timestamp, Payload: safe})
+				}
+			}
+			sort.SliceStable(events, func(i, j int) bool { return events[i].Timestamp.After(events[j].Timestamp) })
+			if len(events) > 200 {
+				events = events[:200]
+			}
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "events": events})
+			return
+		}
+		if path == "/marketplace/registry" && r.Method == http.MethodGet {
+			if registry, ok := marketplaceManager.(MarketplaceRegistry); ok {
+				index, e := registry.RegistrySnapshot(ctx)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "registry": index})
+				return
+			}
+			http.Error(w, "marketplace registry unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if strings.HasPrefix(path, "/marketplace/artifacts/") && r.Method == http.MethodGet {
+			reader, ok := marketplaceManager.(MarketplaceArtifactReader)
+			if !ok {
+				http.Error(w, "marketplace artifact storage unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			key, e := url.PathUnescape(strings.TrimPrefix(path, "/marketplace/artifacts/"))
+			if e != nil || strings.TrimSpace(key) == "" {
+				http.Error(w, "invalid artifact key", http.StatusBadRequest)
+				return
+			}
+			body, e := reader.GetArtifact(ctx, key)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusNotFound)
+				return
+			}
+			defer body.Close()
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = io.Copy(w, body)
+			return
+		}
+		if strings.HasPrefix(path, "/marketplace/") && r.Method == http.MethodPost {
+			if marketplaceManager == nil {
+				http.Error(w, "marketplace manager unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			action := strings.TrimPrefix(path, "/marketplace/")
+			requiredRole := "owner"
+			if action == "approve" {
+				requiredRole = "admin"
+			}
+			if e := tenant.Authorize(ctx, who.Tenant, requiredRole, ""); e != nil {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			var payload map[string]any
+			if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&payload) != nil {
+				http.Error(w, "invalid marketplace request", http.StatusBadRequest)
+				return
+			}
+			result, e := marketplaceManager.Mutate(ctx, who.Tenant, who.Subject, action, payload)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, result)
 			return
 		}
 		if strings.HasPrefix(path, "/secrets") {
@@ -916,7 +1074,8 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				sessionPath = strings.TrimSuffix(sessionPath, "/events/stream")
 			}
 			export := strings.HasSuffix(sessionPath, "/bundle")
-			id := strings.TrimSuffix(sessionPath, "/bundle")
+			replayPlan := strings.HasSuffix(sessionPath, "/replay")
+			id := strings.TrimSuffix(strings.TrimSuffix(sessionPath, "/bundle"), "/replay")
 			session, e := st.GetSessionForTenant(ctx, id, who.Tenant)
 			if e != nil {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
@@ -980,6 +1139,30 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 			events, e := st.GetEvents(ctx, id)
 			if e != nil {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if replayPlan {
+				replayEvents := make([]replay.Event, 0, len(messages)+len(findings)+len(events))
+				sequence := 0
+				for _, message := range messages {
+					raw, _ := json.Marshal(message)
+					replayEvents = append(replayEvents, replay.Event{Sequence: sequence, Type: "message", Payload: json.RawMessage(raw)})
+					sequence++
+				}
+				for _, finding := range findings {
+					replayEvents = append(replayEvents, replay.Event{Sequence: sequence, Type: "finding", Payload: finding})
+					sequence++
+				}
+				for _, event := range events {
+					replayEvents = append(replayEvents, replay.Event{Sequence: sequence, Type: event.EventType, Payload: event.Payload, At: event.Timestamp})
+					sequence++
+				}
+				plan, buildErr := replay.Build(id, who.Tenant, replayEvents)
+				if buildErr != nil {
+					http.Error(w, buildErr.Error(), http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, plan)
 				return
 			}
 			if export && r.Method == http.MethodGet {

@@ -25,7 +25,7 @@ func NewPostgresSessionStore(db *sql.DB) (*PostgresSessionStore, error) {
 func (s *PostgresSessionStore) Migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS collaboration_sessions (
- id TEXT PRIMARY KEY,
+ id TEXT NOT NULL,
  tenant_id TEXT NOT NULL,
  repo_root TEXT NOT NULL,
  task TEXT NOT NULL,
@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS collaboration_sessions (
  budget_json JSONB NOT NULL DEFAULT '{}'::jsonb,
  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
  created_at TIMESTAMPTZ NOT NULL,
- updated_at TIMESTAMPTZ NOT NULL
+ updated_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY (tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_tenant ON collaboration_sessions(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_status ON collaboration_sessions(tenant_id, status);`)
@@ -63,7 +64,7 @@ func (s *PostgresSessionStore) SaveSession(ctx context.Context, session *Session
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO collaboration_sessions(id,tenant_id,repo_root,task,status,stop_reason,writer_participant,participants_json,budget_json,metadata_json,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12) ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,repo_root=EXCLUDED.repo_root,task=EXCLUDED.task,status=EXCLUDED.status,stop_reason=EXCLUDED.stop_reason,writer_participant=EXCLUDED.writer_participant,participants_json=EXCLUDED.participants_json,budget_json=EXCLUDED.budget_json,metadata_json=EXCLUDED.metadata_json,updated_at=EXCLUDED.updated_at`, session.ID, session.TenantID, session.RepoRoot, session.Task, session.Status, session.StopReason, session.WriterParticipant, string(participants), string(budget), string(metadata), session.CreatedAt, session.UpdatedAt)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO collaboration_sessions(id,tenant_id,repo_root,task,status,stop_reason,writer_participant,participants_json,budget_json,metadata_json,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12) ON CONFLICT(tenant_id, id) DO UPDATE SET repo_root=EXCLUDED.repo_root,task=EXCLUDED.task,status=EXCLUDED.status,stop_reason=EXCLUDED.stop_reason,writer_participant=EXCLUDED.writer_participant,participants_json=EXCLUDED.participants_json,budget_json=EXCLUDED.budget_json,metadata_json=EXCLUDED.metadata_json,updated_at=EXCLUDED.updated_at`, session.ID, session.TenantID, session.RepoRoot, session.Task, session.Status, session.StopReason, session.WriterParticipant, string(participants), string(budget), string(metadata), session.CreatedAt, session.UpdatedAt)
 	return err
 }
 
