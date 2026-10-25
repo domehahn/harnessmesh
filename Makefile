@@ -63,16 +63,23 @@ marketplace-storage-down:
 	docker compose --profile marketplace stop harnessmesh-minio
 
 observability-up:
-	docker compose --profile observability up -d harnessmesh-otel-collector
+	HARNESSMESH_MCP_TOKEN=$${HARNESSMESH_MCP_TOKEN:-make-mcp-token} \
+	HARNESSMESH_BRIDGE_TOKEN=$${HARNESSMESH_BRIDGE_TOKEN:-make-bridge-token} \
+	HARNESSMESH_PROVIDER_TOKEN=$${HARNESSMESH_PROVIDER_TOKEN:-make-provider-token} \
+		docker compose --profile observability up -d harnessmesh-otel-collector
 
 observability-remote-up:
-	HARNESSMESH_OTEL_CONFIG=./deploy/observability/otel-collector-remote.yaml docker compose --profile observability up -d harnessmesh-otel-collector
-
-observability-remote-up:
-	HARNESSMESH_OTEL_CONFIG=./deploy/observability/otel-collector-remote.yaml docker compose --profile observability up -d harnessmesh-otel-collector
+	HARNESSMESH_MCP_TOKEN=$${HARNESSMESH_MCP_TOKEN:-make-mcp-token} \
+	HARNESSMESH_BRIDGE_TOKEN=$${HARNESSMESH_BRIDGE_TOKEN:-make-bridge-token} \
+	HARNESSMESH_PROVIDER_TOKEN=$${HARNESSMESH_PROVIDER_TOKEN:-make-provider-token} \
+	HARNESSMESH_OTEL_CONFIG=./deploy/observability/otel-collector-remote.yaml \
+		docker compose --profile observability up -d harnessmesh-otel-collector
 
 observability-down:
-	docker compose --profile observability stop harnessmesh-otel-collector
+	HARNESSMESH_MCP_TOKEN=$${HARNESSMESH_MCP_TOKEN:-make-mcp-token} \
+	HARNESSMESH_BRIDGE_TOKEN=$${HARNESSMESH_BRIDGE_TOKEN:-make-bridge-token} \
+	HARNESSMESH_PROVIDER_TOKEN=$${HARNESSMESH_PROVIDER_TOKEN:-make-provider-token} \
+		docker compose --profile observability stop harnessmesh-otel-collector
 
 vault-up:
 	docker compose --profile vault up -d harnessmesh-vault

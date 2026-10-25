@@ -373,7 +373,10 @@ services:
       HARNESSMESH_OTEL_REMOTE_ENDPOINT: ${HARNESSMESH_OTEL_REMOTE_ENDPOINT:-}
       HARNESSMESH_OTEL_REMOTE_TOKEN: ${HARNESSMESH_OTEL_REMOTE_TOKEN:-}
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13133/"]
+      # The minimal collector image has no shell or wget. The collector's
+      # health endpoint remains available on 13133 for external probes; this
+      # image-level check verifies that the shipped binary is executable.
+      test: ["CMD", "/otelcol-contrib", "--version"]
       interval: 10s
       timeout: 3s
       retries: 12
