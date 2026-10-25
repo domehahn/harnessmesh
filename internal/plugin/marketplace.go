@@ -534,12 +534,20 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 			return nil, fmt.Errorf("dependency admission rejected: %w", resolveErr)
 		}
 		dst := filepath.Join(m.root, name)
+		rootFS, rootErr := os.OpenRoot(m.root)
+		if rootErr != nil {
+			return nil, rootErr
+		}
+		defer rootFS.Close()
 		if old, ok := s.Installed[name]; ok && old.Version != "" {
 			rev := PluginRevision{Version: old.Version, Path: dst}
 			if oldStatus, err := Discover(dst, Options{}); err == nil && len(oldStatus) > 0 {
 				rev.SHA256 = oldStatus[0].Manifest.SHA256
 			}
 			backup := filepath.Join(m.root, ".marketplace-backups", name, old.Version)
+			if err := rootFS.MkdirAll(filepath.Join(".marketplace-backups", name, old.Version), 0o750); err != nil {
+				return nil, err
+			}
 			if err := copyDir(dst, backup); err != nil {
 				return nil, err
 			}
@@ -548,12 +556,10 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 			s.Installed[name] = old
 		}
 		tmp := filepath.Join(m.root, ".marketplace-staging", name)
-		rootFS, rootErr := os.OpenRoot(m.root)
-		if rootErr != nil {
-			return nil, rootErr
-		}
-		defer rootFS.Close()
 		_ = rootFS.RemoveAll(filepath.Join(".marketplace-staging", name))
+		if err := rootFS.MkdirAll(filepath.Join(".marketplace-staging", name), 0o750); err != nil {
+			return nil, err
+		}
 		if err := copyDir(srcDir, tmp); err != nil {
 			m.progress(ctx, tenant, subject, name, "failed", 20, err.Error())
 			return nil, err
@@ -660,6 +666,9 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 		}
 		defer rootFS.Close()
 		_ = rootFS.RemoveAll(filepath.Join(".marketplace-staging", name))
+		if err := rootFS.MkdirAll(filepath.Join(".marketplace-staging", name), 0o750); err != nil {
+			return nil, err
+		}
 		if err := copyDir(backup, tmp); err != nil {
 			return nil, err
 		}
@@ -779,9 +788,6 @@ func tarDirectory(root string) ([]byte, error) {
 }
 
 func copyDir(src, dst string) error {
-	if err := os.MkdirAll(dst, 0o750); err != nil {
-		return err
-	}
 	srcRoot, err := os.OpenRoot(src)
 	if err != nil {
 		return err
