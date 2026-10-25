@@ -51,11 +51,16 @@ type Decision struct {
 	Findings         []string `json:"findings,omitempty"`
 }
 type Evidence struct {
-	Version                             int           `json:"version"`
-	SessionID, Tenant, Agent, Operation string        `json:"session_id,omitempty"`
-	Events                              []Observation `json:"events"`
-	Graph                               Graph         `json:"graph"`
-	Digest, Signature, KeyID            string        `json:"digest,omitempty"`
+	Version   int           `json:"version"`
+	SessionID string        `json:"session_id,omitempty"`
+	Tenant    string        `json:"tenant,omitempty"`
+	Agent     string        `json:"agent,omitempty"`
+	Operation string        `json:"operation,omitempty"`
+	Events    []Observation `json:"events"`
+	Graph     Graph         `json:"graph"`
+	Digest    string        `json:"digest,omitempty"`
+	Signature string        `json:"signature,omitempty"`
+	KeyID     string        `json:"key_id,omitempty"`
 }
 
 var sensitive = regexp.MustCompile(`(?i)(api[_-]?key|secret|password|passwd|token|credential|private[_-]?key|\.env)`)
