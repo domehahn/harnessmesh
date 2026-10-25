@@ -77,7 +77,9 @@ fallback; the React console is the recommended production UI.
 
 ### Walkthrough: CLI and React console
 
-<video controls preload="metadata" width="960" src="artifacts/videos/harnessmesh-walkthrough.webm"></video>
+[![HarnessMesh CLI- und React-Console-Walkthrough](artifacts/videos/harnessmesh-walkthrough-poster.png)](artifacts/videos/harnessmesh-walkthrough.webm)
+
+▶️ [Video direkt öffnen oder herunterladen](artifacts/videos/harnessmesh-walkthrough.webm)
 
 The walkthrough demonstrates local CLI startup, agent discovery, tenant
 connection, monitoring, approvals, the visual Orchestrator and Simulation Lab.
@@ -172,7 +174,9 @@ Diesen Key in der Console unter `http://127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-30
 
 Danach sind die lokalen Beobachtungspunkte:
 
-<video controls preload="metadata" width="960" src="artifacts/videos/harnessmesh-walkthrough.webm"></video>
+[![HarnessMesh CLI- und React-Console-Walkthrough](artifacts/videos/harnessmesh-walkthrough-poster.png)](artifacts/videos/harnessmesh-walkthrough.webm)
+
+▶️ [Video direkt öffnen oder herunterladen](artifacts/videos/harnessmesh-walkthrough.webm)
 
 Die Aufnahme zeigt denselben Ablauf kompakt in CLI und React-Konsole. Für eine
 eigene Aufnahme mit aktuellen Demo-Daten:
