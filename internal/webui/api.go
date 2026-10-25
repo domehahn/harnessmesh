@@ -19,6 +19,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/governance"
 	"github.com/domehahn/harnessmesh/internal/identity"
+	"github.com/domehahn/harnessmesh/internal/observability"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/replay"
 	"github.com/domehahn/harnessmesh/internal/runbundle"
@@ -1070,6 +1071,32 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				_ = events.AppendJobEvent(ctx, &store.JobEvent{JobID: job.ID, Tenant: job.Tenant, Type: req.Action, Message: "job action requested through dashboard"})
 			}
 			writeJSON(w, job)
+			return
+		}
+		if path == "/observability/export" && r.Method == http.MethodPost {
+			exporter := observability.FromEnvironment()
+			if exporter == nil {
+				http.Error(w, "OTLP exporter is not configured", http.StatusNotImplemented)
+				return
+			}
+			logs, spans, e := observabilityProjection(ctx, st, who.Tenant)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			logRecords := make([]observability.Log, 0, len(logs))
+			for _, log := range logs {
+				logRecords = append(logRecords, observability.Log{ID: log.ID, Source: log.Source, Level: log.Level, Message: log.Message, EventType: log.EventType, Timestamp: log.Timestamp, TraceID: log.TraceID, SpanID: log.SpanID})
+			}
+			spanRecords := make([]observability.Span, 0, len(spans))
+			for _, span := range spans {
+				spanRecords = append(spanRecords, observability.Span{TraceID: span.TraceID, SpanID: span.SpanID, ParentID: span.ParentID, Service: span.Service, Operation: span.Operation, Start: span.Start, Duration: span.Duration, Status: span.Status})
+			}
+			if e = exporter.Export(ctx, who.Tenant, logRecords, spanRecords); e != nil {
+				http.Error(w, e.Error(), http.StatusBadGateway)
+				return
+			}
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "exported_logs": len(logRecords), "exported_spans": len(spanRecords)})
 			return
 		}
 		if r.Method != http.MethodGet {

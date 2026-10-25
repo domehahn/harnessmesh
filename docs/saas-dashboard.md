@@ -62,6 +62,12 @@ Dashboard API requests are rate limited per client; tune the limit with
 - `GET /api/v1/dashboard/observability/stream` provides the same logs and spans
   over authenticated Server-Sent Events for live monitoring. The React console
   renders the stream as a central log table and a trace-span waterfall.
+- `POST /api/v1/dashboard/observability/export` sends the current redacted
+  projection to an OpenTelemetry Collector over OTLP/HTTP. Configure
+  `HARNESSMESH_OTEL_EXPORT_URL` or separate
+  `HARNESSMESH_OTEL_LOGS_URL`/`HARNESSMESH_OTEL_TRACES_URL`; use
+  `HARNESSMESH_OTEL_EXPORT_TOKEN` for bearer authentication. The console's
+  `Export to OTLP Collector` action invokes this endpoint explicitly.
 - `GET /api/v1/dashboard/simulation` returns deterministic safety scenarios;
   `POST` evaluates an observation without invoking an external agent or model.
 - `GET /api/v1/dashboard/approvals/{id}` returns the approval decision context
