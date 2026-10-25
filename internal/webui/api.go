@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/auth"
+	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/governance"
 	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/protocol"
@@ -90,6 +91,113 @@ func dashboardPage(r *http.Request) (int, int) {
 		pageSize = 200
 	}
 	return page, pageSize
+}
+
+type observabilityLogRecord struct {
+	ID        string         `json:"id"`
+	Source    string         `json:"source"`
+	Level     string         `json:"level"`
+	Message   string         `json:"message,omitempty"`
+	EventType string         `json:"event_type"`
+	Timestamp time.Time      `json:"timestamp"`
+	TraceID   string         `json:"trace_id"`
+	SpanID    string         `json:"span_id"`
+	Payload   map[string]any `json:"payload,omitempty"`
+}
+
+type observabilitySpanRecord struct {
+	TraceID   string    `json:"trace_id"`
+	SpanID    string    `json:"span_id"`
+	ParentID  string    `json:"parent_span_id,omitempty"`
+	Service   string    `json:"service"`
+	Operation string    `json:"operation"`
+	Start     time.Time `json:"start"`
+	Duration  int64     `json:"duration_ms"`
+	Status    string    `json:"status"`
+}
+
+func observabilityString(payload map[string]any, key string) string {
+	value, _ := payload[key].(string)
+	return value
+}
+
+func observabilityNumber(payload map[string]any, key string) int64 {
+	value, ok := payload[key].(float64)
+	if !ok || value < 0 {
+		return 0
+	}
+	return int64(value)
+}
+
+func observabilityProjection(ctx context.Context, st store.Store, tenantID string) ([]observabilityLogRecord, []observabilitySpanRecord, error) {
+	logs := make([]observabilityLogRecord, 0)
+	spans := make([]observabilitySpanRecord, 0)
+	jobs, err := st.ListJobs(ctx, tenantID, "", 200)
+	if err != nil {
+		return nil, nil, err
+	}
+	if eventStore, ok := st.(store.JobEventStore); ok {
+		for _, job := range jobs {
+			events, eventErr := eventStore.ListJobEvents(ctx, job.ID, 500)
+			if eventErr != nil {
+				return nil, nil, eventErr
+			}
+			for _, event := range events {
+				payload := map[string]any{}
+				_ = json.Unmarshal(event.Payload, &payload)
+				traceID := observabilityString(payload, "trace_id")
+				if traceID == "" {
+					traceID = "trace_" + job.ID
+				}
+				spanID := observabilityString(payload, "span_id")
+				if spanID == "" {
+					spanID = "span_" + event.ID
+				}
+				level := "info"
+				if strings.Contains(event.Type, "fail") || strings.Contains(event.Type, "error") {
+					level = "error"
+				}
+				logs = append(logs, observabilityLogRecord{ID: event.ID, Source: "worker", Level: level, Message: contextpack.RedactSecrets(event.Message), EventType: event.Type, Timestamp: event.CreatedAt, TraceID: traceID, SpanID: spanID})
+				spans = append(spans, observabilitySpanRecord{TraceID: traceID, SpanID: spanID, ParentID: observabilityString(payload, "parent_span_id"), Service: "worker", Operation: event.Type, Start: event.CreatedAt, Duration: observabilityNumber(payload, "duration_ms"), Status: level})
+			}
+		}
+	}
+	sessions, err := st.ListSessionsForTenant(ctx, tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
+		events, eventErr := st.GetEvents(ctx, session.ID)
+		if eventErr != nil {
+			return nil, nil, eventErr
+		}
+		for _, event := range events {
+			if !strings.HasPrefix(event.EventType, "security.") {
+				continue
+			}
+			traceID := "trace_" + session.ID
+			spanID := fmt.Sprintf("span_session_%d", event.ID)
+			reason := observabilityString(event.Payload, "reason")
+			level := "info"
+			if event.EventType == "security.blocked" {
+				level = "warn"
+			}
+			logs = append(logs, observabilityLogRecord{ID: fmt.Sprintf("session_%d", event.ID), Source: "security-gate", Level: level, Message: contextpack.RedactSecrets(reason), EventType: event.EventType, Timestamp: event.Timestamp, TraceID: traceID, SpanID: spanID, Payload: map[string]any{"risk_score": event.Payload["risk_score"], "allowed": event.Payload["allowed"]}})
+			spans = append(spans, observabilitySpanRecord{TraceID: traceID, SpanID: spanID, Service: "security-gate", Operation: event.EventType, Start: event.Timestamp, Status: level})
+		}
+	}
+	sort.Slice(logs, func(i, j int) bool { return logs[i].Timestamp.After(logs[j].Timestamp) })
+	sort.Slice(spans, func(i, j int) bool { return spans[i].Start.Before(spans[j].Start) })
+	if len(logs) > 500 {
+		logs = logs[:500]
+	}
+	if len(spans) > 500 {
+		spans = spans[:500]
+	}
+	return logs, spans, nil
 }
 
 func APIHandler(st store.Store) http.Handler { return APIHandlerWithOrchestrator(st, nil) }
@@ -967,6 +1075,47 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+		if path == "/observability/logs" || path == "/observability/traces" || path == "/observability/stream" {
+			logs, spans, e := observabilityProjection(ctx, st, who.Tenant)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if path == "/observability/logs" {
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "logs": logs})
+				return
+			}
+			if path == "/observability/traces" {
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "spans": spans})
+				return
+			}
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				logs, spans, projectionErr := observabilityProjection(r.Context(), st, who.Tenant)
+				if projectionErr != nil {
+					return
+				}
+				payload, marshalErr := json.Marshal(map[string]any{"logs": logs, "spans": spans})
+				if marshalErr == nil {
+					_, _ = fmt.Fprintf(w, "event: observability\\ndata: %s\\n\\n", payload)
+				}
+				flusher.Flush()
+				select {
+				case <-r.Context().Done():
+					return
+				case <-ticker.C:
+				}
+			}
 		}
 		if strings.HasPrefix(path, "/jobs/") && strings.HasSuffix(path, "/events/stream") {
 			id := strings.TrimSuffix(strings.TrimPrefix(path, "/jobs/"), "/events/stream")

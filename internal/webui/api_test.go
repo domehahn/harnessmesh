@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +123,39 @@ func TestDashboardAPIIsTenantScopedAndCanSubmitJob(t *testing.T) {
 	}
 	if _, leaked := assurance.Events[0].Payload["secret"]; leaked {
 		t.Fatal("assurance events leaked an unapproved payload field")
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/observability/logs", nil)
+	r.Header.Set("X-HarnessMesh-API-Key", key)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("observability logs status=%d body=%s", w.Code, w.Body.String())
+	}
+	var observability struct {
+		Tenant string `json:"tenant"`
+		Logs   []struct {
+			TraceID string `json:"trace_id"`
+			Source  string `json:"source"`
+		} `json:"logs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &observability); err != nil {
+		t.Fatal(err)
+	}
+	securityLog := false
+	for _, log := range observability.Logs {
+		if log.TraceID != "" && log.Source == "security-gate" {
+			securityLog = true
+		}
+	}
+	if observability.Tenant != "tenant-a" || len(observability.Logs) == 0 || !securityLog {
+		t.Fatalf("unexpected observability logs: %+v", observability)
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/observability/traces", nil)
+	r.Header.Set("X-HarnessMesh-API-Key", key)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "trace_") {
+		t.Fatalf("observability traces status=%d body=%s", w.Code, w.Body.String())
 	}
 	r = httptest.NewRequest(http.MethodPost, "/api/v1/dashboard/approvals/approval-1", bytes.NewBufferString(`{"status":"approved"}`))
 	r.Header.Set("X-HarnessMesh-API-Key", key)

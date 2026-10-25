@@ -358,6 +358,14 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 		if err != nil {
 			return nil, err
 		}
+		// Resolve the root as well as the candidate. On macOS and some
+		// container runtimes /tmp may be a symlink; comparing an unresolved
+		// root with an EvalSymlinks-resolved candidate would reject a valid
+		// relative source as outside the configured root.
+		allowedRoot, err = filepath.EvalSymlinks(allowedRoot)
+		if err != nil {
+			return nil, errors.New("configured marketplace source root must exist")
+		}
 		if filepath.IsAbs(path) {
 			return nil, errors.New("source path must be relative to the configured marketplace source root")
 		}

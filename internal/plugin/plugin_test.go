@@ -113,7 +113,7 @@ func TestMarketplacePersistsLifecycleInStore(t *testing.T) {
 	}
 	defer db.Close()
 	m := NewMarketplace(root, db)
-	if _, err := m.Mutate(context.Background(), "tenant-a", "owner", "source_register", map[string]any{"id": "source-a", "path": filepath.Dir(source)}); err != nil {
+	if _, err := m.Mutate(context.Background(), "tenant-a", "owner", "source_register", map[string]any{"id": "source-a", "path": "source"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.Mutate(context.Background(), "tenant-a", "owner", "install", map[string]any{"plugin": "sample-agent", "source_id": "source-a"}); err != nil {

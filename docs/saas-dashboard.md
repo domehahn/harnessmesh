@@ -54,6 +54,14 @@ Dashboard API requests are rate limited per client; tune the limit with
 - `GET /api/v1/dashboard/health`
 - `GET /api/v1/dashboard/incident` returns the tenant-scoped incident posture,
   failed jobs, dead letters and unhealthy agent records.
+- `GET /api/v1/dashboard/observability/logs` returns a tenant-scoped, redacted
+  log projection from worker job events and security-gate decisions.
+- `GET /api/v1/dashboard/observability/traces` returns trace IDs, span IDs,
+  parent relationships, services, operations, durations and statuses derived
+  from durable events.
+- `GET /api/v1/dashboard/observability/stream` provides the same logs and spans
+  over authenticated Server-Sent Events for live monitoring. The React console
+  renders the stream as a central log table and a trace-span waterfall.
 - `GET /api/v1/dashboard/simulation` returns deterministic safety scenarios;
   `POST` evaluates an observation without invoking an external agent or model.
 - `GET /api/v1/dashboard/approvals/{id}` returns the approval decision context
