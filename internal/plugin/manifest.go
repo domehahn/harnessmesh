@@ -31,6 +31,8 @@ type Manifest struct {
 	Binary                string        `json:"binary,omitempty"`
 	Aliases               []string      `json:"aliases,omitempty"`
 	Capabilities          []string      `json:"capabilities,omitempty"`
+	Dependencies          []Dependency  `json:"dependencies,omitempty"`
+	Conflicts             []Conflict    `json:"conflicts,omitempty"`
 	Risk                  string        `json:"risk,omitempty"`
 	Enabled               bool          `json:"enabled"`
 	SHA256                string        `json:"sha256,omitempty"`
@@ -92,6 +94,11 @@ func (m Manifest) sandbox(dir string) executil.SandboxPolicy {
 }
 
 func (m Manifest) validate(dir string, opts Options) (string, bool, bool, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", false, false, fmt.Errorf("open plugin root: %w", err)
+	}
+	defer root.Close()
 	if !namePattern.MatchString(strings.TrimSpace(m.Name)) {
 		return "", false, false, fmt.Errorf("invalid plugin name %q", m.Name)
 	}
@@ -139,14 +146,14 @@ func (m Manifest) validate(dir string, opts Options) (string, bool, bool, error)
 	if filepath.IsAbs(m.Binary) || filepath.Clean(m.Binary) != m.Binary || strings.HasPrefix(m.Binary, ".."+string(filepath.Separator)) {
 		return "", false, false, fmt.Errorf("plugin %q binary must stay inside its plugin directory", m.Name)
 	}
-	binaryPath := filepath.Join(dir, m.Binary)
-	info, err := os.Stat(binaryPath)
+	info, err := root.Stat(m.Binary)
 	if err != nil {
 		return "", false, false, fmt.Errorf("plugin %q binary: %w", m.Name, err)
 	}
 	if info.IsDir() || info.Mode().Perm()&0111 == 0 {
 		return "", false, false, fmt.Errorf("plugin %q binary is not executable", m.Name)
 	}
+	binaryPath := filepath.Join(dir, m.Binary)
 	if m.Sandbox.TimeoutSeconds <= 0 {
 		m.Sandbox.TimeoutSeconds = 120
 	}
@@ -159,7 +166,7 @@ func (m Manifest) validate(dir string, opts Options) (string, bool, bool, error)
 	if err := m.sandbox(dir).Validate(dir, binaryPath); err != nil {
 		return "", false, false, err
 	}
-	digest, err := fileDigest(binaryPath)
+	digest, err := fileDigest(root, m.Binary)
 	if err != nil {
 		return "", false, false, err
 	}
@@ -227,8 +234,8 @@ func compareVersion(a, b string) int {
 	return 0
 }
 
-func fileDigest(path string) (string, error) {
-	data, err := os.ReadFile(path)
+func fileDigest(root *os.Root, path string) (string, error) {
+	data, err := root.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read plugin binary: %w", err)
 	}
@@ -236,8 +243,8 @@ func fileDigest(path string) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func readManifest(path string) (Manifest, error) {
-	data, err := os.ReadFile(path)
+func readManifest(root *os.Root, path string) (Manifest, error) {
+	data, err := root.ReadFile(path)
 	if err != nil {
 		return Manifest{}, err
 	}

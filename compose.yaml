@@ -1,4 +1,38 @@
 services:
+  # Local S3-compatible artifact storage for the managed marketplace. Production
+  # uses S3/R2/MinIO behind the configured CDN and the same artifact contract.
+  harnessmesh-minio:
+    profiles: ["marketplace"]
+    image: minio/minio:RELEASE.2025-02-18T16-25-55Z
+    environment:
+      MINIO_ROOT_USER: ${HARNESSMESH_OBJECTSTORE_ACCESS_KEY:-harnessmesh}
+      MINIO_ROOT_PASSWORD: ${HARNESSMESH_OBJECTSTORE_SECRET_KEY:-harnessmesh-local-secret}
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "127.0.0.1:${HARNESSMESH_OBJECTSTORE_PORT:-9000}:9000"
+      - "127.0.0.1:${HARNESSMESH_OBJECTSTORE_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - harnessmesh-objectstore-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  harnessmesh-marketplace-bucket:
+    profiles: ["marketplace"]
+    image: minio/mc:RELEASE.2025-02-15T10-36-16Z
+    depends_on:
+      harnessmesh-minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${HARNESSMESH_OBJECTSTORE_ACCESS_KEY:-harnessmesh}
+      MINIO_ROOT_PASSWORD: ${HARNESSMESH_OBJECTSTORE_SECRET_KEY:-harnessmesh-local-secret}
+      HARNESSMESH_MARKETPLACE_BUCKET: ${HARNESSMESH_MARKETPLACE_BUCKET:-harnessmesh-marketplace}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mc alias set local http://harnessmesh-minio:9000 \"$${MINIO_ROOT_USER}\" \"$${MINIO_ROOT_PASSWORD}\" && mc mb --ignore-existing local/\"$${HARNESSMESH_MARKETPLACE_BUCKET}\""]
+    restart: "no"
+
   # Fresh Docker volumes are created as root-owned. Initialize the shared
   # SQLite volume before the unprivileged MCP/bridge services start.
   harnessmesh-data-init:
@@ -322,6 +356,31 @@ services:
     entrypoint:
       - /usr/local/bin/harnessmesh-restore
 
+  # Local OTLP receiver for logs and traces. The debug exporter writes the
+  # redacted records to collector logs; production can replace this config
+  # with Loki, Jaeger or another OpenTelemetry exporter.
+  harnessmesh-otel-collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.139.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "127.0.0.1:${HARNESSMESH_OTEL_GRPC_PORT:-4317}:4317"
+      - "127.0.0.1:${HARNESSMESH_OTEL_HTTP_PORT:-4318}:4318"
+      - "127.0.0.1:${HARNESSMESH_OTEL_HEALTH_PORT:-13133}:13133"
+    volumes:
+      - ${HARNESSMESH_OTEL_CONFIG:-./deploy/observability/otel-collector.yaml}:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      HARNESSMESH_OTEL_REMOTE_ENDPOINT: ${HARNESSMESH_OTEL_REMOTE_ENDPOINT:-}
+      HARNESSMESH_OTEL_REMOTE_TOKEN: ${HARNESSMESH_OTEL_REMOTE_TOKEN:-}
+    healthcheck:
+      # The minimal collector image has no shell or wget. The collector's
+      # health endpoint remains available on 13133 for external probes; this
+      # image-level check verifies that the shipped binary is executable.
+      test: ["CMD", "/otelcol-contrib", "--version"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
 volumes:
   # Persistent collaboration-state database (tasks, findings, evidence,
   # reviews, decisions) so it survives container restarts, per HarnessMesh's
@@ -329,3 +388,4 @@ volumes:
   harnessmesh-data:
   harnessmesh-vault-data:
   harnessmesh-keycloak-data:
+  harnessmesh-objectstore-data:

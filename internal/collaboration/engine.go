@@ -8,13 +8,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/agent"
+	"github.com/domehahn/harnessmesh/internal/assurance"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/economy"
@@ -22,6 +25,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/modelrouting"
 	"github.com/domehahn/harnessmesh/internal/plugin"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/securitygate"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/tenant"
 )
@@ -33,6 +37,11 @@ type EngineConfig struct {
 	Projector            *contextpack.Projector
 	Harnesses            map[string]agent.Harness
 	ModelRoutingBackends map[string]modelrouting.ModelRoutingBackend
+	Marketplace          MarketplaceActivation
+}
+
+type MarketplaceActivation interface {
+	IsActive(context.Context, string, string, string) (bool, bool, error)
 }
 
 type Engine struct {
@@ -42,12 +51,14 @@ type Engine struct {
 	projector      *contextpack.Projector
 	harnesses      map[string]agent.Harness
 	modelBackends  map[string]modelrouting.ModelRoutingBackend
+	marketplace    MarketplaceActivation
 	economyCtrl    *economy.Controller
 	spaceService   *SpaceService
 	eventBus       *EventBus
 	activationCtrl *ActivationController
 	mu             sync.Mutex
 	budgetMu       sync.Mutex
+	securityMu     sync.Mutex
 	inflightMu     sync.Mutex
 	inflight       map[string]chan struct{}
 
@@ -58,12 +69,15 @@ type Engine struct {
 	lastHash     map[string]string
 	repeatCounts map[string]int
 
-	rrIndexMu   sync.Mutex
-	rrIndices   map[string]int
-	retryCancel context.CancelFunc
-	retryWG     sync.WaitGroup
-	operations  *operationState
-	meshCommit  *MeshCommitCoordinator
+	rrIndexMu            sync.Mutex
+	rrIndices            map[string]int
+	retryCancel          context.CancelFunc
+	retryWG              sync.WaitGroup
+	operations           *operationState
+	meshCommit           *MeshCommitCoordinator
+	securityViolations   map[string]int
+	quarantined          map[string]time.Time
+	observedCapabilities map[string]int
 }
 
 func NewEngine(ec EngineConfig) *Engine {
@@ -88,23 +102,27 @@ func NewEngine(ec EngineConfig) *Engine {
 	})
 
 	eng := &Engine{
-		cfg:            ec.Config,
-		store:          ec.Store,
-		repo:           ec.Repo,
-		projector:      ec.Projector,
-		harnesses:      ec.Harnesses,
-		modelBackends:  backends,
-		economyCtrl:    economyCtrl,
-		spaceService:   spaceSvc,
-		eventBus:       eventBus,
-		activationCtrl: actCtrl,
-		peerCalls:      make(map[string]int),
-		peerRounds:     make(map[string]int),
-		peerTurns:      make(map[string]int),
-		lastHash:       make(map[string]string),
-		repeatCounts:   make(map[string]int),
-		rrIndices:      make(map[string]int),
-		inflight:       make(map[string]chan struct{}),
+		cfg:                  ec.Config,
+		store:                ec.Store,
+		repo:                 ec.Repo,
+		projector:            ec.Projector,
+		harnesses:            ec.Harnesses,
+		modelBackends:        backends,
+		marketplace:          ec.Marketplace,
+		economyCtrl:          economyCtrl,
+		spaceService:         spaceSvc,
+		eventBus:             eventBus,
+		activationCtrl:       actCtrl,
+		peerCalls:            make(map[string]int),
+		peerRounds:           make(map[string]int),
+		peerTurns:            make(map[string]int),
+		lastHash:             make(map[string]string),
+		repeatCounts:         make(map[string]int),
+		rrIndices:            make(map[string]int),
+		inflight:             make(map[string]chan struct{}),
+		securityViolations:   make(map[string]int),
+		quarantined:          make(map[string]time.Time),
+		observedCapabilities: make(map[string]int),
 	}
 	eng.operations = newOperationState(ec.Config, ec.Store)
 	var arch *knowledge.Archive
@@ -127,8 +145,92 @@ func NewEngine(ec EngineConfig) *Engine {
 	return eng
 }
 
+func (e *Engine) requireMarketplaceActivation(ctx context.Context, session *store.Session, target string) error {
+	if e.marketplace == nil || session == nil || e.cfg == nil {
+		return nil
+	}
+	cfg, ok := e.cfg.Agents[target]
+	if !ok || !cfg.Plugin {
+		return nil
+	}
+	adapter := cfg.Adapter
+	if adapter == "" {
+		adapter = cfg.Kind
+	}
+	project := ""
+	if session.Metadata != nil {
+		if value, ok := session.Metadata["project_id"].(string); ok {
+			project = value
+		}
+	}
+	known, active, err := e.marketplace.IsActive(ctx, session.TenantID, project, adapter)
+	if err != nil {
+		return fmt.Errorf("marketplace activation lookup: %w", err)
+	}
+	if known && !active {
+		return &protocol.PeerUnavailableError{Peer: target, Reason: "plugin is not approved and activated for this tenant"}
+	}
+	return nil
+}
+
 func (e *Engine) Store() store.Store {
 	return e.store
+}
+
+func (e *Engine) securityCheck(ctx context.Context, sessionID, source, content string) (string, error) {
+	if !securitygate.CheckEnabled() {
+		return content, nil
+	}
+	if source != "" {
+		e.securityMu.Lock()
+		if until := e.quarantined[source]; !until.IsZero() && time.Now().UTC().Before(until) {
+			e.securityMu.Unlock()
+			return "", fmt.Errorf("agent %q is quarantined until %s", source, until.UTC().Format(time.RFC3339))
+		}
+		e.securityMu.Unlock()
+	}
+	sanitized, decision, err := securitygate.CheckContext(ctx, content, source, "", "", "agent.message", "")
+	digest, _ := assurance.Fingerprint(content)
+	evidence := assurance.Evidence{SessionID: sessionID, Agent: source, Operation: "agent.message", Events: []assurance.Observation{{ID: fmt.Sprintf("security-%d", time.Now().UTC().UnixNano()), Agent: source, Operation: "agent.message", Digest: digest, Allowed: err == nil, Reason: decision.Reason, At: time.Now().UTC()}}}
+	if signed, signErr := assurance.SignEvidenceFromEnvironment(evidence); signErr == nil {
+		evidence = signed
+	} else if os.Getenv("HARNESSMESH_REQUIRE_SIGNED_EVIDENCE") == "1" {
+		return "", fmt.Errorf("signed assurance evidence required: %w", signErr)
+	}
+	if e.store != nil {
+		_ = e.store.EmitEvent(ctx, sessionID, "security.decision", map[string]any{"source": source, "allowed": err == nil, "risk_score": decision.RiskScore, "findings": decision.Findings, "evidence": evidence})
+	}
+	if e.store != nil && decision.Redacted {
+		_ = e.store.EmitEvent(ctx, sessionID, "security.redaction", map[string]any{"source": source, "reason": "sensitive content redacted"})
+	}
+	if err != nil {
+		if source != "" {
+			e.securityMu.Lock()
+			e.securityViolations[source]++
+			limit := 3
+			if configured, parseErr := strconv.Atoi(os.Getenv("HARNESSMESH_SECURITY_QUARANTINE_THRESHOLD")); parseErr == nil && configured > 0 {
+				limit = configured
+			}
+			if e.securityViolations[source] >= limit {
+				duration := 15 * time.Minute
+				if configured, parseErr := time.ParseDuration(os.Getenv("HARNESSMESH_SECURITY_QUARANTINE_DURATION")); parseErr == nil && configured > 0 {
+					duration = configured
+				}
+				e.quarantined[source] = time.Now().UTC().Add(duration)
+			}
+			e.securityMu.Unlock()
+		}
+		if e.store != nil {
+			_ = e.store.EmitEvent(ctx, sessionID, "security.blocked", map[string]any{"source": source, "reason": decision.Reason, "risk_score": decision.RiskScore, "findings": decision.Findings})
+		}
+		return "", fmt.Errorf("%w: %s", err, decision.Reason)
+	}
+	if source != "" {
+		e.securityMu.Lock()
+		e.observedCapabilities["agent:"+source]++
+		e.securityMu.Unlock()
+	}
+	return sanitized, nil
 }
 
 type knowledgeStore interface {
@@ -224,6 +326,55 @@ func (e *Engine) ConfiguredMCPServers() []map[string]any {
 		out = append(out, map[string]any{"name": name, "type": server.Type, "enabled": server.Enabled, "allowed_tools": server.AllowedTools, "capabilities": server.Capabilities, "requires_approval": server.RequiresApproval, "network_mode": server.NetworkMode})
 	}
 	return out
+}
+
+// AssuranceGraph is a non-secret capability projection for monitoring and
+// policy review. It contains declared edges only; runtime decisions are
+// emitted as evidence events and must not be inferred as authorization.
+func (e *Engine) AssuranceGraph() map[string]any {
+	graph := assurance.Graph{Nodes: []assurance.Capability{}, Edges: map[string][]string{}}
+	if e == nil || e.cfg == nil {
+		return map[string]any{"nodes": graph.Nodes, "edges": graph.Edges}
+	}
+	for name, cfg := range e.cfg.Agents {
+		kind := cfg.Adapter
+		if kind == "" {
+			kind = cfg.Kind
+		}
+		digest, _ := assurance.Fingerprint(map[string]any{"agent": name, "adapter": kind, "plugin": cfg.Plugin})
+		id := "agent:" + name
+		graph.Nodes = append(graph.Nodes, assurance.Capability{ID: id, Kind: "agent", Subject: name, DeclaredBy: "harnessmesh.json", Digest: digest, Allowed: true})
+		if cfg.Plugin {
+			pluginID := "marketplace:" + kind
+			pluginDigest, _ := assurance.Fingerprint(map[string]any{"plugin": kind})
+			graph.Nodes = append(graph.Nodes, assurance.Capability{ID: pluginID, Kind: "plugin", Subject: kind, DeclaredBy: "marketplace", Digest: pluginDigest, Allowed: true})
+			graph.Edges[id] = append(graph.Edges[id], pluginID)
+		}
+	}
+	for name, server := range e.cfg.MCP.Servers {
+		digest, _ := assurance.Fingerprint(map[string]any{"server": name, "type": server.Type, "tools": server.AllowedTools, "capabilities": server.Capabilities})
+		id := "mcp:" + name
+		graph.Nodes = append(graph.Nodes, assurance.Capability{ID: id, Kind: "mcp_server", Subject: name, DeclaredBy: "harnessmesh.json", Digest: digest, Allowed: server.Enabled})
+		for agentID := range graph.Edges {
+			if strings.HasPrefix(agentID, "agent:") {
+				graph.Edges[agentID] = append(graph.Edges[agentID], id)
+			}
+		}
+	}
+	assurance.SortCapabilities(&graph)
+	e.securityMu.Lock()
+	quarantined := map[string]time.Time{}
+	observed := map[string]int{}
+	for agent, until := range e.quarantined {
+		if time.Now().UTC().Before(until) {
+			quarantined[agent] = until
+		}
+	}
+	for capability, count := range e.observedCapabilities {
+		observed[capability] = count
+	}
+	e.securityMu.Unlock()
+	return map[string]any{"nodes": graph.Nodes, "edges": graph.Edges, "observed_invocations": observed, "quarantined": quarantined, "generated_at": time.Now().UTC()}
 }
 
 func (e *Engine) ConfiguredPlugins() []map[string]any {
@@ -1147,6 +1298,10 @@ func (e *Engine) Ask(ctx context.Context, sessionID, caller string, req protocol
 			Reason: fmt.Sprintf("participant %q is external and cannot be invoked directly by HarnessMesh; conversations must be initiated by the external participant", targetPeer),
 		}
 	}
+	if err := e.requireMarketplaceActivation(ctx, sess, targetPeer); err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
 
 	peerHarness, ok := e.harnesses[targetPeer]
 	if !ok {
@@ -1167,6 +1322,11 @@ func (e *Engine) Ask(ctx context.Context, sessionID, caller string, req protocol
 	e.mu.Unlock()
 
 	// Context projection
+	if sanitized, securityErr := e.securityCheck(ctx, sessionID, caller, req.Question); securityErr != nil {
+		return nil, securityErr
+	} else {
+		req.Question = sanitized
+	}
 	projReq := contextpack.ProjectRequest{
 		Task:             sess.Task,
 		Question:         req.Question,
@@ -1294,6 +1454,10 @@ func (e *Engine) executeSingleReview(ctx context.Context, sessionID, caller, tar
 			Reason: fmt.Sprintf("participant %q is external and cannot be invoked directly by HarnessMesh; conversations must be initiated by the external participant", targetPeer),
 		}
 	}
+	if err := e.requireMarketplaceActivation(ctx, sess, targetPeer); err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
 	peerHarness, ok := e.harnesses[targetPeer]
 	if !ok {
 		e.mu.Unlock()
@@ -1319,6 +1483,11 @@ func (e *Engine) executeSingleReview(ctx context.Context, sessionID, caller, tar
 	taskText := sess.Task
 	if e.projector != nil {
 		taskText = e.projector.RedactSecrets(taskText)
+	}
+	if checked, securityErr := e.securityCheck(ctx, sessionID, caller, taskText); securityErr != nil {
+		return nil, securityErr
+	} else {
+		taskText = checked
 	}
 	prompt := formatReviewPrompt(taskText, roundNum, snap, req.Focus)
 
@@ -2077,6 +2246,10 @@ func (e *Engine) Converse(ctx context.Context, sessionID, caller string, req pro
 			Reason: fmt.Sprintf("participant %q is external and cannot be invoked directly by HarnessMesh; conversations must be initiated by the external participant", targetPeer),
 		}
 	}
+	if err := e.requireMarketplaceActivation(ctx, sess, targetPeer); err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
 
 	peerHarness, ok := e.harnesses[targetPeer]
 	if !ok {
@@ -2095,6 +2268,11 @@ func (e *Engine) Converse(ctx context.Context, sessionID, caller string, req pro
 	e.mu.Unlock()
 
 	// Context projection
+	if sanitized, securityErr := e.securityCheck(ctx, sessionID, caller, req.Message); securityErr != nil {
+		return nil, securityErr
+	} else {
+		req.Message = sanitized
+	}
 	projReq := contextpack.ProjectRequest{
 		Task:             sess.Task,
 		Question:         req.Message,
@@ -2668,6 +2846,11 @@ func (e *Engine) Publish(ctx context.Context, req *protocol.PublishRequest) (*pr
 		} else {
 			payloadBytes = []byte("{}")
 		}
+	}
+	if sanitized, securityErr := e.securityCheck(ctx, "", req.From, string(payloadBytes)); securityErr != nil {
+		return nil, securityErr
+	} else {
+		payloadBytes = []byte(sanitized)
 	}
 
 	env := &protocol.PeerEnvelope{

@@ -27,9 +27,9 @@ jobs:
             const names = files.map(file => file.filename);
             const labels = new Set();
             if (changed >= 800 || files.length >= 30) labels.add('large-change');
-            if (names.some(name => /^(internal\\/(auth|executil|secrets|mcp)|SECURITY\\.md|\.github\\/workflows)/.test(name))) labels.add('security');
-            if (names.some(name => /^(docs\\/api|internal\\/protocol|internal\\/mcp|docs\\/api\\/openapi\\.json)/.test(name))) labels.add('protocol');
-            if (names.some(name => /(^|\\/)(go\\.mod|go\\.sum|package-lock\\.json|package\\.json)$/.test(name))) labels.add('dependencies');
+            if (names.some(name => /^(internal\/(auth|executil|secrets|mcp)|SECURITY\.md|\.github\/workflows)/.test(name))) labels.add('security');
+            if (names.some(name => /^(docs\/api|internal\/protocol|internal\/mcp|docs\/api\/openapi\.json)/.test(name))) labels.add('protocol');
+            if (names.some(name => /(^|\/)(go\.mod|go\.sum|package-lock\.json|package\.json)$/.test(name))) labels.add('dependencies');
             if (labels.size) {
               await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, labels: [...labels] });
             }

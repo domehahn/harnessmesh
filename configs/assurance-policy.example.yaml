@@ -1,0 +1,11 @@
+# HarnessMesh assurance policy. Keep this file reviewed and versioned.
+deny:
+  - agent: external
+    path: "**/.env"
+    reason: "External agents cannot access environment files"
+  - tool: shell
+    network: unrestricted
+    reason: "Shell tools require an explicit bounded network policy"
+require_approval:
+  - operation: production_deploy
+    reason: "Production changes require human approval"

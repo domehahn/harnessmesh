@@ -11,7 +11,7 @@ environment produces a dated artifact.
 | Agent command/path isolation | Config enforcement and adapter/exec tests | Implemented | Adversarial repository run in target image |
 | Agent network isolation | Bubblewrap path, fail-closed behavior, image dependency, executable runtime gate, target-runtime qualification checklist | Implemented, runtime pending | Dated namespace + outbound-connectivity evidence from the target runtime |
 | Identity/authentication | Strong tokens, separate admin token, RFC 7662 introspection, MCP/Bridge scope gates, live token-file reload, documented rotation drill | Implemented | IdP lifecycle, role mapping, dated rotation/revocation result |
-| Secrets | Token files with live reload, encrypted Knowledge key file, tenant AES-GCM backend, Vault KV-v2 backend, redaction tests and rotation documentation | Implemented | Dated production Vault/KMS rotation artifact |
+| Secrets | Token files with live reload, encrypted Knowledge key file, tenant AES-GCM backend, Vault KV-v2 backend with TLS/CA enforcement, redaction tests and rotation documentation | Implemented | Dated production Vault secret rotation artifact (cloud KMS envelope encryption targeted for enterprise roadmap) |
 | Recovery | Atomic backup, checksum/integrity verification, restore smoke, configurable RTO threshold | Implemented | Dated staging restore with production-sized data and measured RPO |
 | Readiness gate | `make production-readiness` with all deterministic sub-gates green | Implemented | Linux CI artifact retained by release pipeline |
 | Operations | SLOs, alerts/runbook, metrics and incident procedures documented | Implemented | Staging alert delivery and incident exercise |

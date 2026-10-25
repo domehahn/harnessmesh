@@ -15,6 +15,32 @@ External agent adapters can be installed without changing Go source code. See
 the manifest, newline-delimited stdio protocol, hash/signature policy,
 sandbox limits and activation configuration.
 
+The managed tenant marketplace lifecycle is documented in
+[`docs/marketplace.md`](docs/marketplace.md). It supports local source
+registration, manifest-gated install/update/rollback, explicit approval,
+tenant activation and audited removal; arbitrary remote executable downloads
+remain disabled by design.
+
+For AI-skill and prompt-injection security, configure the optional
+[`skil`](https://github.com/domehahn/skil) binary with
+`HARNESSMESH_MARKETPLACE_SKIL_BIN`. Marketplace admission then runs
+`skil scan --static-only` before promotion. Findings are fail-closed when
+`HARNESSMESH_MARKETPLACE_REQUIRE_SCANS=1`; secrets and MCP/tool permissions
+are still enforced by HarnessMesh at runtime and are never granted by a scan.
+
+Create and verify the reviewed built-in MCP tool lock with:
+
+```bash
+harnessmesh mcp tools-lock generate --file .skil/mcp-tools.lock.json
+harnessmesh mcp tools-lock check --file .skil/mcp-tools.lock.json
+```
+
+For external gateway tools, pass the reviewed discovery export:
+
+```bash
+harnessmesh mcp tools-lock generate --tools-file gateway-tools.json --file .skil/mcp-tools.lock.json
+```
+
 It also provides a separate, bounded **model-provider plane** that lets the official Codex client talk to HarnessMesh over the Responses API wire and route inference to an explicitly configured backend.
 
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.
@@ -51,7 +77,9 @@ fallback; the React console is the recommended production UI.
 
 ### Walkthrough: CLI and React console
 
-<video controls preload="metadata" width="960" src="artifacts/videos/harnessmesh-walkthrough.webm"></video>
+https://github.com/user-attachments/assets/5c9cbf9c-ea58-4608-b2e0-09a34d990356
+
+CLI-Video im macOS-Terminal-Layout: Vorbereitung mit `.env`, `make local-up`, Compose-Status, Tenant/API-Key, Agent- und MCP-Prüfung sowie Session-Start. Die Kommandos werden Zeichen für Zeichen eingegeben und die Ausgaben erscheinen live. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [CLI-Video direkt öffnen](https://github.com/user-attachments/assets/5c9cbf9c-ea58-4608-b2e0-09a34d990356).
 
 The walkthrough demonstrates local CLI startup, agent discovery, tenant
 connection, monitoring, approvals, the visual Orchestrator and Simulation Lab.
@@ -102,6 +130,15 @@ start the stack again. The Vault profile is development-only; production
 uses an externally managed Vault and Kubernetes secrets.
 
 The central operational entry points are `make local-up`, `make local-down`,
+`make observability-up` and `make observability-down`. The observability
+profile starts a local OpenTelemetry Collector on OTLP HTTP `4318`, OTLP gRPC
+`4317` and health port `13133`; configure `HARNESSMESH_OTEL_EXPORT_URL` to
+export the redacted dashboard projection.
+For a remote OTLP backend, set `HARNESSMESH_OTEL_REMOTE_ENDPOINT` and
+`HARNESSMESH_OTEL_REMOTE_TOKEN`, then run `make observability-remote-up`.
+This forwards logs and traces to an OTLP/HTTP-compatible gateway, including
+Jaeger/Tempo or a managed OpenTelemetry service. Keep the token in a secret
+manager; do not commit it.
 `make k8s-validate`, `make k8s-apply` and `make k3d-up`. Kubernetes manifests
 and the required out-of-band secret setup are documented in
 [`deploy/k8s/README.md`](deploy/k8s/README.md).
@@ -146,7 +183,9 @@ Diesen Key in der Console unter `http://127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-30
 
 Danach sind die lokalen Beobachtungspunkte:
 
-<video controls preload="metadata" width="960" src="artifacts/videos/harnessmesh-walkthrough.webm"></video>
+https://github.com/user-attachments/assets/49cab697-6e24-4caf-bc67-3fa23a87fa8d
+
+UI-Video: `hm_live_…`-API-Key eingeben und anschließend Monitoring, Agent-/MCP-Status, Security-Evidence, Optimization, Usage, persistente Job-Logs/Timeline, Trace-Event, Approvals, Orchestrator und Simulation bedienen. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [UI-Video direkt öffnen](https://github.com/user-attachments/assets/49cab697-6e24-4caf-bc67-3fa23a87fa8d).
 
 Die Aufnahme zeigt denselben Ablauf kompakt in CLI und React-Konsole. Für eine
 eigene Aufnahme mit aktuellen Demo-Daten:

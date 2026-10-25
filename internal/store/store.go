@@ -413,6 +413,15 @@ type SecretStore interface {
 	DeleteSecret(context.Context, string, string) error
 }
 
+// MarketplaceStore persists the marketplace control-plane state independently
+// of the collaboration store contract. This keeps older Store adapters
+// source-compatible while allowing SQLite and PostgreSQL deployments to share
+// lifecycle state across restarts and replicas.
+type MarketplaceStore interface {
+	LoadMarketplaceState(context.Context) ([]byte, error)
+	SaveMarketplaceState(context.Context, []byte, time.Time) error
+}
+
 type ExperimentRecord struct {
 	ID            string
 	Tenant        string
@@ -1348,6 +1357,16 @@ func (s *SQLiteStore) migrate() error {
 					UNIQUE(tenant_id, name)
 				);
 				CREATE INDEX IF NOT EXISTS idx_tenant_secrets_tenant ON tenant_secrets(tenant_id, name);
+			`,
+		},
+		{
+			version: 22,
+			sql: `
+				CREATE TABLE IF NOT EXISTS marketplace_state (
+					id INTEGER PRIMARY KEY CHECK (id = 1),
+					state_json TEXT NOT NULL,
+					updated_at TIMESTAMP NOT NULL
+				);
 			`,
 		},
 	}

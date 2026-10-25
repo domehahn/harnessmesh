@@ -4,19 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/auth"
+	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/governance"
 	"github.com/domehahn/harnessmesh/internal/identity"
+	"github.com/domehahn/harnessmesh/internal/observability"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/replay"
 	"github.com/domehahn/harnessmesh/internal/runbundle"
 	"github.com/domehahn/harnessmesh/internal/secrets"
 	"github.com/domehahn/harnessmesh/internal/simulation"
@@ -48,6 +53,26 @@ type MarketplaceCatalog interface {
 	ConfiguredPlugins() []map[string]any
 }
 
+type AssuranceCatalog interface {
+	AssuranceGraph() map[string]any
+}
+
+// MarketplaceManager is the audited lifecycle boundary for marketplace
+// actions. The dashboard never installs files directly and never accepts an
+// unauthenticated tenant identifier from the request body.
+type MarketplaceManager interface {
+	Snapshot(context.Context, string, string) (map[string]any, error)
+	Mutate(context.Context, string, string, string, map[string]any) (map[string]any, error)
+}
+
+type MarketplaceRegistry interface {
+	RegistrySnapshot(context.Context) (map[string]any, error)
+}
+
+type MarketplaceArtifactReader interface {
+	GetArtifact(context.Context, string) (io.ReadCloser, error)
+}
+
 func orchestratorAgents(orchestrator Orchestrator) []map[string]any {
 	if orchestrator == nil {
 		return []map[string]any{}
@@ -69,6 +94,113 @@ func dashboardPage(r *http.Request) (int, int) {
 	return page, pageSize
 }
 
+type observabilityLogRecord struct {
+	ID        string         `json:"id"`
+	Source    string         `json:"source"`
+	Level     string         `json:"level"`
+	Message   string         `json:"message,omitempty"`
+	EventType string         `json:"event_type"`
+	Timestamp time.Time      `json:"timestamp"`
+	TraceID   string         `json:"trace_id"`
+	SpanID    string         `json:"span_id"`
+	Payload   map[string]any `json:"payload,omitempty"`
+}
+
+type observabilitySpanRecord struct {
+	TraceID   string    `json:"trace_id"`
+	SpanID    string    `json:"span_id"`
+	ParentID  string    `json:"parent_span_id,omitempty"`
+	Service   string    `json:"service"`
+	Operation string    `json:"operation"`
+	Start     time.Time `json:"start"`
+	Duration  int64     `json:"duration_ms"`
+	Status    string    `json:"status"`
+}
+
+func observabilityString(payload map[string]any, key string) string {
+	value, _ := payload[key].(string)
+	return value
+}
+
+func observabilityNumber(payload map[string]any, key string) int64 {
+	value, ok := payload[key].(float64)
+	if !ok || value < 0 {
+		return 0
+	}
+	return int64(value)
+}
+
+func observabilityProjection(ctx context.Context, st store.Store, tenantID string) ([]observabilityLogRecord, []observabilitySpanRecord, error) {
+	logs := make([]observabilityLogRecord, 0)
+	spans := make([]observabilitySpanRecord, 0)
+	jobs, err := st.ListJobs(ctx, tenantID, "", 200)
+	if err != nil {
+		return nil, nil, err
+	}
+	if eventStore, ok := st.(store.JobEventStore); ok {
+		for _, job := range jobs {
+			events, eventErr := eventStore.ListJobEvents(ctx, job.ID, 500)
+			if eventErr != nil {
+				return nil, nil, eventErr
+			}
+			for _, event := range events {
+				payload := map[string]any{}
+				_ = json.Unmarshal(event.Payload, &payload)
+				traceID := observabilityString(payload, "trace_id")
+				if traceID == "" {
+					traceID = "trace_" + job.ID
+				}
+				spanID := observabilityString(payload, "span_id")
+				if spanID == "" {
+					spanID = "span_" + event.ID
+				}
+				level := "info"
+				if strings.Contains(event.Type, "fail") || strings.Contains(event.Type, "error") {
+					level = "error"
+				}
+				logs = append(logs, observabilityLogRecord{ID: event.ID, Source: "worker", Level: level, Message: contextpack.RedactSecrets(event.Message), EventType: event.Type, Timestamp: event.CreatedAt, TraceID: traceID, SpanID: spanID})
+				spans = append(spans, observabilitySpanRecord{TraceID: traceID, SpanID: spanID, ParentID: observabilityString(payload, "parent_span_id"), Service: "worker", Operation: event.Type, Start: event.CreatedAt, Duration: observabilityNumber(payload, "duration_ms"), Status: level})
+			}
+		}
+	}
+	sessions, err := st.ListSessionsForTenant(ctx, tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
+		events, eventErr := st.GetEvents(ctx, session.ID)
+		if eventErr != nil {
+			return nil, nil, eventErr
+		}
+		for _, event := range events {
+			if !strings.HasPrefix(event.EventType, "security.") {
+				continue
+			}
+			traceID := "trace_" + session.ID
+			spanID := fmt.Sprintf("span_session_%d", event.ID)
+			reason := observabilityString(event.Payload, "reason")
+			level := "info"
+			if event.EventType == "security.blocked" {
+				level = "warn"
+			}
+			logs = append(logs, observabilityLogRecord{ID: fmt.Sprintf("session_%d", event.ID), Source: "security-gate", Level: level, Message: contextpack.RedactSecrets(reason), EventType: event.EventType, Timestamp: event.Timestamp, TraceID: traceID, SpanID: spanID, Payload: map[string]any{"risk_score": event.Payload["risk_score"], "allowed": event.Payload["allowed"]}})
+			spans = append(spans, observabilitySpanRecord{TraceID: traceID, SpanID: spanID, Service: "security-gate", Operation: event.EventType, Start: event.Timestamp, Status: level})
+		}
+	}
+	sort.Slice(logs, func(i, j int) bool { return logs[i].Timestamp.After(logs[j].Timestamp) })
+	sort.Slice(spans, func(i, j int) bool { return spans[i].Start.Before(spans[j].Start) })
+	if len(logs) > 500 {
+		logs = logs[:500]
+	}
+	if len(spans) > 500 {
+		spans = spans[:500]
+	}
+	return logs, spans, nil
+}
+
 func APIHandler(st store.Store) http.Handler { return APIHandlerWithOrchestrator(st, nil) }
 
 func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integrations ...any) http.Handler {
@@ -78,12 +210,20 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 	}
 	var secretManager secrets.Manager
 	var marketplace MarketplaceCatalog
+	var marketplaceManager MarketplaceManager
+	var assuranceCatalog AssuranceCatalog
 	for _, integration := range integrations {
 		if configured, ok := integration.(secrets.Manager); ok {
 			secretManager = configured
 		}
 		if configured, ok := integration.(MarketplaceCatalog); ok {
 			marketplace = configured
+		}
+		if configured, ok := integration.(MarketplaceManager); ok {
+			marketplaceManager = configured
+		}
+		if configured, ok := integration.(AssuranceCatalog); ok {
+			assuranceCatalog = configured
 		}
 	}
 	const maxRateLimitClients = 10000
@@ -471,6 +611,20 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 			return
 		}
 		if path == "/marketplace" && r.Method == http.MethodGet {
+			if marketplaceManager != nil {
+				query := r.URL.Query().Get("q")
+				data, e := marketplaceManager.Snapshot(ctx, who.Tenant, query)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				data["agents"] = orchestratorAgents(orchestrator)
+				if marketplace != nil {
+					data["mcp_servers"] = marketplace.ConfiguredMCPServers()
+				}
+				writeJSON(w, data)
+				return
+			}
 			items := []map[string]any{}
 			plugins := []map[string]any{}
 			if marketplace != nil {
@@ -478,6 +632,119 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				plugins = marketplace.ConfiguredPlugins()
 			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestratorAgents(orchestrator), "mcp_servers": items, "plugins": plugins})
+			return
+		}
+		if path == "/assurance/graph" && r.Method == http.MethodGet {
+			if assuranceCatalog == nil {
+				http.Error(w, "assurance graph unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			writeJSON(w, assuranceCatalog.AssuranceGraph())
+			return
+		}
+		if path == "/assurance/events" && r.Method == http.MethodGet {
+			sessions, e := st.ListSessionsForTenant(ctx, who.Tenant)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			type securityEvent struct {
+				SessionID string         `json:"session_id"`
+				EventType string         `json:"event_type"`
+				Timestamp time.Time      `json:"timestamp"`
+				Payload   map[string]any `json:"payload,omitempty"`
+			}
+			events := make([]securityEvent, 0)
+			for _, session := range sessions {
+				if session == nil {
+					continue
+				}
+				items, eventErr := st.GetEvents(ctx, session.ID)
+				if eventErr != nil {
+					continue
+				}
+				for _, item := range items {
+					if !strings.HasPrefix(item.EventType, "security.") {
+						continue
+					}
+					// Explicitly project the safe fields. Never expose the stored
+					// event payload wholesale because future event producers may add
+					// prompt, tool-argument or credential fields.
+					safe := make(map[string]any, 5)
+					for _, key := range []string{"source", "allowed", "reason", "risk_score", "findings"} {
+						if value, ok := item.Payload[key]; ok {
+							safe[key] = value
+						}
+					}
+					events = append(events, securityEvent{SessionID: item.SessionID, EventType: item.EventType, Timestamp: item.Timestamp, Payload: safe})
+				}
+			}
+			sort.SliceStable(events, func(i, j int) bool { return events[i].Timestamp.After(events[j].Timestamp) })
+			if len(events) > 200 {
+				events = events[:200]
+			}
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "events": events})
+			return
+		}
+		if path == "/marketplace/registry" && r.Method == http.MethodGet {
+			if registry, ok := marketplaceManager.(MarketplaceRegistry); ok {
+				index, e := registry.RegistrySnapshot(ctx)
+				if e != nil {
+					http.Error(w, e.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "registry": index})
+				return
+			}
+			http.Error(w, "marketplace registry unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if strings.HasPrefix(path, "/marketplace/artifacts/") && r.Method == http.MethodGet {
+			reader, ok := marketplaceManager.(MarketplaceArtifactReader)
+			if !ok {
+				http.Error(w, "marketplace artifact storage unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			key, e := url.PathUnescape(strings.TrimPrefix(path, "/marketplace/artifacts/"))
+			if e != nil || strings.TrimSpace(key) == "" {
+				http.Error(w, "invalid artifact key", http.StatusBadRequest)
+				return
+			}
+			body, e := reader.GetArtifact(ctx, key)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusNotFound)
+				return
+			}
+			defer body.Close()
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = io.Copy(w, body)
+			return
+		}
+		if strings.HasPrefix(path, "/marketplace/") && r.Method == http.MethodPost {
+			if marketplaceManager == nil {
+				http.Error(w, "marketplace manager unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			action := strings.TrimPrefix(path, "/marketplace/")
+			requiredRole := "owner"
+			if action == "approve" {
+				requiredRole = "admin"
+			}
+			if e := tenant.Authorize(ctx, who.Tenant, requiredRole, ""); e != nil {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			var payload map[string]any
+			if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&payload) != nil {
+				http.Error(w, "invalid marketplace request", http.StatusBadRequest)
+				return
+			}
+			result, e := marketplaceManager.Mutate(ctx, who.Tenant, who.Subject, action, payload)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, result)
 			return
 		}
 		if strings.HasPrefix(path, "/secrets") {
@@ -806,9 +1073,76 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 			writeJSON(w, job)
 			return
 		}
+		if path == "/observability/export" && r.Method == http.MethodPost {
+			exporter := observability.FromEnvironment()
+			if exporter == nil {
+				http.Error(w, "OTLP exporter is not configured", http.StatusNotImplemented)
+				return
+			}
+			logs, spans, e := observabilityProjection(ctx, st, who.Tenant)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			logRecords := make([]observability.Log, 0, len(logs))
+			for _, log := range logs {
+				logRecords = append(logRecords, observability.Log{ID: log.ID, Source: log.Source, Level: log.Level, Message: log.Message, EventType: log.EventType, Timestamp: log.Timestamp, TraceID: log.TraceID, SpanID: log.SpanID})
+			}
+			spanRecords := make([]observability.Span, 0, len(spans))
+			for _, span := range spans {
+				spanRecords = append(spanRecords, observability.Span{TraceID: span.TraceID, SpanID: span.SpanID, ParentID: span.ParentID, Service: span.Service, Operation: span.Operation, Start: span.Start, Duration: span.Duration, Status: span.Status})
+			}
+			if e = exporter.Export(ctx, who.Tenant, logRecords, spanRecords); e != nil {
+				http.Error(w, e.Error(), http.StatusBadGateway)
+				return
+			}
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "exported_logs": len(logRecords), "exported_spans": len(spanRecords)})
+			return
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+		if path == "/observability/logs" || path == "/observability/traces" || path == "/observability/stream" {
+			logs, spans, e := observabilityProjection(ctx, st, who.Tenant)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if path == "/observability/logs" {
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "logs": logs})
+				return
+			}
+			if path == "/observability/traces" {
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "spans": spans})
+				return
+			}
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				logs, spans, projectionErr := observabilityProjection(r.Context(), st, who.Tenant)
+				if projectionErr != nil {
+					return
+				}
+				payload, marshalErr := json.Marshal(map[string]any{"logs": logs, "spans": spans})
+				if marshalErr == nil {
+					_, _ = fmt.Fprintf(w, "event: observability\\ndata: %s\\n\\n", payload)
+				}
+				flusher.Flush()
+				select {
+				case <-r.Context().Done():
+					return
+				case <-ticker.C:
+				}
+			}
 		}
 		if strings.HasPrefix(path, "/jobs/") && strings.HasSuffix(path, "/events/stream") {
 			id := strings.TrimSuffix(strings.TrimPrefix(path, "/jobs/"), "/events/stream")
@@ -916,7 +1250,8 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				sessionPath = strings.TrimSuffix(sessionPath, "/events/stream")
 			}
 			export := strings.HasSuffix(sessionPath, "/bundle")
-			id := strings.TrimSuffix(sessionPath, "/bundle")
+			replayPlan := strings.HasSuffix(sessionPath, "/replay")
+			id := strings.TrimSuffix(strings.TrimSuffix(sessionPath, "/bundle"), "/replay")
 			session, e := st.GetSessionForTenant(ctx, id, who.Tenant)
 			if e != nil {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
@@ -980,6 +1315,30 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 			events, e := st.GetEvents(ctx, id)
 			if e != nil {
 				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if replayPlan {
+				replayEvents := make([]replay.Event, 0, len(messages)+len(findings)+len(events))
+				sequence := 0
+				for _, message := range messages {
+					raw, _ := json.Marshal(message)
+					replayEvents = append(replayEvents, replay.Event{Sequence: sequence, Type: "message", Payload: json.RawMessage(raw)})
+					sequence++
+				}
+				for _, finding := range findings {
+					replayEvents = append(replayEvents, replay.Event{Sequence: sequence, Type: "finding", Payload: finding})
+					sequence++
+				}
+				for _, event := range events {
+					replayEvents = append(replayEvents, replay.Event{Sequence: sequence, Type: event.EventType, Payload: event.Payload, At: event.Timestamp})
+					sequence++
+				}
+				plan, buildErr := replay.Build(id, who.Tenant, replayEvents)
+				if buildErr != nil {
+					http.Error(w, buildErr.Error(), http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, plan)
 				return
 			}
 			if export && r.Method == http.MethodGet {

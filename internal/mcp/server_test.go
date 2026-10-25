@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/domehahn/harnessmesh/internal/agent"
@@ -16,6 +17,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
+	"github.com/domehahn/harnessmesh/internal/tenant"
 )
 
 func TestMCPServerHandshakeAndTools(t *testing.T) {
@@ -631,5 +633,70 @@ func TestMCPServer_ChangeTools(t *testing.T) {
 	resp, err = server.HandleMessage(ctx, csCall)
 	if err != nil || resp.Error != nil {
 		t.Fatalf("change.commit_status failed: err=%v, respErr=%+v", err, resp.Error)
+	}
+}
+
+func TestMCPServer_EffectiveCallerFromContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	st, err := store.OpenSQLite(filepath.Join(tmpDir, "mcp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		Version: 2,
+		Agents: map[string]config.AgentConfig{
+			"claude": {Kind: "claude", Role: "executor", Writable: true},
+		},
+	}
+	eng := collaboration.NewEngine(collaboration.EngineConfig{
+		Config:    cfg,
+		Store:     st,
+		Repo:      tmpDir,
+		Projector: contextpack.New(tmpDir, cfg.Context),
+		Harnesses: map[string]agent.Harness{},
+	})
+
+	server := NewServer(eng, "", "static-caller")
+
+	// Context with an authenticated tenant identity
+	authCtx := tenant.WithIdentity(context.Background(), tenant.Identity{
+		Subject: "alice-subject",
+		Tenant:  "tenant-alpha",
+		Roles:   map[string]bool{"member": true},
+	})
+
+	if got := server.effectiveCaller(authCtx); got != "alice-subject" {
+		t.Fatalf("expected effectiveCaller to be alice-subject, got %q", got)
+	}
+	if got := server.effectiveCaller(context.Background()); got != "static-caller" {
+		t.Fatalf("expected effectiveCaller without context to fall back to static-caller, got %q", got)
+	}
+
+	// Try to spoof: send a request claiming From: static-caller when authenticated as alice-subject
+	spoofCall := []byte(`{
+		"jsonrpc": "2.0",
+		"id": 99,
+		"method": "tools/call",
+		"params": {
+			"name": "collaboration.publish",
+			"arguments": {
+				"from": "static-caller",
+				"channel": "architecture",
+				"message": "hello"
+			}
+		}
+	}`)
+	resp, err := server.HandleMessage(authCtx, spoofCall)
+	if err != nil {
+		t.Fatalf("HandleMessage returned err: %v", err)
+	}
+	toolRes, ok := resp.Result.(ToolCallResult)
+	if !ok || !toolRes.IsError {
+		t.Fatalf("expected tool error for caller spoofing, got: %+v", resp.Result)
+	}
+	if len(toolRes.Content) == 0 || !strings.Contains(toolRes.Content[0].Text, "cannot spoof sender identity") {
+		t.Fatalf("unexpected error message: %+v", toolRes.Content)
 	}
 }

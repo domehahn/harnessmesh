@@ -30,7 +30,13 @@ func (i Identity) Valid() bool {
 
 func (i Identity) HasRole(role string) bool { return i.Roles[strings.TrimSpace(role)] }
 func (i Identity) HasScope(scope string) bool {
-	return scope == "" || i.Scopes[strings.TrimSpace(scope)]
+	if scope == "" {
+		return true
+	}
+	if i.Roles["owner"] || i.Roles["admin"] {
+		return true
+	}
+	return i.Scopes[strings.TrimSpace(scope)]
 }
 
 type contextKey struct{}

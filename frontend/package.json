@@ -9,7 +9,8 @@
     "typecheck": "tsc -b --pretty false",
     "test:smoke": "node scripts/smoke.mjs",
     "test:e2e": "playwright test",
-    "demo:video": "node scripts/walkthrough-video.mjs"
+    "demo:video": "node scripts/walkthrough-video.mjs",
+    "demo:videos": "node scripts/walkthrough-videos.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

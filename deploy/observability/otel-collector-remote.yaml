@@ -1,0 +1,41 @@
+# Production-oriented example. Point HARNESSMESH_OTEL_REMOTE_ENDPOINT at an
+# OTLP/HTTP-compatible backend (for example Grafana Cloud OTLP or an external
+# OpenTelemetry Collector forwarding to Jaeger/Tempo/Loki).
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+  batch:
+    send_batch_size: 512
+    timeout: 5s
+
+exporters:
+  otlphttp/remote:
+    endpoint: ${env:HARNESSMESH_OTEL_REMOTE_ENDPOINT}
+    headers:
+      Authorization: Bearer ${env:HARNESSMESH_OTEL_REMOTE_TOKEN}
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/remote]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/remote]

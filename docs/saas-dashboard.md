@@ -54,6 +54,25 @@ Dashboard API requests are rate limited per client; tune the limit with
 - `GET /api/v1/dashboard/health`
 - `GET /api/v1/dashboard/incident` returns the tenant-scoped incident posture,
   failed jobs, dead letters and unhealthy agent records.
+- `GET /api/v1/dashboard/observability/logs` returns a tenant-scoped, redacted
+  log projection from worker job events and security-gate decisions.
+- `GET /api/v1/dashboard/observability/traces` returns trace IDs, span IDs,
+  parent relationships, services, operations, durations and statuses derived
+  from durable events.
+- `GET /api/v1/dashboard/observability/stream` provides the same logs and spans
+  over authenticated Server-Sent Events for live monitoring. The React console
+  renders the stream as a central log table and a trace-span waterfall.
+- `POST /api/v1/dashboard/observability/export` sends the current redacted
+  projection to an OpenTelemetry Collector over OTLP/HTTP. Configure
+  `HARNESSMESH_OTEL_EXPORT_URL` or separate
+  `HARNESSMESH_OTEL_LOGS_URL`/`HARNESSMESH_OTEL_TRACES_URL`; use
+  `HARNESSMESH_OTEL_EXPORT_TOKEN` for bearer authentication. The console's
+  `Export to OTLP Collector` action invokes this endpoint explicitly.
+- For a central backend, use `deploy/observability/otel-collector-remote.yaml`
+  with `HARNESSMESH_OTEL_REMOTE_ENDPOINT` and
+  `HARNESSMESH_OTEL_REMOTE_TOKEN`. It forwards through OTLP/HTTP to an
+  external OpenTelemetry gateway or Jaeger/Tempo-compatible endpoint. Loki
+  labeling and tenant routing should remain in that gateway.
 - `GET /api/v1/dashboard/simulation` returns deterministic safety scenarios;
   `POST` evaluates an observation without invoking an external agent or model.
 - `GET /api/v1/dashboard/approvals/{id}` returns the approval decision context
