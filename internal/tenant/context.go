@@ -13,6 +13,10 @@ var ErrUnauthenticated = errors.New("tenant identity is missing")
 var ErrTenantMismatch = errors.New("tenant boundary violation")
 var ErrForbidden = errors.New("operation is forbidden")
 
+var validRoles = map[string]bool{"owner": true, "admin": true, "operator": true, "reviewer": true, "member": true}
+
+func ValidRole(role string) bool { return validRoles[strings.ToLower(strings.TrimSpace(role))] }
+
 type Identity struct {
 	Subject string
 	Tenant  string

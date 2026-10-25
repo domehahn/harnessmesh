@@ -1,14 +1,223 @@
 # HarnessMesh
 
+[![GitHub CI](https://github.com/domehahn/harnessmesh/actions/workflows/ci.yml/badge.svg)](https://github.com/domehahn/harnessmesh/actions/workflows/ci.yml)
+[![GitLab pipeline](https://gitlab.com/domehahn/harnessmesh/badges/main/pipeline.svg)](https://gitlab.com/domehahn/harnessmesh/-/pipelines)
+[![Go Reference](https://pkg.go.dev/badge/github.com/domehahn/harnessmesh.svg)](https://pkg.go.dev/github.com/domehahn/harnessmesh/cmd/harnessmesh)
+[![Latest release](https://img.shields.io/github/v/release/domehahn/harnessmesh?sort=semver)](https://github.com/domehahn/harnessmesh/releases/latest)
+
 **A persistent, evidence-driven collaboration fabric, change-control plane, and Codex-compatible provider gateway for AI coding harnesses.**
 
 HarnessMesh connects coding agents such as **Claude Code**, **OpenAI Codex**, **Google Antigravity**, **GitHub Copilot CLI**, ChatGPT-connected MCP clients, and custom adapters so they can collaborate through a shared durable control plane instead of relying on human copy/paste between tools.
+
+External agent adapters can be installed without changing Go source code. See
+[`plugins/README.md`](plugins/README.md) and
+[`configs/agent-plugin.example.json`](configs/agent-plugin.example.json) for
+the manifest, newline-delimited stdio protocol, hash/signature policy,
+sandbox limits and activation configuration.
 
 It also provides a separate, bounded **model-provider plane** that lets the official Codex client talk to HarnessMesh over the Responses API wire and route inference to an explicitly configured backend.
 
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.
 
-Current source version: **v0.1.0**.
+Current source version: **v0.2.0**.
+
+## SaaS dashboard
+
+The embedded control-plane UI is available at `/dashboard` when the MCP server
+is running. The production React console is served by the `console` Compose
+profile and provides the same tenant-scoped control plane with:
+
+- tenant overview, sessions and jobs with detail views;
+- visual Orchestrator spaces with participant connection and pause/resume/stop controls;
+- persistent job events, causal session timelines and redacted run-bundle export;
+- approval decisions, bulk actions and immutable approval audit history;
+- usage, input/output token accounting, configured cost, model quality and trust scores;
+- MCP/Bridge health probes, agent health, incidents, failed jobs and dead letters;
+- routing recommendations, provider-quota projection and deterministic Simulation Lab;
+- tenant members, roles and API-key issuance/revocation;
+- a credential-free adapter registry contract for built-in and external agent integrations;
+- a registrable Provider Backend SDK with policy-checked fallback resolution;
+- deep links, local pagination, keyboard-accessible navigation and authenticated E2E coverage.
+
+The console stores credentials only in browser session storage. It polls the
+control plane for updates; routing recommendations remain observational and do
+not change production routing automatically. Provider quotas are available
+only when an operator-configured quota endpoint is supplied. Dashboard API
+routes are tenant-scoped and rate limited. See
+[`docs/production-operations.md`](docs/production-operations.md) for deployment
+and security configuration and [`docs/saas-dashboard.md`](docs/saas-dashboard.md)
+for the API contract. The embedded `/dashboard` page remains a dependency-free
+fallback; the React console is the recommended production UI.
+
+### Walkthrough: CLI and React console
+
+<video controls preload="metadata" width="960" src="artifacts/videos/harnessmesh-walkthrough.webm"></video>
+
+The walkthrough demonstrates local CLI startup, agent discovery, tenant
+connection, monitoring, approvals, the visual Orchestrator and Simulation Lab.
+To regenerate it locally, see [`docs/walkthrough-video.md`](docs/walkthrough-video.md).
+
+## External MCP integrations
+
+External MCP servers are controlled through the fail-closed registry described
+in [`docs/mcp-registry.md`](docs/mcp-registry.md). The repository also provides
+local code intelligence without uploading source code:
+
+```bash
+bin/harnessmesh mcp registry validate --config harnessmesh.json
+bin/harnessmesh mcp registry check --config harnessmesh.json \
+  --server serena --tool find_symbol --policy developer-readonly
+bin/harnessmesh code search --repo . --query authentication
+bin/harnessmesh code impact --repo . --query Config
+```
+
+Restart-safe agent work can be submitted as tenant-scoped durable jobs; see
+[`docs/durable-jobs.md`](docs/durable-jobs.md).
+
+## Lokale Multi-Agent-Demo beobachten
+
+Der folgende Ablauf startet die Control Plane, die Bridge und die React-Konsole
+lokal. Damit kannst du Sessions, Jobs, Approvals und Agent-Health in der UI
+sehen und gleichzeitig die Kommunikation über Logs und Prometheus-Metriken
+beobachten.
+
+```bash
+make build
+export HARNESSMESH_MCP_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_BRIDGE_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_PROVIDER_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_ADMIN_TOKEN="$(openssl rand -hex 32)"
+export HARNESSMESH_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+export HARNESSMESH_SECRET_KEY="$(openssl rand -hex 32)"
+
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile bridge --profile console up --build -d
+```
+
+Tenant-owned provider keys and MCP credentials can be entered in Settings.
+They are encrypted locally with `HARNESSMESH_SECRET_KEY` and are never
+returned by the API. For a local Vault exercise, run `make vault-up`, set
+`HARNESSMESH_SECRET_BACKEND=vault` and `VAULT_TOKEN=dev-root-token`, then
+start the stack again. The Vault profile is development-only; production
+uses an externally managed Vault and Kubernetes secrets.
+
+The central operational entry points are `make local-up`, `make local-down`,
+`make k8s-validate`, `make k8s-apply` and `make k3d-up`. Kubernetes manifests
+and the required out-of-band secret setup are documented in
+[`deploy/k8s/README.md`](deploy/k8s/README.md).
+
+The durable worker pool can be started separately with `make worker-up` and
+uses PostgreSQL leases when `HARNESSMESH_POSTGRES_DSN` is configured. Multiple
+workers may claim work concurrently without processing the same leased job.
+
+For local OIDC introspection, copy the OIDC values from `.env.example`, set a
+Keycloak admin password, and run `make keycloak-up`. The realm import is in
+[`deploy/keycloak/harnessmesh-realm.json`](deploy/keycloak/harnessmesh-realm.json).
+The imported client is for local testing only; configure MFA and client
+credentials in the managed Keycloak realm for production.
+
+To use PostgreSQL instead of SQLite locally, set
+`HARNESSMESH_POSTGRES_DSN=postgres://...` and start with the `postgres`
+profile. The MCP process selects PostgreSQL automatically from that DSN:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile console --profile postgres up --build -d
+```
+
+Für den React-Login einmalig einen lokalen Tenant und API-Key im Docker-Volume
+des laufenden MCP-Containers anlegen. Der ausgegebene Key wird nur einmal
+angezeigt. Die CLI muss im Container laufen, damit sie dieselbe SQLite-Datenbank
+wie die Console verwendet:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
+  /usr/local/bin/harnessmesh tenant create \
+  --id tenant-demo --slug demo --name "Local Demo"
+docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
+  /usr/local/bin/harnessmesh tenant member \
+  --id tenant-demo --subject demo-user --role owner
+docker compose -f compose.yaml -f compose.production.yaml exec harnessmesh-mcp \
+  /usr/local/bin/harnessmesh tenant key \
+  --id tenant-demo --subject demo-user
+```
+
+Diesen Key in der Console unter `http://127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-3000}` eingeben.
+
+Danach sind die lokalen Beobachtungspunkte:
+
+<video controls preload="metadata" width="960" src="artifacts/videos/harnessmesh-walkthrough.webm"></video>
+
+Die Aufnahme zeigt denselben Ablauf kompakt in CLI und React-Konsole. Für eine
+eigene Aufnahme mit aktuellen Demo-Daten:
+
+```bash
+cd frontend
+npm run demo:video
+```
+
+| Oberfläche/Endpoint | Zweck |
+| --- | --- |
+| `http://127.0.0.1:3000` | React-SaaS-Konsole; API-Key des lokalen Tenant-Setups eingeben |
+| `http://127.0.0.1:8787/healthz` | MCP-Control-Plane-Health |
+| `http://127.0.0.1:8787/readyz` | MCP-Readiness |
+| `http://127.0.0.1:8787/metrics` | Requests, Fehler, Rate Limits und Agent-Signale |
+| `http://127.0.0.1:8788` | lokale REST-/WebSocket-Bridge für UI-Clients |
+
+Die laufende Agent-Kommunikation siehst du parallel im Terminal:
+
+```bash
+docker compose logs -f harnessmesh-mcp harnessmesh-bridge
+docker compose ps
+curl -fsS http://127.0.0.1:8787/metrics
+```
+
+Für einen reproduzierbaren Collaboration-Lauf kannst du anschließend einen
+Task mit der vorhandenen Multi-Agent-Konfiguration starten, zum Beispiel:
+
+```bash
+bin/harnessmesh collaborate \
+  --config configs/claude-codex.json \
+  --task "Analysiere den aktuellen Projektstand und erstelle einen Review-Plan"
+```
+
+Die erzeugten Sessions, Nachrichten, Findings, Approvals und Jobs erscheinen
+anschließend in der Konsole. Die Kommunikation bleibt tenant-scoped und wird
+nicht aus Browserdaten simuliert.
+
+### Den verwendeten Tunnel sehen
+
+Der Compose-Stack öffnet absichtlich keinen öffentlichen Tunnel. Für einen
+temporären ChatGPT-MCP-Tunnel startet der Bootstrap-Wrapper den MCP-Prozess
+und zeigt die öffentliche URL im Terminal:
+
+```bash
+make build
+HARNESSMESH_TUNNEL=auto ./scripts/start-chatgpt-mcp.sh
+```
+
+Dabei wird bei verfügbarer `ngrok`-Installation die Tunnel-URL ausgegeben und
+zusätzlich nach `.harnessmesh/chatgpt-mcp-connector.json` geschrieben. Die
+öffentliche URL und der aktive Tunnel lassen sich mit den ngrok-Statusdaten
+prüfen:
+
+```bash
+cat .harnessmesh/chatgpt-mcp-connector.json
+curl -fsS http://127.0.0.1:4040/api/tunnels
+```
+
+Der Tunnel läuft nur solange das Bootstrap-Skript läuft. Mit `Ctrl-C` werden
+MCP-Prozess und temporärer Tunnel beendet. Für einen dauerhaften Tunnel wird
+stattdessen ein benannter Cloudflare-Tunnel oder ein eigener TLS-Reverse-Proxy
+vor `127.0.0.1:8787` benötigt; siehe
+[`docs/chatgpt-mcp-bootstrap.md`](docs/chatgpt-mcp-bootstrap.md).
+
+Zum Beenden der lokalen Demo:
+
+```bash
+docker compose -f compose.yaml -f compose.production.yaml \
+  --profile mcp --profile bridge --profile console down
+```
 
 ## SaaS dashboard
 
@@ -218,7 +427,7 @@ bin/harnessmesh --help
 Für die reine CLI-Installation ist kein Repository-Checkout erforderlich:
 
 ```bash
-go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.2.0
 harnessmesh version
 ```
 
@@ -234,7 +443,7 @@ Für ein reproduzierbares Upgrade kann eine konkrete Version verwendet werden;
 `@latest` folgt dagegen dem neuesten veröffentlichten Modulstand:
 
 ```bash
-go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.2.0
 # später:
 go install github.com/domehahn/harnessmesh/cmd/harnessmesh@latest
 ```
@@ -350,7 +559,7 @@ The **provider plane and collaboration plane share no server-side state dependen
 | **Model-routing boundary** | Fixed, external and optional NVIDIA NeMo Switchyard routing without conflating participant selection and underlying model selection |
 | **Observability** | Liveness/readiness, Prometheus-style metrics, request/correlation IDs, structured audit records, operational/admin endpoints and optional OTLP integration |
 | **Production validation** | Build, vet, unit, race, fuzz, protocol-contract, auth, model-catalog, filesystem write/edit, recovery, concurrency, observability, redaction and zero-API-billing gates |
-| **Release engineering** | Docker, CodeQL, govulncheck, race tests, archive benchmarks, SBOM generation, checksums and keyless Cosign signing for tagged releases |
+| **Release engineering** | Docker, CodeQL, dependency review, container scanning, govulncheck, race tests, archive benchmarks, SBOM generation, checksums, Cosign signing and build-provenance attestations for tagged releases |
 
 ---
 
@@ -802,7 +1011,7 @@ Install HarnessMesh first and make sure `harnessmesh.json` exists in the
 repository you want Codex to work on:
 
 ```bash
-go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.2.0
 cd /path/to/your/repository
 cp /path/to/harnessmesh/configs/harnessmesh.example.json harnessmesh.json
 harnessmesh config validate --config harnessmesh.json
@@ -919,7 +1128,7 @@ gestartet.
 #### 1. CLI und Projekt vorbereiten
 
 ```bash
-go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.1.0
+go install github.com/domehahn/harnessmesh/cmd/harnessmesh@v0.2.0
 export PATH="$(go env GOPATH)/bin:$PATH"
 
 cd /path/to/dein/repository
@@ -965,7 +1174,7 @@ cd /path/to/harnessmesh/extensions/vscode
 npm install
 npm run compile
 npx @vscode/vsce package
-code --install-extension harnessmesh-vscode-0.1.0.vsix
+code --install-extension harnessmesh-vscode-0.2.0.vsix
 ```
 
 Danach den Zielordner als Workspace in VS Code öffnen.
@@ -1040,7 +1249,7 @@ cd extensions/vscode
 npm install
 npm run compile
 npx @vscode/vsce package
-code --install-extension harnessmesh-vscode-0.1.0.vsix
+code --install-extension harnessmesh-vscode-0.2.0.vsix
 ```
 
 Alternativ kann die Erweiterung in VS Code über `Run and Debug` als Extension
@@ -1349,6 +1558,12 @@ The Codex UI may independently request routes such as `/settings/user`, `/wham/u
 ---
 
 # 19. Production Readiness
+
+The repository automation map is documented in
+[`docs/github-actions.md`](docs/github-actions.md). It covers dependency and
+container security, license and link checks, benchmark regression, release
+provenance, multi-platform installation smoke tests and protected staging
+qualification.
 
 The authoritative deterministic gate is:
 
@@ -2638,3 +2853,7 @@ bin/harnessmesh --help
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
+
+Use of the HarnessMesh name and branding is governed by
+[TRADEMARKS.md](TRADEMARKS.md). The Apache license covers the code, not project
+names, logos, or implied endorsement.

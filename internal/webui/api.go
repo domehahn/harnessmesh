@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -44,6 +45,7 @@ type Messenger interface {
 
 type MarketplaceCatalog interface {
 	ConfiguredMCPServers() []map[string]any
+	ConfiguredPlugins() []map[string]any
 }
 
 func orchestratorAgents(orchestrator Orchestrator) []map[string]any {
@@ -146,6 +148,7 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 		key := strings.TrimSpace(r.Header.Get("X-HarnessMesh-API-Key"))
 		var who tenant.Identity
 		var err error
+		apiKeyAuth := key != ""
 		if key != "" {
 			who, err = (identity.Service{Store: identityStore}).AuthenticateAPIKey(r.Context(), key)
 		} else {
@@ -160,6 +163,18 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if !apiKeyAuth {
+			requestedTenant := strings.TrimSpace(r.Header.Get("X-HarnessMesh-Tenant"))
+			if requestedTenant != "" && requestedTenant != who.Tenant {
+				membership, membershipErr := identityStore.GetMembership(r.Context(), requestedTenant, who.Subject)
+				if membershipErr != nil || membership == nil || membership.Status != "active" {
+					http.Error(w, "tenant access denied", http.StatusForbidden)
+					return
+				}
+				who.Tenant = requestedTenant
+				who.Roles = map[string]bool{membership.Role: true}
+			}
 		}
 		ctx := tenant.WithIdentity(r.Context(), who)
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/dashboard")
@@ -427,12 +442,42 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestrator.ConfiguredAgents()})
 			return
 		}
+		if path == "/tenants" && r.Method == http.MethodGet {
+			if apiKeyAuth {
+				writeJSON(w, map[string]any{"tenant": who.Tenant, "tenants": []map[string]any{{"id": who.Tenant, "role": "api_key"}}})
+				return
+			}
+			directory, ok := st.(store.DirectoryStore)
+			if !ok {
+				http.Error(w, "directory backend unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			memberships, e := directory.ListMembershipsForSubject(ctx, who.Subject)
+			if e != nil {
+				http.Error(w, e.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			items := make([]map[string]any, 0, len(memberships))
+			for _, membership := range memberships {
+				item := map[string]any{"id": membership.TenantID, "role": membership.Role, "status": membership.Status}
+				if tenantStore, ok := st.(store.IdentityStore); ok {
+					if record, tenantErr := tenantStore.GetTenant(ctx, membership.TenantID); tenantErr == nil && record != nil {
+						item["slug"], item["name"] = record.Slug, record.Name
+					}
+				}
+				items = append(items, item)
+			}
+			writeJSON(w, map[string]any{"subject": who.Subject, "active": who.Tenant, "tenants": items})
+			return
+		}
 		if path == "/marketplace" && r.Method == http.MethodGet {
 			items := []map[string]any{}
+			plugins := []map[string]any{}
 			if marketplace != nil {
 				items = marketplace.ConfiguredMCPServers()
+				plugins = marketplace.ConfiguredPlugins()
 			}
-			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestratorAgents(orchestrator), "mcp_servers": items})
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestratorAgents(orchestrator), "mcp_servers": items, "plugins": plugins})
 			return
 		}
 		if strings.HasPrefix(path, "/secrets") {
@@ -528,6 +573,10 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				if req.Role == "" {
 					req.Role = "member"
 				}
+				if !tenant.ValidRole(req.Role) {
+					http.Error(w, "invalid role", http.StatusBadRequest)
+					return
+				}
 				if e := identityStore.UpsertPrincipal(ctx, &store.PrincipalRecord{Subject: req.Subject}); e != nil {
 					http.Error(w, e.Error(), http.StatusConflict)
 					return
@@ -540,6 +589,56 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				writeJSON(w, member)
 				return
 			}
+		}
+		if strings.HasPrefix(path, "/members/") && (r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
+			if e := tenant.Authorize(ctx, who.Tenant, "owner", ""); e != nil {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			subject, e := url.PathUnescape(strings.TrimPrefix(path, "/members/"))
+			if e != nil || strings.TrimSpace(subject) == "" {
+				http.Error(w, "invalid member subject", http.StatusBadRequest)
+				return
+			}
+			membership, e := identityStore.GetMembership(ctx, who.Tenant, subject)
+			if e != nil || membership == nil {
+				http.Error(w, "member not found", http.StatusNotFound)
+				return
+			}
+			if r.Method == http.MethodDelete {
+				membership.Status = "inactive"
+			} else {
+				var req struct {
+					Role   string `json:"role"`
+					Status string `json:"status"`
+				}
+				if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req) != nil {
+					http.Error(w, "invalid member update", http.StatusBadRequest)
+					return
+				}
+				if req.Role != "" {
+					if !tenant.ValidRole(req.Role) {
+						http.Error(w, "invalid role", http.StatusBadRequest)
+						return
+					}
+					membership.Role = req.Role
+				}
+				if req.Status != "" {
+					switch req.Status {
+					case "active", "inactive", "invited":
+						membership.Status = req.Status
+					default:
+						http.Error(w, "invalid member status", http.StatusBadRequest)
+						return
+					}
+				}
+			}
+			if e := identityStore.SetMembership(ctx, membership); e != nil {
+				http.Error(w, e.Error(), http.StatusConflict)
+				return
+			}
+			writeJSON(w, membership)
+			return
 		}
 		if path == "/keys" {
 			directory, ok := st.(store.DirectoryStore)

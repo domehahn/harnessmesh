@@ -17,6 +17,10 @@ services:
     init: true
     build:
       context: ./frontend
+      args:
+        VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-}
+        VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-harnessmesh-dashboard}
+        VITE_OIDC_SCOPE: ${VITE_OIDC_SCOPE:-openid profile email}
     ports:
       - "127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-3000}:80"
     depends_on:

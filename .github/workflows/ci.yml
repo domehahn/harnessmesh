@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 2 * * *'
 
 permissions:
   contents: read
@@ -72,6 +76,7 @@ jobs:
           python3 -m json.tool plugins/harnessmesh-codex/mcp.json >/dev/null
           python3 -m json.tool configs/harnessmesh-single-node-production.example.json >/dev/null
           python3 -m json.tool docs/api/openapi.json >/dev/null
+          make api-contract
 
       - name: Validate Compose and operational scripts
         run: |

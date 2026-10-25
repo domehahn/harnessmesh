@@ -52,6 +52,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if req.Role == "" {
 				req.Role = "member"
 			}
+			if !tenant.ValidRole(req.Role) {
+				http.Error(w, "invalid role", http.StatusBadRequest)
+				return
+			}
 			if err := h.Service.Store.UpsertPrincipal(r.Context(), &store.PrincipalRecord{Subject: req.Subject}); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
