@@ -16,16 +16,39 @@ async function recordCLI(browser) {
   const page = await context.newPage();
   await page.setContent(`
     <style>body { margin:0; background:#07111f; color:#d7e5f5; font:21px ui-monospace, SFMono-Regular, Menlo, monospace; display:grid; place-items:center; height:100vh } main { width:1240px; line-height:1.45 } .prompt { color:#64d99b } .muted { color:#7f96ad } .out { color:#b6c9dc; padding-left:26px } .cursor { animation: blink 1s steps(2,end) infinite } @keyframes blink { 50% { opacity:0 } }</style>
-    <main><div class="muted">HarnessMesh · wichtigste CLI-Kommandos</div><br>
-    <div><span class="prompt">$</span> harnessmesh version</div><div class="out">harnessmesh v0.2.0 · control plane ready</div>
-    <div><span class="prompt">$</span> harnessmesh config validate --config harnessmesh.json</div><div class="out">CONFIG=VALID · tenant and policy configuration accepted</div>
-    <div><span class="prompt">$</span> harnessmesh agents list --config harnessmesh.json</div><div class="out">claude-code   configured · codex   configured · antigravity   configured</div>
-    <div><span class="prompt">$</span> harnessmesh session list</div><div class="out">hm_demo_01   active   claude-code ↔ codex</div>
-    <div><span class="prompt">$</span> harnessmesh collaborate --config configs/antigravity-codex.json --task "Review API" --dry-run</div><div class="out">PLAN=READY · writer=antigravity · reviewer=codex · approvals=enabled</div>
-    <div><span class="prompt">$</span> harnessmesh mcp registry check --config harnessmesh.json --server serena --tool find_symbol --policy developer-readonly</div><div class="out">MCP=ALLOWED · tool lock and policy checks passed</div>
-    <div><span class="prompt">$</span> harnessmesh mcp tools-lock check --file .skil/mcp-tools.lock.json</div><div class="out">TOOL_LOCK=VALID · no drift detected</div>
-    <br><div class="muted">Danach: Console öffnen und denselben Lauf live überwachen <span class="cursor">▊</span></div></main>`);
-  await page.waitForTimeout(9000);
+    <main><div class="muted">HarnessMesh · interaktiver CLI-Walkthrough</div><br><div id="terminal"></div></main>`);
+  await page.evaluate(async () => {
+    const terminal = document.querySelector("#terminal");
+    const commands = [
+      ["harnessmesh version", "harnessmesh v0.2.0 · control plane ready"],
+      ["harnessmesh config validate --config harnessmesh.json", "CONFIG=VALID · tenant and policy configuration accepted"],
+      ["harnessmesh agents list --config harnessmesh.json", "claude-code   configured · codex   configured · antigravity   configured"],
+      ["harnessmesh session list", "hm_demo_01   active   claude-code ↔ codex"],
+      ["harnessmesh collaborate --config configs/antigravity-codex.json --task \"Review API\" --dry-run", "PLAN=READY · writer=antigravity · reviewer=codex · approvals=enabled"],
+      ["harnessmesh mcp registry check --config harnessmesh.json --server serena --tool find_symbol --policy developer-readonly", "MCP=ALLOWED · tool and policy checks passed"],
+      ["harnessmesh mcp tools-lock check --file .skil/mcp-tools.lock.json", "TOOL_LOCK=VALID · no drift detected"],
+    ];
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    for (const [command, output] of commands) {
+      const line = document.createElement("div");
+      line.innerHTML = '<span class="prompt">$</span> ';
+      const text = document.createElement("span");
+      line.append(text);
+      terminal.append(line);
+      for (const character of command) { text.textContent += character; await sleep(18); }
+      await sleep(300);
+      const result = document.createElement("div");
+      result.className = "out";
+      result.textContent = output;
+      terminal.append(result);
+      await sleep(550);
+    }
+    const done = document.createElement("div");
+    done.className = "muted";
+    done.innerHTML = 'Danach: Console öffnen und denselben Lauf live überwachen <span class="cursor">▊</span>';
+    terminal.append(document.createElement("br"), done);
+  });
+  await page.waitForTimeout(1000);
   await saveVideo(context, page, "harnessmesh-cli-walkthrough.webm");
 }
 
