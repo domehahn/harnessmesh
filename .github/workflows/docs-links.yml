@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Check documentation links
-        uses: lycheeverse/lychee-action@v2.4.0
+        uses: lycheeverse/lychee-action@v2.9.0
         with:
           args: --verbose --no-progress --exclude-mail --exclude '127\.0\.0\.1|localhost|gitlab\.com/domehahn/harnessmesh|help\.openai\.com|pkg\.go\.dev/github\.com/domehahn/harnessmesh' README.md docs .github
           fail: true
