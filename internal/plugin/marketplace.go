@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -377,8 +378,12 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 		if !withinPath(allowedRoot, abs) {
 			return nil, errors.New("source path is outside the configured marketplace source root")
 		}
-		// codeql[go/path-injection]
-		info, err := os.Stat(abs)
+		rootFS, rootErr := os.OpenRoot(allowedRoot)
+		if rootErr != nil {
+			return nil, errors.New("configured marketplace source root must exist")
+		}
+		info, err := rootFS.Stat(path)
+		rootFS.Close()
 		if err != nil || !info.IsDir() {
 			return nil, errors.New("source path must be an existing directory")
 		}
@@ -489,11 +494,16 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 			return nil, errors.New("source is not registered")
 		}
 		srcDir := filepath.Join(src.Path, name)
-		// codeql[go/path-injection]
-		if _, err := os.Stat(filepath.Join(srcDir, "plugin.json")); err != nil {
+		srcRoot, err := os.OpenRoot(src.Path)
+		if err != nil {
+			return nil, errors.New("source root is unavailable")
+		}
+		defer srcRoot.Close()
+		manifestPath := filepath.Join(name, "plugin.json")
+		if _, err := srcRoot.Stat(manifestPath); err != nil {
 			return nil, errors.New("source plugin manifest not found")
 		}
-		manifest, err := readManifest(filepath.Join(srcDir, "plugin.json"))
+		manifest, err := readManifest(srcRoot, manifestPath)
 		if err != nil {
 			return nil, err
 		}
@@ -538,8 +548,12 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 			s.Installed[name] = old
 		}
 		tmp := filepath.Join(m.root, ".marketplace-staging", name)
-		// codeql[go/path-injection]
-		_ = os.RemoveAll(tmp)
+		rootFS, rootErr := os.OpenRoot(m.root)
+		if rootErr != nil {
+			return nil, rootErr
+		}
+		defer rootFS.Close()
+		_ = rootFS.RemoveAll(filepath.Join(".marketplace-staging", name))
 		if err := copyDir(srcDir, tmp); err != nil {
 			m.progress(ctx, tenant, subject, name, "failed", 20, err.Error())
 			return nil, err
@@ -550,17 +564,14 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 			var scanErr error
 			scan, scanErr = m.scanner.Scan(ctx, tmp)
 			if scanErr != nil {
-				// codeql[go/path-injection]
-				_ = os.RemoveAll(tmp)
+				_ = rootFS.RemoveAll(filepath.Join(".marketplace-staging", name))
 				m.progress(ctx, tenant, subject, name, "failed", 60, scanErr.Error())
 				return nil, fmt.Errorf("supply-chain scan rejected plugin: %w", scanErr)
 			}
 		}
 		m.progress(ctx, tenant, subject, name, "scanned", 70, "supply-chain admission completed")
-		// codeql[go/path-injection]
-		_ = os.RemoveAll(dst)
-		// codeql[go/path-injection]
-		if err := os.Rename(tmp, dst); err != nil {
+		_ = rootFS.RemoveAll(name)
+		if err := rootFS.Rename(filepath.Join(".marketplace-staging", name), name); err != nil {
 			return nil, err
 		}
 		item := s.Installed[name]
@@ -643,15 +654,17 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 		backup := filepath.Join(m.root, ".marketplace-backups", name, target.Version)
 		dst := filepath.Join(m.root, name)
 		tmp := filepath.Join(m.root, ".marketplace-staging", name)
-		// codeql[go/path-injection]
-		_ = os.RemoveAll(tmp)
+		rootFS, rootErr := os.OpenRoot(m.root)
+		if rootErr != nil {
+			return nil, rootErr
+		}
+		defer rootFS.Close()
+		_ = rootFS.RemoveAll(filepath.Join(".marketplace-staging", name))
 		if err := copyDir(backup, tmp); err != nil {
 			return nil, err
 		}
-		// codeql[go/path-injection]
-		_ = os.RemoveAll(dst)
-		// codeql[go/path-injection]
-		if err := os.Rename(tmp, dst); err != nil {
+		_ = rootFS.RemoveAll(name)
+		if err := rootFS.Rename(filepath.Join(".marketplace-staging", name), name); err != nil {
 			return nil, err
 		}
 		current := PluginRevision{Version: item.Version, Path: dst}
@@ -672,8 +685,12 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 		if !ok {
 			return nil, errors.New("plugin is not installed")
 		}
-		// codeql[go/path-injection]
-		_ = os.RemoveAll(filepath.Join(m.root, name))
+		rootFS, rootErr := os.OpenRoot(m.root)
+		if rootErr != nil {
+			return nil, rootErr
+		}
+		defer rootFS.Close()
+		_ = rootFS.RemoveAll(name)
 		delete(s.Installed, name)
 		m.audit(ctx, &s, tenant, subject, action, name, item.Version, nil)
 		if err := m.save(ctx, s); err != nil {
@@ -762,30 +779,42 @@ func tarDirectory(root string) ([]byte, error) {
 }
 
 func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	if err := os.MkdirAll(dst, 0o750); err != nil {
+		return err
+	}
+	srcRoot, err := os.OpenRoot(src)
+	if err != nil {
+		return err
+	}
+	defer srcRoot.Close()
+	dstRoot, err := os.OpenRoot(dst)
+	if err != nil {
+		return err
+	}
+	defer dstRoot.Close()
+	return fs.WalkDir(srcRoot.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
+		if path == "." {
+			return nil
 		}
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			// codeql[go/path-injection]
-			return os.MkdirAll(target, info.Mode().Perm())
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
 		}
-		in, err := os.Open(path)
+		if entry.IsDir() {
+			return dstRoot.MkdirAll(path, info.Mode().Perm())
+		}
+		in, err := srcRoot.Open(path)
 		if err != nil {
 			return err
 		}
 		defer in.Close()
-		// codeql[go/path-injection]
-		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		if err := dstRoot.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			return err
 		}
-		// codeql[go/path-injection]
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+		out, err := dstRoot.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
 		if err != nil {
 			return err
 		}

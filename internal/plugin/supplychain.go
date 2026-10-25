@@ -267,7 +267,6 @@ func (s FileArtifactStore) path(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// codeql[go/path-injection]
 	p := filepath.Join(root, key)
 	if !withinPath(root, p) {
 		return "", errors.New("artifact key escapes store root")
@@ -275,61 +274,99 @@ func (s FileArtifactStore) path(key string) (string, error) {
 	return p, nil
 }
 func (s FileArtifactStore) Put(_ context.Context, key string, in io.Reader) (string, error) {
-	p, err := s.path(key)
+	if _, err := s.path(key); err != nil {
+		return "", err
+	}
+	rootPath, err := filepath.Abs(s.Root)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0750); err != nil {
+	if err := os.MkdirAll(rootPath, 0750); err != nil {
 		return "", err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(p), ".artifact-")
+	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		return "", err
 	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	h := sha256.New()
-	if _, err = io.Copy(io.MultiWriter(tmp, h), in); err != nil {
-		tmp.Close()
+	defer root.Close()
+	data, err := io.ReadAll(in)
+	if err != nil {
 		return "", err
 	}
-	if err = tmp.Sync(); err != nil {
-		tmp.Close()
+	if err := root.MkdirAll(filepath.Dir(key), 0750); err != nil {
 		return "", err
 	}
-	if err = tmp.Close(); err != nil {
+	if err := root.WriteFile(key, data, 0640); err != nil {
 		return "", err
 	}
-	// codeql[go/path-injection]
-	if err = os.Rename(name, p); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 func (s FileArtifactStore) Get(_ context.Context, key string) (io.ReadCloser, error) {
-	p, err := s.path(key)
+	if _, err := s.path(key); err != nil {
+		return nil, err
+	}
+	rootPath, err := filepath.Abs(s.Root)
 	if err != nil {
 		return nil, err
 	}
-	return os.Open(p)
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	file, err := root.Open(key)
+	if err != nil {
+		root.Close()
+		return nil, err
+	}
+	return &rootFile{File: file, root: root}, nil
 }
 func (s FileArtifactStore) Delete(_ context.Context, key string) error {
-	p, err := s.path(key)
+	if _, err := s.path(key); err != nil {
+		return err
+	}
+	rootPath, err := filepath.Abs(s.Root)
 	if err != nil {
 		return err
 	}
-	return os.Remove(p)
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.Remove(key)
 }
 func (s FileArtifactStore) Exists(_ context.Context, key string) (bool, error) {
-	p, err := s.path(key)
+	if _, err := s.path(key); err != nil {
+		return false, err
+	}
+	rootPath, err := filepath.Abs(s.Root)
 	if err != nil {
 		return false, err
 	}
-	_, err = os.Stat(p)
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	_, err = root.Stat(key)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+type rootFile struct {
+	*os.File
+	root *os.Root
+}
+
+func (f *rootFile) Close() error {
+	err := f.File.Close()
+	if rootErr := f.root.Close(); err == nil {
+		err = rootErr
+	}
+	return err
 }
 
 type KeyRecord struct {

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,8 +24,12 @@ var (
 
 // Discover scans only plugin.json files. It never executes a plugin.
 func Discover(root string, opts Options) ([]Status, error) {
-	// codeql[go/path-injection]
-	entries, err := os.ReadDir(root)
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer rootFS.Close()
+	entries, err := fs.ReadDir(rootFS.FS(), ".")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []Status{}, nil
@@ -37,8 +42,12 @@ func Discover(root string, opts Options) ([]Status, error) {
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
-		manifestPath := filepath.Join(dir, "plugin.json")
-		m, readErr := readManifest(manifestPath)
+		pluginRoot, rootErr := rootFS.OpenRoot(entry.Name())
+		if rootErr != nil {
+			continue
+		}
+		m, readErr := readManifest(pluginRoot, "plugin.json")
+		pluginRoot.Close()
 		if readErr != nil {
 			continue
 		}
