@@ -77,9 +77,9 @@ fallback; the React console is the recommended production UI.
 
 ### Walkthrough: CLI and React console
 
-https://github.com/user-attachments/assets/d0d628c8-f86b-41d5-9c3e-f5fe079f9056
+https://github.com/user-attachments/assets/5c9cbf9c-ea58-4608-b2e0-09a34d990356
 
-CLI-Video im macOS-Terminal-Layout: Die Kommandos werden sichtbar Zeichen für Zeichen eingegeben; danach erscheint jeweils die Ausgabe: `version`, `config validate`, `agents list`, `session list`, `collaborate --dry-run`, MCP-Registry-Prüfung und Tool-Lock-Check. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [CLI-Video direkt öffnen](https://github.com/user-attachments/assets/d0d628c8-f86b-41d5-9c3e-f5fe079f9056).
+CLI-Video im macOS-Terminal-Layout: Vorbereitung mit `.env`, `make local-up`, Compose-Status, Tenant/API-Key, Agent- und MCP-Prüfung sowie Session-Start. Die Kommandos werden Zeichen für Zeichen eingegeben und die Ausgaben erscheinen live. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [CLI-Video direkt öffnen](https://github.com/user-attachments/assets/5c9cbf9c-ea58-4608-b2e0-09a34d990356).
 
 The walkthrough demonstrates local CLI startup, agent discovery, tenant
 connection, monitoring, approvals, the visual Orchestrator and Simulation Lab.
@@ -174,9 +174,9 @@ Diesen Key in der Console unter `http://127.0.0.1:${HARNESSMESH_CONSOLE_PORT:-30
 
 Danach sind die lokalen Beobachtungspunkte:
 
-https://github.com/user-attachments/assets/bc1509eb-5629-47d4-85a3-a3a528b4a96c
+https://github.com/user-attachments/assets/49cab697-6e24-4caf-bc67-3fa23a87fa8d
 
-UI-Video: Tenant verbinden, Monitoring, Approval-Detail, Orchestrator und Simulation bedienen. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [UI-Video direkt öffnen](https://github.com/user-attachments/assets/bc1509eb-5629-47d4-85a3-a3a528b4a96c).
+UI-Video: `hm_live_…`-API-Key eingeben und anschließend Monitoring, Agent-/MCP-Status, Security-Evidence, Optimization, Usage, persistente Job-Logs/Timeline, Trace-Event, Approvals, Orchestrator und Simulation bedienen. Falls GitHub den Player in einer alternativen Ansicht nicht rendert: [UI-Video direkt öffnen](https://github.com/user-attachments/assets/49cab697-6e24-4caf-bc67-3fa23a87fa8d).
 
 Die Aufnahme zeigt denselben Ablauf kompakt in CLI und React-Konsole. Für eine
 eigene Aufnahme mit aktuellen Demo-Daten:
