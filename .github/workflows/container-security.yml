@@ -1,0 +1,86 @@
+name: Container Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build MCP image
+        run: docker build --tag harnessmesh:mcp-scan .
+
+      - name: Build console image
+        run: docker build --tag harnessmesh-console:scan ./frontend
+
+      - name: Scan MCP image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: harnessmesh:mcp-scan
+          version: v0.76.1
+          format: sarif
+          output: trivy-mcp.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Enforce MCP image policy
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: harnessmesh:mcp-scan
+          version: v0.76.1
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Scan console image
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: harnessmesh-console:scan
+          version: v0.76.1
+          format: sarif
+          output: trivy-console.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Enforce console image policy
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: harnessmesh-console:scan
+          version: v0.76.1
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Upload MCP scan results
+        if: always() && hashFiles('trivy-mcp.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-mcp.sarif
+          category: trivy-mcp
+
+      - name: Upload console scan results
+        if: always() && hashFiles('trivy-console.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-console.sarif
+          category: trivy-console

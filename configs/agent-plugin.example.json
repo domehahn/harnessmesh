@@ -1,0 +1,19 @@
+{
+  "agents": {
+    "review-plugin": {
+      "kind": "my-agent",
+      "adapter": "my-agent",
+      "role": "reviewer",
+      "mode": "on_demand",
+      "execution_mode": "managed",
+      "plugin": true,
+      "writable": false,
+      "network_mode": "none",
+      "capabilities": {
+        "read_repository": true,
+        "review": true,
+        "write_repository": false
+      }
+    }
+  }
+}

@@ -1,0 +1,49 @@
+name: Staging Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      bridge_url:
+        description: Authenticated staging Bridge URL
+        required: true
+        type: string
+      isolation_image:
+        description: Exact production executor image digest
+        required: true
+        type: string
+      restore_rto_seconds:
+        description: Maximum accepted restore RTO
+        required: true
+        default: '300'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install operational tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3
+      - name: Runtime isolation qualification
+        env:
+          HARNESSMESH_ISOLATION_IMAGE: ${{ inputs.isolation_image }}
+        run: make runtime-isolation-check
+      - name: Backup and restore qualification
+        env:
+          HARNESSMESH_RESTORE_RTO_SECONDS: ${{ inputs.restore_rto_seconds }}
+        run: make backup-restore-smoke
+      - name: Authenticated staging load smoke
+        env:
+          HARNESSMESH_BRIDGE_URL: ${{ inputs.bridge_url }}
+          HARNESSMESH_BRIDGE_TOKEN: ${{ secrets.HARNESSMESH_STAGING_BRIDGE_TOKEN }}
+          HARNESSMESH_LOAD_REQUESTS: '100'
+          HARNESSMESH_LOAD_CONCURRENCY: '10'
+        run: make staging-load-smoke
+      - name: Deterministic simulation safety pass
+        run: make simulation

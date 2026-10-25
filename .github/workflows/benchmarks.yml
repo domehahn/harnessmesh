@@ -1,0 +1,30 @@
+name: Performance Benchmarks
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '11 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Compare knowledge benchmark against base branch
+        run: ./scripts/benchmark-regression.sh
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ github.sha }}
+          path: benchmark-results/

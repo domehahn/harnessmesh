@@ -6,6 +6,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  packages: write
 
 jobs:
   release:
@@ -32,6 +35,42 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: cosign sign-blob --yes --output-signature dist/SHA256SUMS.sig dist/SHA256SUMS
+      - name: Attest CLI binary provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/harnessmesh
+      - name: Verify release binary
+        env:
+          EXPECTED_VERSION: ${{ github.ref_name }}
+        run: |
+          test "$(dist/harnessmesh version)" = "${EXPECTED_VERSION#v}"
+          sha256sum --check dist/SHA256SUMS
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish MCP image
+        id: mcp-image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+      - name: Build and publish console image
+        id: console-image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: ghcr.io/${{ github.repository }}-console:${{ github.ref_name }}
+      - name: Sign published container images
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes "ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME}"
+          cosign sign --yes "ghcr.io/${GITHUB_REPOSITORY}-console:${GITHUB_REF_NAME}"
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:

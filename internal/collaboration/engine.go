@@ -20,6 +20,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/economy"
 	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/modelrouting"
+	"github.com/domehahn/harnessmesh/internal/plugin"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/tenant"
@@ -221,6 +222,16 @@ func (e *Engine) ConfiguredMCPServers() []map[string]any {
 	for _, name := range names {
 		server := e.cfg.MCP.Servers[name]
 		out = append(out, map[string]any{"name": name, "type": server.Type, "enabled": server.Enabled, "allowed_tools": server.AllowedTools, "capabilities": server.Capabilities, "requires_approval": server.RequiresApproval, "network_mode": server.NetworkMode})
+	}
+	return out
+}
+
+func (e *Engine) ConfiguredPlugins() []map[string]any {
+	_ = plugin.RefreshFromEnvironment()
+	items := plugin.Probe(context.Background())
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{"name": item.Manifest.Name, "version": item.Manifest.Version, "description": item.Manifest.Description, "capabilities": item.Manifest.Capabilities, "risk": item.Manifest.Risk, "state": item.State, "health": item.Health, "verified": item.Verified, "signature_verified": item.SignatureVerified, "error": item.Error})
 	}
 	return out
 }
