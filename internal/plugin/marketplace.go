@@ -295,6 +295,16 @@ func (m *Marketplace) IsActive(ctx context.Context, tenant, project, name string
 	return true, active && item.ApprovalStatus == "approved", nil
 }
 
+func isSafePluginName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+		return false
+	}
+	return filepath.Base(name) == name
+}
+
 func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string, payload map[string]any) (map[string]any, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -309,6 +319,9 @@ func (m *Marketplace) Mutate(ctx context.Context, tenant, subject, action string
 	name = strings.TrimSpace(name)
 	sourceID, _ := payload["source_id"].(string)
 	sourceID = strings.TrimSpace(sourceID)
+	if name != "" && (action == "install" || action == "update" || action == "rollback" || action == "uninstall") && !isSafePluginName(name) {
+		return nil, errors.New("invalid plugin name")
+	}
 	if m.store != nil && name != "" && (action == "install" || action == "update" || action == "rollback" || action == "uninstall") {
 		leaseName := "marketplace:plugin:" + name
 		acquired, leaseErr := m.store.AcquireLease(ctx, leaseName, subject, 10*time.Minute)
