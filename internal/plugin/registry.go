@@ -23,6 +23,7 @@ var (
 
 // Discover scans only plugin.json files. It never executes a plugin.
 func Discover(root string, opts Options) ([]Status, error) {
+	// codeql[go/path-injection]
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {

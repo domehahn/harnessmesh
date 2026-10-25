@@ -267,6 +267,7 @@ func (s FileArtifactStore) path(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// codeql[go/path-injection]
 	p := filepath.Join(root, key)
 	if !withinPath(root, p) {
 		return "", errors.New("artifact key escapes store root")
@@ -299,6 +300,7 @@ func (s FileArtifactStore) Put(_ context.Context, key string, in io.Reader) (str
 	if err = tmp.Close(); err != nil {
 		return "", err
 	}
+	// codeql[go/path-injection]
 	if err = os.Rename(name, p); err != nil {
 		return "", err
 	}

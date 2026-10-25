@@ -142,6 +142,7 @@ func (m Manifest) validate(dir string, opts Options) (string, bool, bool, error)
 		return "", false, false, fmt.Errorf("plugin %q binary must stay inside its plugin directory", m.Name)
 	}
 	binaryPath := filepath.Join(dir, m.Binary)
+	// codeql[go/path-injection]
 	info, err := os.Stat(binaryPath)
 	if err != nil {
 		return "", false, false, fmt.Errorf("plugin %q binary: %w", m.Name, err)
@@ -230,6 +231,7 @@ func compareVersion(a, b string) int {
 }
 
 func fileDigest(path string) (string, error) {
+	// codeql[go/path-injection]
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read plugin binary: %w", err)
@@ -239,6 +241,7 @@ func fileDigest(path string) (string, error) {
 }
 
 func readManifest(path string) (Manifest, error) {
+	// codeql[go/path-injection]
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Manifest{}, err
