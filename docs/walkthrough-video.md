@@ -19,10 +19,12 @@ npm run demo:video
 ```
 
 The reference video is committed at `artifacts/videos/harnessmesh-walkthrough.webm`.
-The repository README uses the committed poster image as a clickable fallback,
-because GitHub does not reliably render relative HTML `<video>` elements in
-README files. Open the WebM link directly for playback or download. Running
-the command regenerates and overwrites that local artifact.
+The repository README embeds the GitHub-hosted video asset and keeps the
+committed poster/WebM as fallbacks. GitHub-hosted attachments are required for
+reliable inline playback in README files; relative repository HTML `<video>`
+elements are not rendered consistently. Running the command regenerates and
+overwrites the local artifact; a new GitHub attachment must be created when the
+published video is replaced.
 Override the output directory with `HARNESSMESH_VIDEO_DIR=/tmp/harnessmesh-video`.
 
 The recording covers:
