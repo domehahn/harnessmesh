@@ -2,7 +2,7 @@
   "name": "harnessmesh-vscode",
   "displayName": "HarnessMesh",
   "description": "Thin VS Code UI over the local HarnessMesh collaboration-plane bridge (REST + WebSocket). No LLM reasoning happens in this extension.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "harnessmesh",
   "license": "SEE LICENSE IN ../../LICENSE",
   "homepage": "https://github.com/domehahn/harnessmesh",

@@ -526,6 +526,10 @@ type AgentConfig struct {
 	UseSwitchyard     bool     `json:"use_switchyard"`
 	SwitchyardRouteID string   `json:"switchyard_route_id"`
 	ExecutionMode     string   `json:"execution_mode,omitempty"` // "managed", "external"
+	// Plugin opts into an adapter discovered from plugins/<name>/plugin.json.
+	// It prevents typos in built-in adapter names from silently becoming
+	// dynamically loaded executables.
+	Plugin bool `json:"plugin,omitempty"`
 	// NetworkMode is "none" for production agents; empty/"host" preserves
 	// compatibility for non-production profiles.
 	NetworkMode string `json:"network_mode,omitempty"`
@@ -713,7 +717,7 @@ func Parse(raw []byte) (*Config, error) {
 		switch a.Kind {
 		case "claude", "claude-code", "codex", "openai", "openai-api", "antigravity", "agy", "copilot", "copilot-cli", "github-copilot", "fake", "mock", "external", "mcp-remote", "chatgpt", "browser":
 		default:
-			if !a.IsExternal() {
+			if !a.IsExternal() && !a.Plugin {
 				return nil, fmt.Errorf("agent %q: unsupported kind/adapter %q", name, a.Kind)
 			}
 		}

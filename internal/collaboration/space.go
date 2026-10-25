@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/agent"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/store"
@@ -207,6 +208,16 @@ func (s *SpaceService) ConfiguredAgents() []map[string]any {
 			execution = protocol.ExecutionModeManaged
 		}
 		agents = append(agents, map[string]any{"id": name, "adapter": adapter, "role": agent.Role, "mode": agent.Mode, "execution_mode": execution, "writable": agent.Writable, "capabilities": agent.Capabilities})
+	}
+	known := map[string]bool{}
+	for _, item := range agents {
+		known[item["adapter"].(string)] = true
+	}
+	for _, descriptor := range agent.RegisteredAdapterDescriptors() {
+		if !descriptor.External || known[descriptor.Name] {
+			continue
+		}
+		agents = append(agents, map[string]any{"id": descriptor.Name, "adapter": descriptor.Name, "role": "plugin", "mode": "on_demand", "execution_mode": protocol.ExecutionModeManaged, "writable": false, "capabilities": descriptor.Capabilities, "version": descriptor.Version, "plugin": true})
 	}
 	return agents
 }

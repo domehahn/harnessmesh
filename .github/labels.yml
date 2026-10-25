@@ -29,3 +29,30 @@
 - name: breaking change
   color: b60205
   description: Requires migration or compatibility work
+- name: release
+  color: 1d76db
+  description: Release engineering and versioning
+- name: ui
+  color: 5319e7
+  description: React console and UX
+- name: orchestration
+  color: 0052cc
+  description: Agent orchestration and collaboration
+- name: mcp
+  color: 0e8a16
+  description: Model Context Protocol integrations
+- name: plugin
+  color: fbca04
+  description: External agent plugins and adapters
+- name: identity
+  color: b60205
+  description: OIDC, Keycloak and authentication
+- name: production-readiness
+  color: d93f0b
+  description: Production deployment and operations
+- name: observability
+  color: c2e0c6
+  description: Metrics, logs and monitoring
+- name: large-change
+  color: e99695
+  description: Large change surface requiring extra review

@@ -143,9 +143,21 @@ plane from starting with a dashboard that cannot manage credentials.
 
 For local OIDC testing, `make keycloak-up` starts the development Keycloak
 profile and imports the HarnessMesh realm. Configure the introspection URL,
-client ID and client secret from `.env.example` before starting MCP. The
+client ID and optional introspection client secret from `.env.example` before starting MCP. The
 realm is intentionally a local harness; production requires a managed realm,
 TLS, trusted redirect URIs and provider-managed MFA.
+
+The React console supports browser Authorization Code + PKCE when built with
+`VITE_OIDC_AUTHORITY`, `VITE_OIDC_CLIENT_ID`, and `VITE_OIDC_SCOPE`. It stores
+only the access token in `sessionStorage`; the HarnessMesh API still validates
+that token through the configured RFC-7662 introspection endpoint. Configure
+the OIDC client redirect URI to the console origin and enable its web origin
+at the identity provider.
+
+OIDC users with more than one active tenant membership can switch tenants in
+the console header. The backend validates the selected tenant membership for
+the authenticated subject; API-key sessions remain pinned to their issuing
+tenant and cannot be switched by a header override.
 
 ## Usage and cost boundary
 

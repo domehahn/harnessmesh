@@ -31,13 +31,14 @@ import (
 	"github.com/domehahn/harnessmesh/internal/mcpgateway"
 	"github.com/domehahn/harnessmesh/internal/mcpregistry"
 	"github.com/domehahn/harnessmesh/internal/modelrouting"
+	"github.com/domehahn/harnessmesh/internal/plugin"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/report"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/workflow"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -75,6 +76,8 @@ func main() {
 		err = peerCmd(os.Args[2:])
 	case "agents":
 		err = agentsCmd(os.Args[2:])
+	case "plugins":
+		err = pluginsCmd(os.Args[2:])
 	case "session":
 		err = sessionCmd(os.Args[2:])
 	case "findings":
@@ -143,6 +146,7 @@ Usage:
   harnessmesh peer review --peer <name> [options]
   harnessmesh peer status --session <id>
   harnessmesh agents <list|show <name>>
+  harnessmesh plugins <list|validate> [--dir <path>] [--json]
   harnessmesh session <list|show|messages|resume|stop> [options]
   harnessmesh findings <session-id> [--json]
 	harnessmesh evidence <session-id> [--json]
@@ -159,6 +163,47 @@ Usage:
 
 Run 'harnessmesh <command> --help' for details on a specific command.
 `, version)
+}
+
+func pluginsCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh plugins <list|validate> [--dir <path>] [--json]")
+	}
+	subcmd := args[0]
+	fs := flag.NewFlagSet("plugins "+subcmd, flag.ContinueOnError)
+	dir := fs.String("dir", pluginRoot(), "plugin directory")
+	jsonOutput := fs.Bool("json", false, "emit JSON")
+	requireHash := fs.Bool("require-hash", os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", "require matching SHA-256")
+	requireSignature := fs.Bool("require-signature", os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", "require Ed25519 signature")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	trusted, err := plugin.TrustedKeysFromEnvironment()
+	if err != nil {
+		return err
+	}
+	items, err := plugin.Discover(*dir, plugin.Options{RequireHash: *requireHash, RequireSignature: *requireSignature, HarnessMeshVersion: version, TrustedPublicKeys: trusted})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(items)
+	}
+	if subcmd != "list" && subcmd != "validate" {
+		return fmt.Errorf("unknown plugins subcommand %q", subcmd)
+	}
+	fmt.Printf("%-24s %-10s %-12s %-12s %s\n", "PLUGIN", "VERSION", "STATE", "HEALTH", "ERROR")
+	invalid := false
+	for _, item := range items {
+		fmt.Printf("%-24s %-10s %-12s %-12s %s\n", item.Manifest.Name, item.Manifest.Version, item.State, item.Health, item.Error)
+		if item.Manifest.Binary != "" && item.State != "ready" && item.State != "disabled" {
+			invalid = true
+		}
+	}
+	if subcmd == "validate" && invalid {
+		return errors.New("one or more executable plugins failed validation")
+	}
+	return nil
 }
 
 func postgresCmd(args []string) error {
@@ -581,6 +626,13 @@ func collaborate(args []string) error {
 	if err != nil {
 		return err
 	}
+	trusted, trustErr := plugin.TrustedKeysFromEnvironment()
+	if trustErr != nil {
+		return trustErr
+	}
+	if _, err := plugin.RegisterDirectory(pluginRoot(), plugin.Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version, TrustedPublicKeys: trusted}); err != nil {
+		return fmt.Errorf("load agent plugins: %w", err)
+	}
 	if *executorName != "" {
 		cfg.Workflow.Executor = *executorName
 	}
@@ -669,6 +721,14 @@ func collaborate(args []string) error {
 		fmt.Printf("Report: %s\n", filepath.Join(runDir, "report.md"))
 	}
 	return err
+}
+
+func pluginRoot() string {
+	root := strings.TrimSpace(os.Getenv("HARNESSMESH_PLUGIN_DIR"))
+	if root == "" {
+		return "plugins"
+	}
+	return root
 }
 
 func mcpCmd(args []string) error {
@@ -794,6 +854,13 @@ func mcpServe(args []string) error {
 	cfg, err := loadConfigOrDefault(*configPath)
 	if err != nil {
 		return err
+	}
+	trusted, trustErr := plugin.TrustedKeysFromEnvironment()
+	if trustErr != nil {
+		return trustErr
+	}
+	if _, err := plugin.RegisterDirectory(pluginRoot(), plugin.Options{RequireHash: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_HASH") == "1" || os.Getenv("HARNESSMESH_ENV") == "production", RequireSignature: os.Getenv("HARNESSMESH_PLUGIN_REQUIRE_SIGNATURE") == "1", HarnessMeshVersion: version, TrustedPublicKeys: trusted}); err != nil {
+		return fmt.Errorf("load agent plugins: %w", err)
 	}
 	if registry, registryErr := mcpregistry.New(cfg.MCP); registryErr != nil {
 		return fmt.Errorf("validate MCP registry: %w", registryErr)
