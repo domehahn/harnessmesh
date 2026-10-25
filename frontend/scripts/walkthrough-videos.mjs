@@ -15,8 +15,16 @@ async function recordCLI(browser) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, recordVideo: { dir: outputDir, size: { width: 1440, height: 900 } } });
   const page = await context.newPage();
   await page.setContent(`
-    <style>body { margin:0; background:#07111f; color:#d7e5f5; font:21px ui-monospace, SFMono-Regular, Menlo, monospace; display:grid; place-items:center; height:100vh } main { width:1240px; line-height:1.45 } .prompt { color:#64d99b } .muted { color:#7f96ad } .out { color:#b6c9dc; padding-left:26px } .cursor { animation: blink 1s steps(2,end) infinite } @keyframes blink { 50% { opacity:0 } }</style>
-    <main><div class="muted">HarnessMesh · interaktiver CLI-Walkthrough</div><br><div id="terminal"></div></main>`);
+    <style>
+      * { box-sizing: border-box }
+      body { margin:0; background:linear-gradient(135deg,#182337,#52637a); color:#d7e5f5; font:21px ui-monospace, SFMono-Regular, Menlo, monospace; display:grid; place-items:center; height:100vh }
+      .window { width:1280px; height:760px; overflow:hidden; border:1px solid rgba(255,255,255,.2); border-radius:14px; background:#111318; box-shadow:0 30px 80px rgba(0,0,0,.45) }
+      .titlebar { height:44px; display:flex; align-items:center; justify-content:center; position:relative; background:linear-gradient(#303238,#25262b); color:#c8c9cc; font:13px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif }
+      .traffic { position:absolute; left:16px; display:flex; gap:8px }.traffic i { width:13px; height:13px; display:block; border-radius:50%; box-shadow:inset 0 0 0 1px rgba(0,0,0,.2) }.red { background:#ff5f57 }.yellow { background:#febc2e }.green { background:#28c840 }
+      .tabbar { height:35px; display:flex; align-items:center; padding-left:24px; background:#1b1c20; color:#9b9da5; font:12px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif }.tab { padding:7px 18px; border-bottom:2px solid #64d99b; color:#f0f1f2 }
+      main { height:681px; padding:28px 34px; line-height:1.45; overflow:hidden }.muted { color:#7f96ad }.prompt { color:#64d99b }.out { color:#b6c9dc; padding-left:26px }.cursor { animation: blink 1s steps(2,end) infinite } @keyframes blink { 50% { opacity:0 } }
+    </style>
+    <div class="window"><div class="titlebar"><div class="traffic"><i class="red"></i><i class="yellow"></i><i class="green"></i></div>harnessmesh — zsh — 128×42</div><div class="tabbar"><div class="tab">harnessmesh — zsh</div></div><main><div class="muted">Last login: today on ttys001</div><div id="terminal"></div></main></div>`);
   await page.evaluate(async () => {
     const terminal = document.querySelector("#terminal");
     const commands = [
