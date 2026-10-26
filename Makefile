@@ -1,6 +1,6 @@
 VERSION ?= $(shell cat VERSION)
 
-.PHONY: fmt test vet race fuzz load security build extension plugin-test api-contract compose-config local-up local-down worker-up worker-down marketplace-storage-up marketplace-storage-down observability-up observability-remote-up observability-down vault-up vault-down keycloak-up keycloak-down k8s-validate k8s-apply helm-validate k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation check production-readiness live-metadata-check live-openai-e2e clean
+.PHONY: fmt test vet race fuzz load security build extension plugin-test api-contract compose-config local-up local-down worker-up worker-down marketplace-storage-up marketplace-storage-down observability-up observability-remote-up observability-down vault-up vault-down keycloak-up keycloak-down k8s-validate k8s-apply helm-validate k3d-up k3d-down k3d-image backup-restore-smoke staging-load-smoke runtime-isolation-check simulation agent-platform-doctor check production-readiness live-metadata-check live-openai-e2e clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
@@ -126,6 +126,10 @@ runtime-isolation-check:
 
 simulation:
 	go test ./internal/simulation
+
+agent-platform-doctor:
+	$(MAKE) build
+	./bin/harnessmesh agent-platform doctor --config $${HARNESSMESH_CONFIG:-harnessmesh.json}
 
 check: fmt test vet build
 

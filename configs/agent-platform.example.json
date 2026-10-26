@@ -1,0 +1,39 @@
+{
+  "agent_platform": {
+    "a2a": {
+      "enabled": true,
+      "listen": "127.0.0.1:8790",
+      "public_url": "https://mesh.example.test",
+      "token_env": "HARNESSMESH_A2A_TOKEN",
+      "allowed_peers": ["claude-code", "codex", "antigravity"],
+      "skills": ["review", "research", "implementation"]
+    },
+    "evaluation": {
+      "enabled": true,
+      "require_policy": true,
+      "min_score": 0.75,
+      "dataset_path": "./evaluations/production.jsonl"
+    },
+    "durable_workflows": {
+      "provider": "builtin",
+      "endpoint": "",
+      "namespace": "harnessmesh"
+    },
+    "memory": {
+      "enabled": false,
+      "provider": "cognee",
+      "endpoint": "http://127.0.0.1:8000"
+    },
+    "browser": {
+      "enabled": false,
+      "provider": "playwright",
+      "allowed_domains": ["docs.example.test"],
+      "require_approval": true
+    },
+    "llm_gateway": {
+      "enabled": false,
+      "provider": "litellm",
+      "endpoint": "http://127.0.0.1:4000"
+    }
+  }
+}
