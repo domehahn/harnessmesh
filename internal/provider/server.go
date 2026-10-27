@@ -14,6 +14,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/creditguard"
 	"github.com/domehahn/harnessmesh/internal/provenance"
+	"github.com/domehahn/harnessmesh/internal/securitygate"
 )
 
 const (
@@ -378,6 +379,25 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backendName := backendNameFromRequest(r, req)
+	if securitygate.CheckEnabled() {
+		requestContent, marshalErr := json.Marshal(req)
+		if marshalErr != nil {
+			s.errors.Add(1)
+			writeProviderError(w, http.StatusBadRequest, fmt.Errorf("inspect request: %w", marshalErr))
+			return
+		}
+		_, decision, securityErr := securitygate.CheckContext(r.Context(), string(requestContent), "provider-gateway", "provider:"+backendName, "", "provider.inference", "")
+		if securityErr != nil || decision.Redacted {
+			s.errors.Add(1)
+			s.recordAudit(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: r.URL.Path, Method: r.Method, Model: req.Model, Backend: backendName, Result: "error", Status: http.StatusForbidden, Stream: req.Stream, ErrorClass: "provider_action_firewall", PolicyDenied: true, LatencyMS: time.Since(start).Milliseconds()})
+			reason := decision.Reason
+			if reason == "" {
+				reason = "provider request blocked by action firewall"
+			}
+			writeProviderError(w, http.StatusForbidden, &ForbiddenError{Reason: reason})
+			return
+		}
+	}
 	backend, err := s.registry.Resolve(backendName)
 	if err != nil {
 		s.recordDenialIfPolicy(err)
