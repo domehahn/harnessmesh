@@ -165,10 +165,20 @@ type ProviderGatewayConfig struct {
 	AllowedBackendTypes []string `json:"allowed_backend_types,omitempty"`
 	DeniedBackendTypes  []string `json:"denied_backend_types,omitempty"`
 
-	Fallback ProviderFallbackConfig `json:"fallback,omitempty"`
+	Fallback         ProviderFallbackConfig `json:"fallback,omitempty"`
+	AutomaticRouting AutomaticRoutingConfig `json:"automatic_routing,omitempty"`
 
 	RequestMaxBytes  int `json:"request_max_bytes,omitempty"`
 	RequestTimeoutMS int `json:"request_timeout_ms,omitempty"`
+}
+
+// AutomaticRoutingConfig enables evidence-based backend promotion. It is
+// deliberately opt-in and only affects requests without an explicit backend.
+type AutomaticRoutingConfig struct {
+	Enabled        bool    `json:"enabled,omitempty"`
+	MinSamples     int     `json:"min_samples,omitempty"`
+	MinSuccessRate float64 `json:"min_success_rate,omitempty"`
+	MaxAverageCost float64 `json:"max_average_cost,omitempty"`
 }
 
 // IsZeroCreditMode returns the effective zero-credit setting: true (the

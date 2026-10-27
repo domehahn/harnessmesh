@@ -36,6 +36,13 @@
       "order": ["local-fallback"]
     },
 
+    "automatic_routing": {
+      "enabled": false,
+      "min_samples": 10,
+      "min_success_rate": 0.9,
+      "max_average_cost": 0.05
+    },
+
     "denied_backend_types": ["openai-api", "codex"]
   }
 }

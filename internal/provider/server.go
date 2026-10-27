@@ -194,6 +194,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "harnessmesh_provider_streams_active %d\n", s.activeReqs.Load())
 	fmt.Fprintf(w, "harnessmesh_provider_responses_requests_total %d\n", s.responses.Load())
 	fmt.Fprintf(w, "harnessmesh_zero_api_billing_policy_denials_total %d\n", s.denials.Load())
+	if route := s.registry.AutomaticRoute(); route != "" {
+		fmt.Fprintf(w, "harnessmesh_provider_automatic_route{backend=%q} 1\n", route)
+	}
 	fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"openai-api\"} %d\n", creditguard.Calls(creditguard.BackendOpenAIAPI))
 	fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"codex\"} %d\n", creditguard.Calls(creditguard.BackendCodex))
 	s.backendCalls.Range(func(k, v any) bool {
@@ -228,6 +231,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"active_streams":        s.activeReqs.Load(),
 		"openai_api_calls":      creditguard.Calls(creditguard.BackendOpenAIAPI),
 		"codex_calls":           creditguard.Calls(creditguard.BackendCodex),
+		"automatic_route":       s.registry.AutomaticRoute(),
 	})
 }
 
@@ -541,11 +545,13 @@ func (s *Server) runWithFallback(ctx context.Context, attempts []InferenceBacken
 }
 
 func (s *Server) runBackend(ctx context.Context, backend InferenceBackend, req Request, sink Sink) error {
+	start := time.Now()
 	s.incBackendCounter(&s.backendCalls, backend.Name())
 	err := backend.StreamResponse(ctx, req, sink)
 	if err != nil {
 		s.incBackendCounter(&s.backendFailures, backend.Name())
 	}
+	s.registry.ObserveOutcome(backend.Name(), err == nil, 0, time.Since(start).Milliseconds())
 	return err
 }
 
