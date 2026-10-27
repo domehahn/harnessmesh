@@ -66,6 +66,10 @@ browser, provider and external-agent adapters. It produces stable action
 digests, data-flow decisions and explainable block reasons; see
 [`docs/action-firewall.md`](docs/action-firewall.md).
 
+HarnessMesh-compatible SDKs and the machine-readable production compatibility
+profile are available under [`sdk/`](sdk/) and
+[`docs/compatibility-standard.md`](docs/compatibility-standard.md).
+
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.
 
 Current source version: **v0.2.0**.

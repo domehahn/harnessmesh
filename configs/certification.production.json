@@ -1,0 +1,11 @@
+{
+  "name": "my-production-agent-platform",
+  "version": "harnessmesh-compatible-v1",
+  "mcp": true,
+  "a2a": true,
+  "signed_evidence": true,
+  "action_firewall": true,
+  "replay": true,
+  "otel": true,
+  "marketplace_trust": true
+}
