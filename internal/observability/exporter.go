@@ -29,14 +29,15 @@ type Log struct {
 }
 
 type Span struct {
-	TraceID   string
-	SpanID    string
-	ParentID  string
-	Service   string
-	Operation string
-	Start     time.Time
-	Duration  int64
-	Status    string
+	TraceID    string
+	SpanID     string
+	ParentID   string
+	Service    string
+	Operation  string
+	Start      time.Time
+	Duration   int64
+	Status     string
+	Attributes map[string]string
 }
 
 type Exporter struct {
@@ -44,6 +45,16 @@ type Exporter struct {
 	TracesURL string
 	Token     string
 	Client    *http.Client
+}
+
+// GenAIAttributes and MCPAttributes keep emitted telemetry aligned with the
+// OpenTelemetry GenAI/MCP semantic namespaces while allowing callers to add
+// provider-specific fields explicitly.
+func GenAIAttributes(model, operation string, inputTokens, outputTokens int) map[string]string {
+	return map[string]string{"gen_ai.request.model": model, "gen_ai.operation.name": operation, "gen_ai.usage.input_tokens": fmt.Sprintf("%d", inputTokens), "gen_ai.usage.output_tokens": fmt.Sprintf("%d", outputTokens)}
+}
+func MCPAttributes(server, tool string) map[string]string {
+	return map[string]string{"mcp.server.name": server, "mcp.tool.name": tool}
 }
 
 func FromEnvironment() *Exporter {
@@ -137,7 +148,11 @@ func (e *Exporter) Export(ctx context.Context, tenant string, logs []Log, spans 
 		for _, span := range spans {
 			start := span.Start
 			end := start.Add(time.Duration(span.Duration) * time.Millisecond)
-			item := map[string]any{"traceId": validID(span.TraceID, 16), "spanId": validID(span.SpanID, 8), "name": span.Operation, "startTimeUnixNano": unixNano(start), "endTimeUnixNano": unixNano(end), "attributes": attributes(map[string]string{"service.name": span.Service, "harnessmesh.status": span.Status})}
+			spanAttrs := map[string]string{"service.name": span.Service, "harnessmesh.status": span.Status}
+			for key, value := range span.Attributes {
+				spanAttrs[key] = value
+			}
+			item := map[string]any{"traceId": validID(span.TraceID, 16), "spanId": validID(span.SpanID, 8), "name": span.Operation, "startTimeUnixNano": unixNano(start), "endTimeUnixNano": unixNano(end), "attributes": attributes(spanAttrs)}
 			if span.ParentID != "" {
 				item["parentSpanId"] = validID(span.ParentID, 8)
 			}

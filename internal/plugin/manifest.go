@@ -39,6 +39,9 @@ type Manifest struct {
 	SHA256                string        `json:"sha256,omitempty"`
 	Signature             string        `json:"signature,omitempty"`
 	PublicKey             string        `json:"public_key,omitempty"`
+	Publisher             string        `json:"publisher,omitempty"`
+	PublisherURL          string        `json:"publisher_url,omitempty"`
+	PublisherKeyID        string        `json:"publisher_key_id,omitempty"`
 	MinHarnessMeshVersion string        `json:"min_harnessmesh_version,omitempty"`
 	MaxHarnessMeshVersion string        `json:"max_harnessmesh_version,omitempty"`
 	Sandbox               SandboxConfig `json:"sandbox,omitempty"`
@@ -70,6 +73,7 @@ type Status struct {
 	Health            string   `json:"health"`
 	Verified          bool     `json:"verified"`
 	SignatureVerified bool     `json:"signature_verified"`
+	TrustLevel        string   `json:"trust_level,omitempty"`
 	Error             string   `json:"error,omitempty"`
 }
 

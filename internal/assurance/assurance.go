@@ -51,16 +51,18 @@ type Decision struct {
 	Findings         []string `json:"findings,omitempty"`
 }
 type Evidence struct {
-	Version   int           `json:"version"`
-	SessionID string        `json:"session_id,omitempty"`
-	Tenant    string        `json:"tenant,omitempty"`
-	Agent     string        `json:"agent,omitempty"`
-	Operation string        `json:"operation,omitempty"`
-	Events    []Observation `json:"events"`
-	Graph     Graph         `json:"graph"`
-	Digest    string        `json:"digest,omitempty"`
-	Signature string        `json:"signature,omitempty"`
-	KeyID     string        `json:"key_id,omitempty"`
+	Version      int           `json:"version"`
+	SessionID    string        `json:"session_id,omitempty"`
+	Tenant       string        `json:"tenant,omitempty"`
+	Agent        string        `json:"agent,omitempty"`
+	Operation    string        `json:"operation,omitempty"`
+	Events       []Observation `json:"events"`
+	Graph        Graph         `json:"graph"`
+	Digest       string        `json:"digest,omitempty"`
+	Signature    string        `json:"signature,omitempty"`
+	KeyID        string        `json:"key_id,omitempty"`
+	IntentDigest string        `json:"intent_digest,omitempty"`
+	ChainRoot    string        `json:"chain_root,omitempty"`
 }
 
 var sensitive = regexp.MustCompile(`(?i)(api[_-]?key|secret|password|passwd|token|credential|private[_-]?key|\.env)`)
@@ -134,7 +136,61 @@ func Fingerprint(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// MerkleRoot creates a deterministic binary Merkle root over ordered event
+// digests without exposing event contents to an auditor.
+func MerkleRoot(events []Observation) (string, error) {
+	if len(events) == 0 {
+		return "", errors.New("at least one evidence event is required")
+	}
+	levels := make([][]byte, len(events))
+	for i, event := range events {
+		digest, err := Fingerprint(event)
+		if err != nil {
+			return "", err
+		}
+		decoded, err := hex.DecodeString(digest)
+		if err != nil {
+			return "", err
+		}
+		levels[i] = decoded
+	}
+	for len(levels) > 1 {
+		next := make([][]byte, 0, (len(levels)+1)/2)
+		for i := 0; i < len(levels); i += 2 {
+			right := levels[i]
+			if i+1 < len(levels) {
+				right = levels[i+1]
+			}
+			input := append(append([]byte{}, levels[i]...), right...)
+			sum := sha256.Sum256(input)
+			next = append(next, sum[:])
+		}
+		levels = next
+	}
+	return hex.EncodeToString(levels[0]), nil
+}
+
+func FinalizeEvidence(e Evidence) (Evidence, error) {
+	root, err := MerkleRoot(e.Events)
+	if err != nil {
+		return e, err
+	}
+	e.ChainRoot = root
+	if e.IntentDigest == "" && e.Operation != "" {
+		e.IntentDigest, err = Fingerprint(struct{ SessionID, Tenant, Agent, Operation string }{e.SessionID, e.Tenant, e.Agent, e.Operation})
+		if err != nil {
+			return e, err
+		}
+	}
+	return e, nil
+}
+
 func SignEvidence(e Evidence, keyID string, key ed25519.PrivateKey) (Evidence, error) {
+	var err error
+	e, err = FinalizeEvidence(e)
+	if err != nil {
+		return e, err
+	}
 	e.Version = 1
 	e.KeyID = keyID
 	e.Signature = ""
@@ -166,6 +222,18 @@ func VerifyEvidence(e Evidence, pub ed25519.PublicKey) error {
 	}
 	if !ed25519.Verify(pub, raw, sig) {
 		return errors.New("assurance evidence signature invalid")
+	}
+	unsigned.Digest = ""
+	unsigned.Signature = ""
+	expected, err := Fingerprint(unsigned)
+	if err != nil || expected != e.Digest {
+		return errors.New("assurance evidence digest invalid")
+	}
+	if len(e.Events) > 0 {
+		root, rootErr := MerkleRoot(e.Events)
+		if rootErr != nil || e.ChainRoot != root {
+			return errors.New("assurance evidence Merkle root invalid")
+		}
 	}
 	return nil
 }

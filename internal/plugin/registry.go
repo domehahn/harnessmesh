@@ -54,6 +54,12 @@ func Discover(root string, opts Options) ([]Status, error) {
 		status := Status{Manifest: m, Directory: dir, State: "catalog-only", Health: "not-applicable"}
 		binary, verified, signatureVerified, validationErr := m.validate(dir, opts)
 		status.Binary, status.Verified, status.SignatureVerified = binary, verified, signatureVerified
+		status.TrustLevel = "untrusted"
+		if signatureVerified {
+			status.TrustLevel = "verified"
+		} else if verified {
+			status.TrustLevel = "hash-verified"
+		}
 		if validationErr != nil {
 			status.State, status.Health, status.Error = "invalid", "unhealthy", validationErr.Error()
 		}
