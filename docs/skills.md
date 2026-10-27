@@ -37,6 +37,9 @@ approval before activation.
 
 ```bash
 harnessmesh mcp serve --skill harnessmesh-review --skill-root plugins
+
+# Context-driven deterministic selection
+harnessmesh mcp serve --skill-context "perform a security review" --skill-root plugins
 ```
 
 Or configure it:
@@ -66,7 +69,10 @@ tools, risk, verification state and the schema-token estimate, but never the
 skill document contents or internal filesystem paths. The Settings view shows
 the same metadata so operators can confirm which workflow surface is active.
 
-`skills.require_signed` is intentionally separate from hash verification. A
-deployment that requires signed marketplace artifacts must reject unsigned
-manifests in its registry/approval policy; the built-in example skills are
-hash-pinned and unsigned by default.
+`skills.require_signed` is intentionally separate from hash verification. When
+enabled, HarnessMesh verifies an Ed25519 signature over the SHA-256 digest of
+`SKILL.md`, optionally against the base64 public keys in
+`HARNESSMESH_PLUGIN_TRUSTED_KEYS`. Unknown or untrusted keys are rejected
+before activation. The built-in example skills are
+hash-pinned and unsigned by default, so signed mode must be supplied with
+organization-owned signed manifests.

@@ -5,7 +5,9 @@
 package skills
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,22 +33,29 @@ type Manifest struct {
 }
 
 type Entry struct {
-	Manifest Manifest `json:"manifest"`
-	Path     string   `json:"path"`
-	Loaded   bool     `json:"loaded"`
-	Verified bool     `json:"verified"`
-	Content  string   `json:"content,omitempty"`
-	root     *os.Root
-	relative string
+	Manifest          Manifest `json:"manifest"`
+	Path              string   `json:"path"`
+	Loaded            bool     `json:"loaded"`
+	Verified          bool     `json:"verified"`
+	SignatureVerified bool     `json:"signature_verified"`
+	Content           string   `json:"content,omitempty"`
+	root              *os.Root
+	relative          string
 }
 type Registry struct {
-	Root        string
-	Entries     map[string]Entry
-	RequireHash bool
-	root        *os.Root
+	Root              string
+	Entries           map[string]Entry
+	RequireHash       bool
+	RequireSignature  bool
+	TrustedPublicKeys []ed25519.PublicKey
+	root              *os.Root
 }
 
 func Discover(root string, requireHash bool) (*Registry, error) {
+	return DiscoverWithOptions(root, requireHash, false, nil)
+}
+
+func DiscoverWithOptions(root string, requireHash, requireSignature bool, trusted []ed25519.PublicKey) (*Registry, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("skill root is required")
 	}
@@ -79,14 +88,17 @@ func Discover(root string, requireHash bool) (*Registry, error) {
 		}
 		contentPath := filepath.Join(filepath.Dir(path), "SKILL.md")
 		entry := Entry{Manifest: m, Path: filepath.Join(absRoot, contentPath), root: rootFS, relative: contentPath}
-		entry.Verified = verifyContent(entry, requireHash)
+		entry.Verified, entry.SignatureVerified = verifyContent(entry, requireHash, requireSignature, trusted)
+		if requireSignature && !entry.SignatureVerified {
+			return fmt.Errorf("skill %q failed signature verification", m.Name)
+		}
 		entries[m.Name] = entry
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &Registry{Root: absRoot, Entries: entries, RequireHash: requireHash, root: rootFS}, nil
+	return &Registry{Root: absRoot, Entries: entries, RequireHash: requireHash, RequireSignature: requireSignature, TrustedPublicKeys: trusted, root: rootFS}, nil
 }
 
 func (r *Registry) List() []Entry {
@@ -119,6 +131,43 @@ func (r *Registry) Select(query string) (Entry, error) {
 	return Entry{}, fmt.Errorf("no skill matches %q", query)
 }
 
+// SelectContext chooses the highest-scoring skill for a task description and
+// optional evaluated capabilities. Ties are deterministic by name.
+func (r *Registry) SelectContext(query string, capabilities []string) (Entry, error) {
+	text := strings.ToLower(strings.TrimSpace(query))
+	if text == "" {
+		return Entry{}, errors.New("skill context is required")
+	}
+	capSet := map[string]bool{}
+	for _, capability := range capabilities {
+		capSet[strings.ToLower(strings.TrimSpace(capability))] = true
+	}
+	bestName, bestScore := "", 0
+	for name, entry := range r.Entries {
+		score := 0
+		if strings.Contains(text, strings.ToLower(entry.Manifest.Name)) {
+			score += 100
+		}
+		for _, trigger := range entry.Manifest.Triggers {
+			if strings.Contains(text, strings.ToLower(trigger)) {
+				score += 20
+			}
+		}
+		for _, capability := range entry.Manifest.Capabilities {
+			if capSet[strings.ToLower(capability)] {
+				score += 10
+			}
+		}
+		if score > bestScore || (score > 0 && score == bestScore && (bestName == "" || name < bestName)) {
+			bestName, bestScore = name, score
+		}
+	}
+	if bestScore == 0 {
+		return Entry{}, fmt.Errorf("no skill matches context %q", query)
+	}
+	return r.Load(bestName)
+}
+
 func (r *Registry) Load(name string) (Entry, error) {
 	e, ok := r.Entries[name]
 	if !ok {
@@ -133,9 +182,12 @@ func (r *Registry) Load(name string) (Entry, error) {
 	}
 	e.Content = string(raw)
 	e.Loaded = true
-	e.Verified = verifyContent(e, r.RequireHash)
+	e.Verified, e.SignatureVerified = verifyContent(e, r.RequireHash, r.RequireSignature, r.TrustedPublicKeys)
 	if r.RequireHash && !e.Verified {
 		return Entry{}, fmt.Errorf("skill %q failed hash verification", name)
+	}
+	if r.RequireSignature && !e.SignatureVerified {
+		return Entry{}, fmt.Errorf("skill %q failed signature verification", name)
 	}
 	return e, nil
 }
@@ -161,17 +213,39 @@ func (e Entry) AllowsCapability(name string) bool {
 }
 func (e Entry) SchemaTokenEstimate() int { return len(e.Manifest.Tools) * 80 }
 
-func verifyContent(e Entry, required bool) bool {
+func verifyContent(e Entry, required, requireSignature bool, trusted []ed25519.PublicKey) (bool, bool) {
 	if e.Manifest.SHA256 == "" {
-		return !required
+		return !required, false
 	}
 	if e.root == nil {
-		return false
+		return false, false
 	}
 	raw, err := e.root.ReadFile(e.relative)
 	if err != nil {
-		return false
+		return false, false
 	}
 	sum := sha256.Sum256(raw)
-	return strings.EqualFold(e.Manifest.SHA256, hex.EncodeToString(sum[:]))
+	digest := hex.EncodeToString(sum[:])
+	verified := strings.EqualFold(e.Manifest.SHA256, digest)
+	if !verified || e.Manifest.Signature == "" || e.Manifest.PublicKey == "" {
+		return verified, false
+	}
+	pub, pubErr := base64.StdEncoding.DecodeString(e.Manifest.PublicKey)
+	sig, sigErr := base64.StdEncoding.DecodeString(e.Manifest.Signature)
+	if pubErr != nil || sigErr != nil || len(pub) != ed25519.PublicKeySize || len(sig) != ed25519.SignatureSize {
+		return verified, false
+	}
+	if len(trusted) > 0 {
+		trustedKey := false
+		for _, key := range trusted {
+			if string(key) == string(pub) {
+				trustedKey = true
+				break
+			}
+		}
+		if !trustedKey {
+			return verified, false
+		}
+	}
+	return verified, ed25519.Verify(ed25519.PublicKey(pub), []byte(digest), sig)
 }

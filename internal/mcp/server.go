@@ -703,6 +703,7 @@ func (s *Server) SkillSnapshot() map[string]any {
 				"description": entry.Manifest.Description, "triggers": entry.Manifest.Triggers,
 				"capabilities": entry.Manifest.Capabilities, "tools": entry.Manifest.Tools,
 				"risk": entry.Manifest.Risk, "loaded": entry.Loaded, "verified": entry.Verified,
+				"signature_verified":    entry.SignatureVerified,
 				"schema_token_estimate": entry.SchemaTokenEstimate(),
 			})
 		}
