@@ -61,6 +61,11 @@ bin/harnessmesh mcp serve --skill harnessmesh-review --skill-root plugins
 See [`docs/skills.md`](docs/skills.md) for manifests, hashes, capability
 bindings, simulation and token-efficiency reporting.
 
+The runtime also exposes a provider-neutral Action Firewall for MCP/A2A,
+browser, provider and external-agent adapters. It produces stable action
+digests, data-flow decisions and explainable block reasons; see
+[`docs/action-firewall.md`](docs/action-firewall.md).
+
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.
 
 Current source version: **v0.2.0**.

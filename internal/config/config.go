@@ -68,6 +68,7 @@ type AgentPlatformConfig struct {
 	Memory     AdapterConfig    `json:"memory,omitempty"`
 	Browser    BrowserConfig    `json:"browser,omitempty"`
 	LLMGateway AdapterConfig    `json:"llm_gateway,omitempty"`
+	Voice      AdapterConfig    `json:"voice,omitempty"`
 }
 
 type A2AConfig struct {
