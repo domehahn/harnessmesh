@@ -90,6 +90,7 @@ profile and provides the same tenant-scoped control plane with:
 - tenant members, roles and API-key issuance/revocation;
 - a credential-free adapter registry contract for built-in and external agent integrations;
 - a registrable Provider Backend SDK with policy-checked fallback resolution;
+- orchestration SDK usage for Go, TypeScript and Python, documented in [`docs/orchestration-sdks.md`](docs/orchestration-sdks.md);
 - deep links, local pagination, keyboard-accessible navigation and authenticated E2E coverage.
 
 The console stores credentials only in browser session storage. It polls the
