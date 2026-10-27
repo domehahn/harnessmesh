@@ -19,6 +19,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/governance"
 	"github.com/domehahn/harnessmesh/internal/identity"
+	"github.com/domehahn/harnessmesh/internal/incident"
 	"github.com/domehahn/harnessmesh/internal/observability"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/replay"
@@ -1507,7 +1508,8 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 					unhealthy = append(unhealthy, agent)
 				}
 			}
-			writeJSON(w, map[string]any{"tenant": who.Tenant, "failed_jobs": failed, "dead_jobs": dead, "unhealthy_agents": unhealthy, "requires_attention": len(failed)+len(dead)+len(unhealthy) > 0})
+			incidents := incident.FromPosture(who.Tenant, len(failed), len(dead), len(unhealthy), time.Now().UTC())
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "failed_jobs": failed, "dead_jobs": dead, "unhealthy_agents": unhealthy, "incidents": incidents, "requires_attention": len(incidents) > 0})
 		case "/simulation":
 			if r.Method == http.MethodGet {
 				writeJSON(w, map[string]any{"tenant": who.Tenant, "scenarios": simulation.Catalog()})

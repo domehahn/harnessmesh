@@ -20,3 +20,10 @@ env:
   vaultAddress: ""
   vaultMount: secret
 resources: {}
+edgeGateway:
+  enabled: false
+  replicas: 1
+  secretName: harnessmesh-edge-gateway
+operator:
+  crd:
+    enabled: true

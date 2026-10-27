@@ -1,0 +1,9 @@
+{{- if .Values.edgeGateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "harnessmesh.fullname" . }}-edge-gateway
+spec:
+  selector: { app.kubernetes.io/name: {{ include "harnessmesh.name" . }}, harnessmesh/component: edge-gateway }
+  ports: [{ name: http, port: 8791, targetPort: http }]
+{{- end }}

@@ -20,3 +20,8 @@ class Client:
     def summary(self): return self.request('/summary')
     def skills(self): return self.request('/skills')
     def marketplace(self): return self.request('/marketplace')
+    def sessions(self): return self.request('/sessions')
+    def jobs(self): return self.request('/jobs')
+    def approvals(self): return self.request('/approvals')
+    def observability_logs(self): return self.request('/observability/logs')
+    def observability_traces(self): return self.request('/observability/traces')

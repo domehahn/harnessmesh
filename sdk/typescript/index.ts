@@ -10,4 +10,9 @@ export class HarnessMeshClient {
   summary<T = unknown>() { return this.request<T>("/summary"); }
   skills<T = unknown>() { return this.request<T>("/skills"); }
   marketplace<T = unknown>() { return this.request<T>("/marketplace"); }
+  sessions<T = unknown>() { return this.request<T>("/sessions"); }
+  jobs<T = unknown>() { return this.request<T>("/jobs"); }
+  approvals<T = unknown>() { return this.request<T>("/approvals"); }
+  observabilityLogs<T = unknown>() { return this.request<T>("/observability/logs"); }
+  observabilityTraces<T = unknown>() { return this.request<T>("/observability/traces"); }
 }
