@@ -46,6 +46,54 @@ type Config struct {
 	Bridge               BridgeConfig                         `json:"bridge,omitempty"`
 	Provider             ProviderGatewayConfig                `json:"provider,omitempty"`
 	MCP                  MCPRegistryConfig                    `json:"mcp,omitempty"`
+	AgentPlatform        AgentPlatformConfig                  `json:"agent_platform,omitempty"`
+}
+
+// AgentPlatformConfig enables optional interoperability adapters. All
+// integrations are default-off and fail closed when credentials or policy are
+// missing; the core collaboration plane remains usable without them.
+type AgentPlatformConfig struct {
+	A2A        A2AConfig        `json:"a2a,omitempty"`
+	Evaluation EvaluationConfig `json:"evaluation,omitempty"`
+	Durable    DurableConfig    `json:"durable_workflows,omitempty"`
+	Memory     AdapterConfig    `json:"memory,omitempty"`
+	Browser    BrowserConfig    `json:"browser,omitempty"`
+	LLMGateway AdapterConfig    `json:"llm_gateway,omitempty"`
+}
+
+type A2AConfig struct {
+	Enabled      bool     `json:"enabled,omitempty"`
+	Listen       string   `json:"listen,omitempty"`
+	PublicURL    string   `json:"public_url,omitempty"`
+	TokenEnv     string   `json:"token_env,omitempty"`
+	AllowedPeers []string `json:"allowed_peers,omitempty"`
+	Skills       []string `json:"skills,omitempty"`
+}
+
+type EvaluationConfig struct {
+	Enabled       bool    `json:"enabled,omitempty"`
+	RequirePolicy bool    `json:"require_policy,omitempty"`
+	MinScore      float64 `json:"min_score,omitempty"`
+	DatasetPath   string  `json:"dataset_path,omitempty"`
+}
+
+type DurableConfig struct {
+	Provider  string `json:"provider,omitempty"` // builtin, temporal, restate
+	Endpoint  string `json:"endpoint,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+}
+
+type AdapterConfig struct {
+	Enabled  bool   `json:"enabled,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
+type BrowserConfig struct {
+	Enabled         bool     `json:"enabled,omitempty"`
+	Provider        string   `json:"provider,omitempty"` // playwright, browser-use
+	AllowedDomains  []string `json:"allowed_domains,omitempty"`
+	RequireApproval bool     `json:"require_approval,omitempty"`
 }
 
 // MCPRegistryConfig is the declarative, fail-closed inventory of external MCP
@@ -830,8 +878,55 @@ func Parse(raw []byte) (*Config, error) {
 	if err := validateProviderGateway(&cfg); err != nil {
 		return nil, err
 	}
+	if err := validateAgentPlatform(&cfg); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
+}
+
+func validateAgentPlatform(cfg *Config) error {
+	p := cfg.AgentPlatform
+	if p.A2A.Enabled {
+		if strings.TrimSpace(p.A2A.TokenEnv) == "" {
+			return fmt.Errorf("agent_platform.a2a.token_env is required when A2A is enabled")
+		}
+		listen := p.A2A.Listen
+		if listen == "" {
+			listen = "127.0.0.1:8790"
+		}
+		host, _, err := net.SplitHostPort(listen)
+		if err != nil || host == "" {
+			return fmt.Errorf("agent_platform.a2a.listen %q is invalid; expected host:port", listen)
+		}
+		if !isLoopbackHost(host) && strings.TrimSpace(p.A2A.PublicURL) == "" {
+			return fmt.Errorf("agent_platform.a2a public listeners require public_url")
+		}
+	}
+	if p.Evaluation.MinScore < 0 || p.Evaluation.MinScore > 1 {
+		return fmt.Errorf("agent_platform.evaluation.min_score must be between 0 and 1")
+	}
+	if p.Durable.Provider != "" {
+		switch strings.ToLower(p.Durable.Provider) {
+		case "builtin", "temporal", "restate":
+		default:
+			return fmt.Errorf("agent_platform.durable_workflows.provider %q is unsupported", p.Durable.Provider)
+		}
+	}
+	if p.Browser.Enabled {
+		if len(p.Browser.AllowedDomains) == 0 {
+			return fmt.Errorf("agent_platform.browser.allowed_domains is required when browser integration is enabled")
+		}
+		if !p.Browser.RequireApproval {
+			return fmt.Errorf("agent_platform.browser.require_approval must remain true")
+		}
+	}
+	for name, adapter := range map[string]AdapterConfig{"memory": p.Memory, "llm_gateway": p.LLMGateway} {
+		if adapter.Enabled && (strings.TrimSpace(adapter.Provider) == "" || strings.TrimSpace(adapter.Endpoint) == "") {
+			return fmt.Errorf("agent_platform.%s requires provider and endpoint", name)
+		}
+	}
+	return nil
 }
 
 // meteredProviderBackendTypes are the provider-backend types that resolve to

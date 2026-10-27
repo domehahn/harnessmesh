@@ -54,6 +54,7 @@ type Config struct {
 	OAuthIntrospectionURL string
 	OAuthClientSecret     string
 	RequiredScope         string
+	A2AHandler            http.Handler
 }
 
 // Server is the bridge's HTTP(+WebSocket) server.
@@ -153,6 +154,10 @@ func (s *Server) Handler() http.Handler {
 	}
 
 	mux.Handle("/api/v1/", s.withMiddleware(api))
+	if s.cfg.A2AHandler != nil {
+		mux.Handle("/.well-known/agent-card.json", s.cfg.A2AHandler)
+		mux.Handle("/a2a/", s.cfg.A2AHandler)
+	}
 	return mux
 }
 

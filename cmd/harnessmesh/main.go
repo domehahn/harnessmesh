@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/a2a"
 	"github.com/domehahn/harnessmesh/internal/agent"
 	"github.com/domehahn/harnessmesh/internal/bridge"
 	"github.com/domehahn/harnessmesh/internal/codeintel"
@@ -105,6 +106,8 @@ func main() {
 		err = switchyardCmd(os.Args[2:])
 	case "doctor":
 		err = doctor(os.Args[2:])
+	case "agent-platform":
+		err = agentPlatformCmd(os.Args[2:])
 	case "print-config":
 		err = printConfig(os.Args[2:])
 	case "version", "--version", "-v":
@@ -162,11 +165,31 @@ Usage:
   harnessmesh switchyard <doctor|routes|config validate> [options]
   harnessmesh smoke-test antigravity-codex [--config <path>]
   harnessmesh doctor [--config <path>]
+  harnessmesh agent-platform doctor [--config <path>]
   harnessmesh print-config [--config <path>]
   harnessmesh version
 
 Run 'harnessmesh <command> --help' for details on a specific command.
 `, version)
+}
+
+func agentPlatformCmd(args []string) error {
+	if len(args) == 0 || args[0] != "doctor" {
+		return errors.New("usage: harnessmesh agent-platform doctor [--config <path>]")
+	}
+	fs := flag.NewFlagSet("agent-platform doctor", flag.ContinueOnError)
+	configPath := fs.String("config", "harnessmesh.json", "config file")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	cfg, err := loadConfigOrDefault(*configPath)
+	if err != nil {
+		return err
+	}
+	status := map[string]any{"a2a": map[string]any{"enabled": cfg.AgentPlatform.A2A.Enabled, "listen": cfg.AgentPlatform.A2A.Listen, "token_env": cfg.AgentPlatform.A2A.TokenEnv}, "evaluation": map[string]any{"enabled": cfg.AgentPlatform.Evaluation.Enabled, "min_score": cfg.AgentPlatform.Evaluation.MinScore}, "durable_workflows": map[string]any{"provider": cfg.AgentPlatform.Durable.Provider}, "memory": map[string]any{"enabled": cfg.AgentPlatform.Memory.Enabled, "provider": cfg.AgentPlatform.Memory.Provider}, "browser": map[string]any{"enabled": cfg.AgentPlatform.Browser.Enabled, "provider": cfg.AgentPlatform.Browser.Provider, "approval_required": cfg.AgentPlatform.Browser.RequireApproval}, "llm_gateway": map[string]any{"enabled": cfg.AgentPlatform.LLMGateway.Enabled, "provider": cfg.AgentPlatform.LLMGateway.Provider}}
+	raw, _ := json.MarshalIndent(status, "", "  ")
+	fmt.Println(string(raw))
+	return nil
 }
 
 func pluginsCmd(args []string) error {
@@ -1166,6 +1189,45 @@ func bridgeServe(args []string) error {
 	// keeps retrying). If a config-only (no-flags) way to force it off is
 	// ever needed, give BridgeConfig a proper tri-state (*bool) field.
 	wsEnabled := *websocketEnabled
+	var a2aHandler http.Handler
+	if cfg.AgentPlatform.A2A.Enabled {
+		tokenEnv := cfg.AgentPlatform.A2A.TokenEnv
+		a2aToken := os.Getenv(tokenEnv)
+		if a2aToken == "" {
+			return fmt.Errorf("A2A is enabled but %s is empty", tokenEnv)
+		}
+		a2aURL := cfg.AgentPlatform.A2A.PublicURL
+		if a2aURL == "" {
+			a2aURL = "http://" + listenAddrOrDefault(cfg.AgentPlatform.A2A.Listen)
+		}
+		card, cardErr := a2a.NewServer(a2a.Config{
+			BearerToken: a2aToken,
+			Card:        a2a.AgentCard{Name: "HarnessMesh", Description: "Tenant-scoped HarnessMesh collaboration agent", URL: a2aURL, Version: version, Capabilities: map[string]bool{"tasks": true, "streaming": false}, Skills: configuredA2ASkills(cfg.AgentPlatform.A2A.Skills)},
+			Executor: func(ctx context.Context, req a2a.TaskRequest) (string, error) {
+				spaceID, _ := req.Metadata["space_id"].(string)
+				if strings.TrimSpace(spaceID) == "" {
+					return "", errors.New("A2A task metadata.space_id is required")
+				}
+				channel, _ := req.Metadata["channel"].(string)
+				if channel == "" {
+					channel = "general"
+				}
+				from, _ := req.Metadata["from"].(string)
+				if from == "" {
+					from = "a2a-peer"
+				}
+				response, err := eng.Publish(ctx, &protocol.PublishRequest{SpaceID: spaceID, Channel: channel, From: from, Message: req.Input, Metadata: map[string]any{"a2a": true, "tenant": req.Tenant}})
+				if err != nil {
+					return "", err
+				}
+				return response.MessageID, nil
+			},
+		})
+		if cardErr != nil {
+			return fmt.Errorf("configure A2A: %w", cardErr)
+		}
+		a2aHandler = card.Handler()
+	}
 
 	srv := bridge.NewServer(eng, bridge.Config{
 		Listen:                listenAddr,
@@ -1177,6 +1239,7 @@ func bridgeServe(args []string) error {
 		OAuthIntrospectionURL: os.Getenv("HARNESSMESH_BRIDGE_OAUTH_INTROSPECTION_URL"),
 		OAuthClientSecret:     os.Getenv("HARNESSMESH_BRIDGE_OAUTH_CLIENT_SECRET"),
 		RequiredScope:         os.Getenv("HARNESSMESH_BRIDGE_REQUIRED_SCOPE"),
+		A2AHandler:            a2aHandler,
 	})
 	defer srv.Close()
 
@@ -1192,6 +1255,16 @@ func listenAddrOrDefault(addr string) string {
 		return "127.0.0.1:8788"
 	}
 	return addr
+}
+
+func configuredA2ASkills(skills []string) []a2a.Skill {
+	result := make([]a2a.Skill, 0, len(skills))
+	for _, skill := range skills {
+		if name := strings.TrimSpace(skill); name != "" {
+			result = append(result, a2a.Skill{ID: name, Name: name})
+		}
+	}
+	return result
 }
 
 func mcpInstall(args []string) error {

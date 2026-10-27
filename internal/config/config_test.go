@@ -105,6 +105,18 @@ func TestParseV2Config(t *testing.T) {
 	}
 }
 
+func TestAgentPlatformValidationFailsClosed(t *testing.T) {
+	if _, err := Parse([]byte(`{"version":2,"agent_platform":{"a2a":{"enabled":true}}}`)); err == nil {
+		t.Fatal("expected enabled A2A without token_env to fail")
+	}
+	if _, err := Parse([]byte(`{"version":2,"agent_platform":{"browser":{"enabled":true,"allowed_domains":["example.test"],"require_approval":false}}}`)); err == nil {
+		t.Fatal("expected browser integration without approval to fail")
+	}
+	if _, err := Parse([]byte(`{"version":2,"agent_platform":{"evaluation":{"min_score":1.2}}}`)); err == nil {
+		t.Fatal("expected invalid evaluation threshold to fail")
+	}
+}
+
 func TestSingleWriterConstraint(t *testing.T) {
 	raw := []byte(`{
 		"version": 2,

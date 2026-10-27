@@ -43,6 +43,14 @@ harnessmesh mcp tools-lock generate --tools-file gateway-tools.json --file .skil
 
 It also provides a separate, bounded **model-provider plane** that lets the official Codex client talk to HarnessMesh over the Responses API wire and route inference to an explicitly configured backend.
 
+Optional production-agent adapters are documented in
+[`docs/agent-platform.md`](docs/agent-platform.md). They add tenant-bound A2A
+discovery/tasks, deterministic run evaluation and a durable-workflow contract
+for the built-in job store or external engines such as Temporal/Restate.
+Browser, memory and LLM-gateway integrations are explicit, opt-in adapter
+boundaries with allowlists and approval requirements; they do not create
+implicit network access or bypass HarnessMesh policy.
+
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.
 
 Current source version: **v0.2.0**.
