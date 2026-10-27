@@ -26,6 +26,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/mcpgateway"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/provenance"
 	"github.com/domehahn/harnessmesh/internal/secrets"
 	"github.com/domehahn/harnessmesh/internal/securitygate"
 	"github.com/domehahn/harnessmesh/internal/skills"
@@ -83,6 +84,7 @@ type Server struct {
 	skillRegistry      *skills.Registry
 	reliability        *agentreliability.Controller
 	runtimeGraph       *assurance.RuntimeGraph
+	provenance         *provenance.Chain
 	toolLockErr        error
 }
 
@@ -660,6 +662,7 @@ func NewServer(engine *collaboration.Engine, sessionID, caller string) *Server {
 	server.metrics = telemetry.NewRegistry()
 	server.reliability = agentreliability.New(agentreliability.Config{})
 	server.runtimeGraph = assurance.NewRuntimeGraph()
+	server.provenance = provenance.New()
 	server.allowedProjects = parseACL(os.Getenv("HARNESSMESH_MCP_PROJECTS"))
 	server.allowedCallers = parseACL(os.Getenv("HARNESSMESH_MCP_CALLERS"))
 	server.sessions = make(map[string]*mcpSession)
@@ -1482,13 +1485,18 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		if !s.skillAllowsTool(callParams.Name) {
 			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32003, Message: "tool is not allowed by selected skill", Data: callParams.Name}}, nil
 		}
+		argsDigest, _ := assurance.Fingerprint(string(callParams.Arguments))
+		s.recordProvenance(ctx, "intent", callParams.Name, map[string]any{"tool": callParams.Name, "arguments_digest": argsDigest})
 
 		guardedArgs, guardErr := s.guardToolCall(ctx, callParams.Name, callParams.Arguments)
 		if guardErr != nil {
+			s.recordProvenance(ctx, "policy.block", callParams.Name, map[string]any{"reason": guardErr.Error()})
 			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: ToolCallResult{Content: []ToolCallContent{{Type: "text", Text: "Tool call blocked by runtime security policy: " + guardErr.Error()}}, IsError: true}}, nil
 		}
+		s.recordProvenance(ctx, "policy.allow", callParams.Name, map[string]any{"tool": callParams.Name})
 		res, err := s.executeTool(ctx, callParams.Name, guardedArgs)
 		if err != nil {
+			s.recordProvenance(ctx, "execution.error", callParams.Name, map[string]any{"error": err.Error()})
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      req.ID,
@@ -1500,6 +1508,7 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 				},
 			}, nil
 		}
+		s.recordProvenance(ctx, "execution.complete", callParams.Name, map[string]any{"status": "success"})
 
 		resJSON, _ := json.MarshalIndent(res, "", "  ")
 		return &JSONRPCResponse{
@@ -1519,6 +1528,21 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 			Error:   &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Method not found: %s", req.Method)},
 		}, nil
 	}
+}
+
+func (s *Server) recordProvenance(ctx context.Context, kind, subject string, payload map[string]any) {
+	if s.provenance == nil {
+		return
+	}
+	event, err := s.provenance.Append(kind, subject, payload, time.Now().UTC())
+	if err != nil || s.engine == nil {
+		return
+	}
+	tenantID := ""
+	if identity, identityErr := tenant.FromContext(ctx); identityErr == nil {
+		tenantID = identity.Tenant
+	}
+	_ = s.engine.Store().EmitEvent(ctx, s.sessionID, "provenance."+kind, map[string]any{"sequence": event.Sequence, "digest": event.Digest, "previous": event.Previous, "chain_root": s.provenance.Root(), "tenant": tenantID, "subject": subject})
 }
 
 func (s *Server) guardToolCall(ctx context.Context, toolName string, args json.RawMessage) (json.RawMessage, error) {
