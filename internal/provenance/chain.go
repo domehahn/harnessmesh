@@ -29,11 +29,8 @@ func (c *Chain) Append(kind, subject string, payload any, at time.Time) (Event, 
 	if kind == "" || subject == "" {
 		return Event{}, errors.New("kind and subject are required")
 	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return Event{}, err
-	}
-	sum := sha256.Sum256(raw)
+	digestInput := []byte(fmt.Sprintf("%T", payload))
+	sum := sha256.Sum256(digestInput)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	previous := c.root
