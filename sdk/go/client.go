@@ -59,11 +59,29 @@ func (c *Client) Marketplace(ctx context.Context, out any) error {
 func (c *Client) Sessions(ctx context.Context, out any) error {
 	return c.Do(ctx, http.MethodGet, "/sessions", nil, out)
 }
+func (c *Client) Session(ctx context.Context, id string, out any) error {
+	return c.Do(ctx, http.MethodGet, "/sessions/"+id, nil, out)
+}
+func (c *Client) SessionReplay(ctx context.Context, id string, out any) error {
+	return c.Do(ctx, http.MethodGet, "/sessions/"+id+"/replay", nil, out)
+}
 func (c *Client) Jobs(ctx context.Context, out any) error {
 	return c.Do(ctx, http.MethodGet, "/jobs", nil, out)
 }
+func (c *Client) Job(ctx context.Context, id string, out any) error {
+	return c.Do(ctx, http.MethodGet, "/jobs/"+id, nil, out)
+}
+func (c *Client) JobAction(ctx context.Context, id, action string, out any) error {
+	return c.Do(ctx, http.MethodPost, "/jobs/"+id, map[string]string{"action": action}, out)
+}
 func (c *Client) Approvals(ctx context.Context, out any) error {
 	return c.Do(ctx, http.MethodGet, "/approvals", nil, out)
+}
+func (c *Client) Approval(ctx context.Context, id string, out any) error {
+	return c.Do(ctx, http.MethodGet, "/approvals/"+id, nil, out)
+}
+func (c *Client) DecideApproval(ctx context.Context, id, status string, out any) error {
+	return c.Do(ctx, http.MethodPost, "/approvals/"+id, map[string]string{"status": status}, out)
 }
 func (c *Client) ObservabilityLogs(ctx context.Context, out any) error {
 	return c.Do(ctx, http.MethodGet, "/observability/logs", nil, out)

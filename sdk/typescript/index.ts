@@ -11,8 +11,14 @@ export class HarnessMeshClient {
   skills<T = unknown>() { return this.request<T>("/skills"); }
   marketplace<T = unknown>() { return this.request<T>("/marketplace"); }
   sessions<T = unknown>() { return this.request<T>("/sessions"); }
+  session<T = unknown>(id: string) { return this.request<T>(`/sessions/${encodeURIComponent(id)}`); }
+  sessionReplay<T = unknown>(id: string) { return this.request<T>(`/sessions/${encodeURIComponent(id)}/replay`); }
   jobs<T = unknown>() { return this.request<T>("/jobs"); }
+  job<T = unknown>(id: string) { return this.request<T>(`/jobs/${encodeURIComponent(id)}`); }
+  jobAction<T = unknown>(id: string, action: "retry" | "cancel") { return this.request<T>(`/jobs/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ action }) }); }
   approvals<T = unknown>() { return this.request<T>("/approvals"); }
+  approval<T = unknown>(id: string) { return this.request<T>(`/approvals/${encodeURIComponent(id)}`); }
+  decideApproval<T = unknown>(id: string, status: "approved" | "rejected") { return this.request<T>(`/approvals/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ status }) }); }
   observabilityLogs<T = unknown>() { return this.request<T>("/observability/logs"); }
   observabilityTraces<T = unknown>() { return this.request<T>("/observability/traces"); }
 }
