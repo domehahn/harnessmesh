@@ -27,6 +27,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/collaboration"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/provenance"
 )
 
 const (
@@ -77,8 +78,9 @@ type Server struct {
 
 	allowedOrigins []string
 
-	closeOnce sync.Once
-	unlisten  func()
+	closeOnce  sync.Once
+	unlisten   func()
+	provenance *provenance.Recorder
 }
 
 // NewServer constructs a bridge Server bound to engine. It registers a
@@ -102,6 +104,7 @@ func NewServer(engine *collaboration.Engine, cfg Config) *Server {
 		allowedOrigins: cfg.AllowedOrigins,
 	}
 	if engine != nil {
+		s.provenance = provenance.NewRecorder(engine.Store())
 		if eb := engine.EventBus(); eb != nil {
 			eb.AddListener("*", s.bridgeEventListener)
 		}
@@ -205,8 +208,46 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-		next.ServeHTTP(w, r)
+		requestSubject := r.Method + " " + r.URL.Path
+		if s.provenance != nil {
+			_, _ = s.provenance.Record(r.Context(), r.URL.Query().Get("space_id"), "bridge.intent", requestSubject, map[string]any{
+				"method": r.Method, "path": r.URL.Path, "content_length": r.ContentLength,
+			})
+		}
+		// WebSocket upgrades require the original ResponseWriter's hijacking
+		// interfaces; do not wrap that transport with an HTTP status recorder.
+		if strings.HasSuffix(r.URL.Path, "/events/ws") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r)
+		if s.provenance != nil {
+			_, _ = s.provenance.Record(r.Context(), r.URL.Query().Get("space_id"), "bridge.response", requestSubject, map[string]any{
+				"method": r.Method, "path": r.URL.Path, "status": rw.status,
+			})
+		}
 	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	if w.status != http.StatusOK {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusWriter) Write(body []byte) (int, error) {
+	if w.status == http.StatusOK {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
 }
 
 func (s *Server) authorized(r *http.Request) bool {

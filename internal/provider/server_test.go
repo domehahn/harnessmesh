@@ -363,6 +363,12 @@ func TestServer_AuditSinkRecordsRequests(t *testing.T) {
 	if audit.records[0].Result != "ok" || audit.records[0].Backend != "local" {
 		t.Fatalf("unexpected audit record: %+v", audit.records[0])
 	}
+	if audit.records[0].ProvenanceSequence != 1 || audit.records[0].ProvenanceDigest == "" || audit.records[0].ProvenanceRoot == "" {
+		t.Fatalf("expected digest-only provenance metadata: %+v", audit.records[0])
+	}
+	if err := s.provenance.Verify(); err != nil {
+		t.Fatalf("provider provenance chain should verify: %v", err)
+	}
 }
 
 type memoryAuditSink struct {
