@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/agentreliability"
+	"github.com/domehahn/harnessmesh/internal/assurance"
 	"github.com/domehahn/harnessmesh/internal/auth"
 	"github.com/domehahn/harnessmesh/internal/collaboration"
 	"github.com/domehahn/harnessmesh/internal/config"
@@ -79,6 +81,8 @@ type Server struct {
 	gatewayTools       []ToolDefinition
 	skill              *skills.Entry
 	skillRegistry      *skills.Registry
+	reliability        *agentreliability.Controller
+	runtimeGraph       *assurance.RuntimeGraph
 	toolLockErr        error
 }
 
@@ -654,6 +658,8 @@ func NewServer(engine *collaboration.Engine, sessionID, caller string) *Server {
 		caller:    caller,
 	}
 	server.metrics = telemetry.NewRegistry()
+	server.reliability = agentreliability.New(agentreliability.Config{})
+	server.runtimeGraph = assurance.NewRuntimeGraph()
 	server.allowedProjects = parseACL(os.Getenv("HARNESSMESH_MCP_PROJECTS"))
 	server.allowedCallers = parseACL(os.Getenv("HARNESSMESH_MCP_CALLERS"))
 	server.sessions = make(map[string]*mcpSession)
@@ -667,6 +673,9 @@ func NewServer(engine *collaboration.Engine, sessionID, caller string) *Server {
 		server.tenantRateLimit = configured
 	}
 	server.tenantWindows = make(map[string]tenantRateWindow)
+	for _, tool := range server.ListTools() {
+		_ = server.runtimeGraph.Declare(assurance.Capability{ID: "tool." + tool.Name, Kind: "mcp_tool", Subject: tool.Name, DeclaredBy: "mcp", Allowed: true})
+	}
 	return server
 }
 
@@ -1513,6 +1522,9 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 }
 
 func (s *Server) guardToolCall(ctx context.Context, toolName string, args json.RawMessage) (json.RawMessage, error) {
+	if s.runtimeGraph != nil && !s.runtimeGraph.Observe("tool."+toolName) {
+		return nil, fmt.Errorf("runtime capability drift: tool %q is not declared", toolName)
+	}
 	if !securitygate.CheckEnabled() {
 		return args, nil
 	}
@@ -1544,6 +1556,22 @@ func firstString(values map[string]any, keys ...string) string {
 }
 
 func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json.RawMessage) (any, error) {
+	if s.reliability != nil {
+		if err := s.reliability.Before(toolName, time.Now().UTC()); err != nil {
+			return nil, err
+		}
+		result, err := s.executeToolUnsafe(ctx, toolName, argsJSON)
+		if err != nil {
+			s.reliability.Failure(toolName, err, time.Now().UTC())
+		} else {
+			s.reliability.Success(toolName)
+		}
+		return result, err
+	}
+	return s.executeToolUnsafe(ctx, toolName, argsJSON)
+}
+
+func (s *Server) executeToolUnsafe(ctx context.Context, toolName string, argsJSON json.RawMessage) (any, error) {
 	caller := s.effectiveCaller(ctx)
 	if s.sessionID == "" {
 		// Auto-create or resolve active session if not provided
@@ -1985,7 +2013,11 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"agents": health, "retry_queue": retries, "metrics": s.engine.OperationalMetrics()}, nil
+		result := map[string]any{"agents": health, "retry_queue": retries, "metrics": s.engine.OperationalMetrics()}
+		if s.reliability != nil {
+			result["reliability"] = s.reliability.All()
+		}
+		return result, nil
 
 	case "operations.approvals":
 		var req struct {
