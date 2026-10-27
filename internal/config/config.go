@@ -179,6 +179,7 @@ type AutomaticRoutingConfig struct {
 	MinSamples     int     `json:"min_samples,omitempty"`
 	MinSuccessRate float64 `json:"min_success_rate,omitempty"`
 	MaxAverageCost float64 `json:"max_average_cost,omitempty"`
+	StateFile      string  `json:"state_file,omitempty"`
 }
 
 // IsZeroCreditMode returns the effective zero-credit setting: true (the

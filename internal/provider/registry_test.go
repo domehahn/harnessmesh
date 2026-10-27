@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/domehahn/harnessmesh/internal/config"
@@ -49,6 +50,30 @@ func TestRegistry_AutomaticRoutingPromotesEligibleRoute(t *testing.T) {
 	}
 	if b.Name() != "preferred" || reg.AutomaticRoute() != "preferred" {
 		t.Fatalf("expected preferred route to be active, got backend=%q route=%q", b.Name(), reg.AutomaticRoute())
+	}
+}
+
+func TestNewRegistry_RestoresAutomaticRoutingState(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "routing.json")
+	cfg := config.ProviderGatewayConfig{
+		DefaultBackend:   "default",
+		AutomaticRouting: config.AutomaticRoutingConfig{Enabled: true, MinSamples: 1, MinSuccessRate: .5, StateFile: state},
+		Backends: map[string]config.ProviderBackendConfig{
+			"default":   {Type: "openai-compatible", BaseURL: "http://example.com/v1"},
+			"preferred": {Type: "openai-compatible", BaseURL: "http://example.org/v1"},
+		},
+	}
+	first, err := NewRegistry(cfg, "127.0.0.1:8789")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	first.ObserveOutcome("preferred", true, 0, 10)
+	second, err := NewRegistry(cfg, "127.0.0.1:8789")
+	if err != nil {
+		t.Fatalf("NewRegistry restore: %v", err)
+	}
+	if got := second.AutomaticRoute(); got != "preferred" {
+		t.Fatalf("expected restored automatic route preferred, got %q", got)
 	}
 }
 

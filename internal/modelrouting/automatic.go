@@ -32,6 +32,26 @@ type AutoRouter struct {
 	active   string
 }
 
+func (r *AutoRouter) Snapshot() []Outcome {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []Outcome
+	for _, outcomes := range r.outcomes {
+		out = append(out, outcomes...)
+	}
+	return out
+}
+
+func (r *AutoRouter) Load(outcomes []Outcome) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, outcome := range outcomes {
+		if outcome.Route != "" {
+			r.outcomes[outcome.Route] = append(r.outcomes[outcome.Route], outcome)
+		}
+	}
+}
+
 func NewAutoRouter(policy AutoPolicy) *AutoRouter {
 	if policy.MinSamples <= 0 {
 		policy.MinSamples = 5

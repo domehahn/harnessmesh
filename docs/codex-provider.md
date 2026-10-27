@@ -286,7 +286,10 @@ It affects only requests without an explicit `X-HarnessMesh-Backend`; explicit
 selection, zero-credit mode, allowlists and denylists remain authoritative.
 The default is disabled. Outcomes are held for the lifetime of the gateway
 process and are represented in the normal audit/provenance stream; restarting
-the gateway resets the evidence window.
+the gateway resets the evidence window unless `state_file` is configured. When
+configured, that file contains only route, success, cost and latency outcome
+metadata and is written atomically; place it on a persistent volume in
+Compose/Kubernetes deployments.
 
 ### Explicit Codex peer vs. automatic Codex fallback
 

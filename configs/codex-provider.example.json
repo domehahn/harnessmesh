@@ -40,7 +40,8 @@
       "enabled": false,
       "min_samples": 10,
       "min_success_rate": 0.9,
-      "max_average_cost": 0.05
+      "max_average_cost": 0.05,
+      "state_file": "./data/provider-routing.json"
     },
 
     "denied_backend_types": ["openai-api", "codex"]
