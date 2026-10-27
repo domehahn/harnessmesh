@@ -360,6 +360,26 @@ func (e *Engine) AssuranceGraph() map[string]any {
 				graph.Edges[agentID] = append(graph.Edges[agentID], id)
 			}
 		}
+		for _, tool := range server.AllowedTools {
+			toolID := "mcp_tool:" + name + ":" + tool
+			toolDigest, _ := assurance.Fingerprint(map[string]any{"server": name, "tool": tool})
+			graph.Nodes = append(graph.Nodes, assurance.Capability{ID: toolID, Kind: "mcp_tool", Subject: tool, DeclaredBy: "harnessmesh.json", Digest: toolDigest, Allowed: server.Enabled})
+			graph.Edges[id] = append(graph.Edges[id], toolID)
+		}
+	}
+	for name, backend := range e.cfg.Provider.Backends {
+		allowed := true
+		if e.cfg.Provider.IsZeroCreditMode() && config.IsMeteredProviderBackendType(backend.Type) {
+			allowed = false
+		}
+		providerID := "provider:" + name
+		providerDigest, _ := assurance.Fingerprint(map[string]any{"provider": name, "type": backend.Type, "model": backend.Model})
+		graph.Nodes = append(graph.Nodes, assurance.Capability{ID: providerID, Kind: "provider", Subject: name, DeclaredBy: "harnessmesh.json", Digest: providerDigest, Allowed: allowed})
+		for agentID := range graph.Edges {
+			if strings.HasPrefix(agentID, "agent:") {
+				graph.Edges[agentID] = append(graph.Edges[agentID], providerID)
+			}
+		}
 	}
 	assurance.SortCapabilities(&graph)
 	e.securityMu.Lock()

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/domehahn/harnessmesh/internal/agent"
+	"github.com/domehahn/harnessmesh/internal/assurance"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/protocol"
@@ -1820,6 +1821,41 @@ type faultyCallbackStore struct {
 	store.Store
 	onUpdateBudget func() error
 }
+
+func TestEngine_AssuranceGraphIncludesRuntimeComponents(t *testing.T) {
+	eng, st, _ := setupTestEngine(t, nil)
+	defer st.Close()
+	eng.cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"repo-tools": {Type: "remote", Enabled: true, AllowedTools: []string{"search"}},
+	}
+	eng.cfg.Provider = config.ProviderGatewayConfig{
+		ZeroAPIBillingMode: boolPtr(true),
+		Backends: map[string]config.ProviderBackendConfig{
+			"local":   {Type: "openai-compatible", Model: "local-model"},
+			"metered": {Type: "openai-api", Model: "paid-model"},
+		},
+	}
+	graph := eng.AssuranceGraph()
+	nodes, ok := graph["nodes"].([]assurance.Capability)
+	if !ok {
+		t.Fatalf("expected typed capability nodes, got %T", graph["nodes"])
+	}
+	seen := map[string]assurance.Capability{}
+	for _, node := range nodes {
+		seen[node.ID] = node
+	}
+	if _, ok := seen["mcp:repo-tools"]; !ok {
+		t.Fatal("MCP server missing from assurance graph")
+	}
+	if _, ok := seen["mcp_tool:repo-tools:search"]; !ok {
+		t.Fatal("MCP tool missing from assurance graph")
+	}
+	if !seen["provider:local"].Allowed || seen["provider:metered"].Allowed {
+		t.Fatalf("provider policy projection is incorrect: local=%+v metered=%+v", seen["provider:local"], seen["provider:metered"])
+	}
+}
+
+func boolPtr(value bool) *bool { return &value }
 
 func (s *faultyCallbackStore) UpdateBudget(ctx context.Context, id string, budget protocol.BudgetStatus) error {
 	if s.onUpdateBudget != nil {
