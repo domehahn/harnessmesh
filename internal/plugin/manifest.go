@@ -31,6 +31,7 @@ type Manifest struct {
 	Binary                string        `json:"binary,omitempty"`
 	Aliases               []string      `json:"aliases,omitempty"`
 	Capabilities          []string      `json:"capabilities,omitempty"`
+	Skills                []SkillRef    `json:"skills,omitempty"`
 	Dependencies          []Dependency  `json:"dependencies,omitempty"`
 	Conflicts             []Conflict    `json:"conflicts,omitempty"`
 	Risk                  string        `json:"risk,omitempty"`
@@ -41,6 +42,13 @@ type Manifest struct {
 	MinHarnessMeshVersion string        `json:"min_harnessmesh_version,omitempty"`
 	MaxHarnessMeshVersion string        `json:"max_harnessmesh_version,omitempty"`
 	Sandbox               SandboxConfig `json:"sandbox,omitempty"`
+}
+
+type SkillRef struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	SHA256  string `json:"sha256,omitempty"`
+	Version string `json:"version,omitempty"`
 }
 
 type SandboxConfig struct {

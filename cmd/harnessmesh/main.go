@@ -35,6 +35,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/plugin"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/report"
+	"github.com/domehahn/harnessmesh/internal/skills"
 	"github.com/domehahn/harnessmesh/internal/store"
 	appversion "github.com/domehahn/harnessmesh/internal/version"
 	"github.com/domehahn/harnessmesh/internal/workflow"
@@ -978,6 +979,8 @@ func mcpServe(args []string) error {
 	token := fs.String("token", tokenDefault, "remote MCP bearer token")
 	tlsCert := fs.String("tls-cert", os.Getenv("HARNESSMESH_MCP_TLS_CERT"), "TLS certificate for remote MCP")
 	tlsKey := fs.String("tls-key", os.Getenv("HARNESSMESH_MCP_TLS_KEY"), "TLS private key for remote MCP")
+	skillName := fs.String("skill", "", "select a lazy-loaded skill to narrow MCP tools")
+	skillRoot := fs.String("skill-root", "", "skill registry root (default plugins)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1058,6 +1061,42 @@ func mcpServe(args []string) error {
 	defer eng.Close()
 
 	server := mcp.NewServer(eng, *sessionID, *caller)
+	var skillRegistry *skills.Registry
+	selectedSkill := strings.TrimSpace(*skillName)
+	if selectedSkill == "" && cfg.Skills.Enabled {
+		selectedSkill = strings.TrimSpace(cfg.Skills.Selected)
+	}
+	if selectedSkill != "" || cfg.Skills.Enabled {
+		root := strings.TrimSpace(*skillRoot)
+		if root == "" {
+			root = cfg.Skills.Root
+		}
+		if root == "" {
+			root = pluginRoot()
+		}
+		reg, skillErr := skills.Discover(root, cfg.Skills.RequireHash || os.Getenv("HARNESSMESH_SKILL_REQUIRE_HASH") == "1")
+		if skillErr != nil {
+			return fmt.Errorf("discover skills: %w", skillErr)
+		}
+		skillRegistry = reg
+		if selectedSkill == "" {
+			fmt.Fprintf(os.Stderr, "skills loaded lazily (%d metadata entries)\n", len(reg.List()))
+		} else {
+			entry, selectErr := reg.Select(selectedSkill)
+			if selectErr != nil {
+				return selectErr
+			}
+			requireSigned := cfg.Skills.RequireSigned || os.Getenv("HARNESSMESH_SKILL_REQUIRE_SIGNED") == "1"
+			if requireSigned && strings.TrimSpace(entry.Manifest.Signature) == "" {
+				return fmt.Errorf("skill %q is unsigned and signed skills are required", entry.Manifest.Name)
+			}
+			server.SetSkill(&entry)
+			fmt.Fprintf(os.Stderr, "skill selected: %s v%s (%d estimated schema tokens)\n", entry.Manifest.Name, entry.Manifest.Version, entry.SchemaTokenEstimate())
+		}
+	}
+	if skillRegistry != nil {
+		server.SetSkillRegistry(skillRegistry)
+	}
 	if registry, registryErr := mcpregistry.New(cfg.MCP); registryErr != nil {
 		return fmt.Errorf("validate MCP registry: %w", registryErr)
 	} else if len(registry.List()) > 0 {

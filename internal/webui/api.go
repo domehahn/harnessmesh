@@ -57,6 +57,10 @@ type AssuranceCatalog interface {
 	AssuranceGraph() map[string]any
 }
 
+type SkillCatalog interface {
+	SkillSnapshot() map[string]any
+}
+
 // MarketplaceManager is the audited lifecycle boundary for marketplace
 // actions. The dashboard never installs files directly and never accepts an
 // unauthenticated tenant identifier from the request body.
@@ -212,6 +216,7 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 	var marketplace MarketplaceCatalog
 	var marketplaceManager MarketplaceManager
 	var assuranceCatalog AssuranceCatalog
+	var skillCatalog SkillCatalog
 	for _, integration := range integrations {
 		if configured, ok := integration.(secrets.Manager); ok {
 			secretManager = configured
@@ -224,6 +229,9 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 		}
 		if configured, ok := integration.(AssuranceCatalog); ok {
 			assuranceCatalog = configured
+		}
+		if configured, ok := integration.(SkillCatalog); ok {
+			skillCatalog = configured
 		}
 	}
 	const maxRateLimitClients = 10000
@@ -632,6 +640,14 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				plugins = marketplace.ConfiguredPlugins()
 			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestratorAgents(orchestrator), "mcp_servers": items, "plugins": plugins})
+			return
+		}
+		if path == "/skills" && r.Method == http.MethodGet {
+			if skillCatalog == nil {
+				writeJSON(w, map[string]any{"enabled": false, "selected": "", "skills": []any{}})
+				return
+			}
+			writeJSON(w, skillCatalog.SkillSnapshot())
 			return
 		}
 		if path == "/assurance/graph" && r.Method == http.MethodGet {

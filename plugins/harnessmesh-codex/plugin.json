@@ -17,6 +17,11 @@
     "code-review",
     "meshcommit"
   ],
+  "skills": [
+    {"name": "harnessmesh-collaboration", "path": "skills/harnessmesh-collaboration", "version": "1.0.0"},
+    {"name": "harnessmesh-review", "path": "skills/harnessmesh-review", "version": "1.0.0"},
+    {"name": "harnessmesh-meshcommit", "path": "skills/harnessmesh-meshcommit", "version": "1.0.0"}
+  ],
   "extensions": {
     "com.openai": {
       "interface": {

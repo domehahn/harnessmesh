@@ -1,0 +1,10 @@
+{
+  "name": "harnessmesh-review",
+  "version": "1.0.0",
+  "description": "Evidence-oriented peer review workflow.",
+  "triggers": ["review", "second opinion", "security check", "test assessment"],
+  "capabilities": ["review", "evidence"],
+  "tools": ["peer.status", "collaboration.status", "peer.request_review", "peer.submit_finding", "peer.submit_evidence", "peer.challenge", "peer.resolve"],
+  "risk": "medium",
+  "sha256": "a55683ac343b2fbaac7437bc7f70a7692efbf0fdb4c61894b7a69f7a75cfce3e"
+}

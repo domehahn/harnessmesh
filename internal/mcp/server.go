@@ -26,6 +26,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/secrets"
 	"github.com/domehahn/harnessmesh/internal/securitygate"
+	"github.com/domehahn/harnessmesh/internal/skills"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/telemetry"
 	"github.com/domehahn/harnessmesh/internal/tenant"
@@ -76,6 +77,8 @@ type Server struct {
 	terminatedSessions map[string]time.Time
 	gateway            *mcpgateway.Gateway
 	gatewayTools       []ToolDefinition
+	skill              *skills.Entry
+	skillRegistry      *skills.Registry
 	toolLockErr        error
 }
 
@@ -175,7 +178,7 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 		}
 		return fmt.Errorf("production secret backend rejected: %w", secretManagerErr)
 	}
-	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine, secretManager, s.engine))
+	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine, secretManager, s.engine, s))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -678,6 +681,38 @@ func (s *Server) SetGateway(gateway *mcpgateway.Gateway, tools []mcpgateway.Tool
 		s.gatewayTools = append(s.gatewayTools, ToolDefinition{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema})
 	}
 	s.toolLockErr = s.verifyToolLock()
+}
+
+// SetSkill narrows the exposed MCP surface to the tools declared by a
+// selected, hash-verified skill. The MCP server remains the enforcement point:
+// hiding tools in tools/list is not sufficient, so tools/call also checks it.
+func (s *Server) SetSkill(entry *skills.Entry) { s.skill = entry }
+
+func (s *Server) SetSkillRegistry(registry *skills.Registry) { s.skillRegistry = registry }
+
+func (s *Server) SkillSnapshot() map[string]any {
+	result := map[string]any{"enabled": s.skillRegistry != nil, "selected": "", "skills": []map[string]any{}}
+	if s.skill != nil {
+		result["selected"] = s.skill.Manifest.Name
+	}
+	if s.skillRegistry != nil {
+		items := make([]map[string]any, 0)
+		for _, entry := range s.skillRegistry.List() {
+			items = append(items, map[string]any{
+				"name": entry.Manifest.Name, "version": entry.Manifest.Version,
+				"description": entry.Manifest.Description, "triggers": entry.Manifest.Triggers,
+				"capabilities": entry.Manifest.Capabilities, "tools": entry.Manifest.Tools,
+				"risk": entry.Manifest.Risk, "loaded": entry.Loaded, "verified": entry.Verified,
+				"schema_token_estimate": entry.SchemaTokenEstimate(),
+			})
+		}
+		result["skills"] = items
+	}
+	return result
+}
+
+func (s *Server) skillAllowsTool(name string) bool {
+	return s.skill == nil || s.skill.AllowsTool(name)
 }
 
 func (s *Server) verifyToolLock() error {
@@ -1340,6 +1375,15 @@ func (s *Server) ListTools() []ToolDefinition {
 		// Gateway tools are refreshed by SetGatewayTools after startup.
 		tools = append(tools, s.gatewayTools...)
 	}
+	if s.skill != nil {
+		filtered := make([]ToolDefinition, 0, len(tools))
+		for _, tool := range tools {
+			if s.skill.AllowsTool(tool.Name) {
+				filtered = append(filtered, tool)
+			}
+		}
+		return filtered
+	}
 	return tools
 }
 
@@ -1424,6 +1468,9 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 				ID:      req.ID,
 				Error:   &JSONRPCError{Code: -32602, Message: "Invalid params"},
 			}, nil
+		}
+		if !s.skillAllowsTool(callParams.Name) {
+			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32003, Message: "tool is not allowed by selected skill", Data: callParams.Name}}, nil
 		}
 
 		guardedArgs, guardErr := s.guardToolCall(ctx, callParams.Name, callParams.Arguments)

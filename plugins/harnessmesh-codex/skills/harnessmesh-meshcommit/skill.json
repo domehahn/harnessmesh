@@ -1,0 +1,10 @@
+{
+  "name": "harnessmesh-meshcommit",
+  "version": "1.0.0",
+  "description": "Prepare and commit evidence-gated repository changes.",
+  "triggers": ["commit change", "prepare change", "meshcommit", "change gate"],
+  "capabilities": ["write", "change_control", "evidence"],
+  "tools": ["change.create", "change.prepare", "change.verify", "change.evidence", "change.gate", "change.commit", "change.abort"],
+  "risk": "high",
+  "sha256": "43dca602fc541e141f1f68ad424322a266c5b807c83f86f4c28b8519e7bcd83c"
+}

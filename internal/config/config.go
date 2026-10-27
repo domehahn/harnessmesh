@@ -46,7 +46,16 @@ type Config struct {
 	Bridge               BridgeConfig                         `json:"bridge,omitempty"`
 	Provider             ProviderGatewayConfig                `json:"provider,omitempty"`
 	MCP                  MCPRegistryConfig                    `json:"mcp,omitempty"`
+	Skills               SkillsConfig                         `json:"skills,omitempty"`
 	AgentPlatform        AgentPlatformConfig                  `json:"agent_platform,omitempty"`
+}
+
+type SkillsConfig struct {
+	Enabled       bool   `json:"enabled,omitempty"`
+	Root          string `json:"root,omitempty"`
+	Selected      string `json:"selected,omitempty"`
+	RequireHash   bool   `json:"require_hash,omitempty"`
+	RequireSigned bool   `json:"require_signed,omitempty"`
 }
 
 // AgentPlatformConfig enables optional interoperability adapters. All
