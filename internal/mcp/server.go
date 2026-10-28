@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/agentreliability"
+	"github.com/domehahn/harnessmesh/internal/assurance"
 	"github.com/domehahn/harnessmesh/internal/auth"
 	"github.com/domehahn/harnessmesh/internal/collaboration"
 	"github.com/domehahn/harnessmesh/internal/config"
@@ -24,8 +26,10 @@ import (
 	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/mcpgateway"
 	"github.com/domehahn/harnessmesh/internal/protocol"
+	"github.com/domehahn/harnessmesh/internal/provenance"
 	"github.com/domehahn/harnessmesh/internal/secrets"
 	"github.com/domehahn/harnessmesh/internal/securitygate"
+	"github.com/domehahn/harnessmesh/internal/skills"
 	"github.com/domehahn/harnessmesh/internal/store"
 	"github.com/domehahn/harnessmesh/internal/telemetry"
 	"github.com/domehahn/harnessmesh/internal/tenant"
@@ -76,6 +80,11 @@ type Server struct {
 	terminatedSessions map[string]time.Time
 	gateway            *mcpgateway.Gateway
 	gatewayTools       []ToolDefinition
+	skill              *skills.Entry
+	skillRegistry      *skills.Registry
+	reliability        *agentreliability.Controller
+	runtimeGraph       *assurance.RuntimeGraph
+	provenance         *provenance.Chain
 	toolLockErr        error
 }
 
@@ -175,7 +184,7 @@ func (s *Server) serveHTTP(ctx context.Context, listen, token, certFile, keyFile
 		}
 		return fmt.Errorf("production secret backend rejected: %w", secretManagerErr)
 	}
-	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine, secretManager, s.engine))
+	mux.Handle("/api/v1/dashboard/", webui.APIHandlerWithOrchestrator(s.engine.Store(), s.engine.SpaceService(), s.engine, secretManager, s.engine, s))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -651,6 +660,9 @@ func NewServer(engine *collaboration.Engine, sessionID, caller string) *Server {
 		caller:    caller,
 	}
 	server.metrics = telemetry.NewRegistry()
+	server.reliability = agentreliability.New(agentreliability.Config{})
+	server.runtimeGraph = assurance.NewRuntimeGraph()
+	server.provenance = provenance.New()
 	server.allowedProjects = parseACL(os.Getenv("HARNESSMESH_MCP_PROJECTS"))
 	server.allowedCallers = parseACL(os.Getenv("HARNESSMESH_MCP_CALLERS"))
 	server.sessions = make(map[string]*mcpSession)
@@ -664,6 +676,9 @@ func NewServer(engine *collaboration.Engine, sessionID, caller string) *Server {
 		server.tenantRateLimit = configured
 	}
 	server.tenantWindows = make(map[string]tenantRateWindow)
+	for _, tool := range server.ListTools() {
+		_ = server.runtimeGraph.Declare(assurance.Capability{ID: "tool." + tool.Name, Kind: "mcp_tool", Subject: tool.Name, DeclaredBy: "mcp", Allowed: true})
+	}
 	return server
 }
 
@@ -678,6 +693,39 @@ func (s *Server) SetGateway(gateway *mcpgateway.Gateway, tools []mcpgateway.Tool
 		s.gatewayTools = append(s.gatewayTools, ToolDefinition{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema})
 	}
 	s.toolLockErr = s.verifyToolLock()
+}
+
+// SetSkill narrows the exposed MCP surface to the tools declared by a
+// selected, hash-verified skill. The MCP server remains the enforcement point:
+// hiding tools in tools/list is not sufficient, so tools/call also checks it.
+func (s *Server) SetSkill(entry *skills.Entry) { s.skill = entry }
+
+func (s *Server) SetSkillRegistry(registry *skills.Registry) { s.skillRegistry = registry }
+
+func (s *Server) SkillSnapshot() map[string]any {
+	result := map[string]any{"enabled": s.skillRegistry != nil, "selected": "", "skills": []map[string]any{}}
+	if s.skill != nil {
+		result["selected"] = s.skill.Manifest.Name
+	}
+	if s.skillRegistry != nil {
+		items := make([]map[string]any, 0)
+		for _, entry := range s.skillRegistry.List() {
+			items = append(items, map[string]any{
+				"name": entry.Manifest.Name, "version": entry.Manifest.Version,
+				"description": entry.Manifest.Description, "triggers": entry.Manifest.Triggers,
+				"capabilities": entry.Manifest.Capabilities, "tools": entry.Manifest.Tools,
+				"risk": entry.Manifest.Risk, "loaded": entry.Loaded, "verified": entry.Verified,
+				"signature_verified":    entry.SignatureVerified,
+				"schema_token_estimate": entry.SchemaTokenEstimate(),
+			})
+		}
+		result["skills"] = items
+	}
+	return result
+}
+
+func (s *Server) skillAllowsTool(name string) bool {
+	return s.skill == nil || s.skill.AllowsTool(name)
 }
 
 func (s *Server) verifyToolLock() error {
@@ -1340,6 +1388,15 @@ func (s *Server) ListTools() []ToolDefinition {
 		// Gateway tools are refreshed by SetGatewayTools after startup.
 		tools = append(tools, s.gatewayTools...)
 	}
+	if s.skill != nil {
+		filtered := make([]ToolDefinition, 0, len(tools))
+		for _, tool := range tools {
+			if s.skill.AllowsTool(tool.Name) {
+				filtered = append(filtered, tool)
+			}
+		}
+		return filtered
+	}
 	return tools
 }
 
@@ -1425,13 +1482,21 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 				Error:   &JSONRPCError{Code: -32602, Message: "Invalid params"},
 			}, nil
 		}
+		if !s.skillAllowsTool(callParams.Name) {
+			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32003, Message: "tool is not allowed by selected skill", Data: callParams.Name}}, nil
+		}
+		argsDigest, _ := assurance.Fingerprint(string(callParams.Arguments))
+		s.recordProvenance(ctx, "intent", callParams.Name, map[string]any{"tool": callParams.Name, "arguments_digest": argsDigest})
 
 		guardedArgs, guardErr := s.guardToolCall(ctx, callParams.Name, callParams.Arguments)
 		if guardErr != nil {
+			s.recordProvenance(ctx, "policy.block", callParams.Name, map[string]any{"reason": guardErr.Error()})
 			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: ToolCallResult{Content: []ToolCallContent{{Type: "text", Text: "Tool call blocked by runtime security policy: " + guardErr.Error()}}, IsError: true}}, nil
 		}
+		s.recordProvenance(ctx, "policy.allow", callParams.Name, map[string]any{"tool": callParams.Name})
 		res, err := s.executeTool(ctx, callParams.Name, guardedArgs)
 		if err != nil {
+			s.recordProvenance(ctx, "execution.error", callParams.Name, map[string]any{"error": err.Error()})
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      req.ID,
@@ -1443,6 +1508,7 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 				},
 			}, nil
 		}
+		s.recordProvenance(ctx, "execution.complete", callParams.Name, map[string]any{"status": "success"})
 
 		resJSON, _ := json.MarshalIndent(res, "", "  ")
 		return &JSONRPCResponse{
@@ -1464,7 +1530,25 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 	}
 }
 
+func (s *Server) recordProvenance(ctx context.Context, kind, subject string, payload map[string]any) {
+	if s.provenance == nil {
+		return
+	}
+	event, err := s.provenance.Append(kind, subject, payload, time.Now().UTC())
+	if err != nil || s.engine == nil {
+		return
+	}
+	tenantID := ""
+	if identity, identityErr := tenant.FromContext(ctx); identityErr == nil {
+		tenantID = identity.Tenant
+	}
+	_ = s.engine.Store().EmitEvent(ctx, s.sessionID, "provenance."+kind, map[string]any{"sequence": event.Sequence, "digest": event.Digest, "previous": event.Previous, "chain_root": s.provenance.Root(), "tenant": tenantID, "subject": subject})
+}
+
 func (s *Server) guardToolCall(ctx context.Context, toolName string, args json.RawMessage) (json.RawMessage, error) {
+	if s.runtimeGraph != nil && !s.runtimeGraph.Observe("tool."+toolName) {
+		return nil, fmt.Errorf("runtime capability drift: tool %q is not declared", toolName)
+	}
 	if !securitygate.CheckEnabled() {
 		return args, nil
 	}
@@ -1496,6 +1580,22 @@ func firstString(values map[string]any, keys ...string) string {
 }
 
 func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json.RawMessage) (any, error) {
+	if s.reliability != nil {
+		if err := s.reliability.Before(toolName, time.Now().UTC()); err != nil {
+			return nil, err
+		}
+		result, err := s.executeToolUnsafe(ctx, toolName, argsJSON)
+		if err != nil {
+			s.reliability.Failure(toolName, err, time.Now().UTC())
+		} else {
+			s.reliability.Success(toolName)
+		}
+		return result, err
+	}
+	return s.executeToolUnsafe(ctx, toolName, argsJSON)
+}
+
+func (s *Server) executeToolUnsafe(ctx context.Context, toolName string, argsJSON json.RawMessage) (any, error) {
 	caller := s.effectiveCaller(ctx)
 	if s.sessionID == "" {
 		// Auto-create or resolve active session if not provided
@@ -1937,7 +2037,11 @@ func (s *Server) executeTool(ctx context.Context, toolName string, argsJSON json
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"agents": health, "retry_queue": retries, "metrics": s.engine.OperationalMetrics()}, nil
+		result := map[string]any{"agents": health, "retry_queue": retries, "metrics": s.engine.OperationalMetrics()}
+		if s.reliability != nil {
+			result["reliability"] = s.reliability.All()
+		}
+		return result, nil
 
 	case "operations.approvals":
 		var req struct {

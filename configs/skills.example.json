@@ -1,0 +1,9 @@
+{
+  "skills": {
+    "enabled": true,
+    "root": "plugins",
+    "selected": "harnessmesh-review",
+    "require_hash": true,
+    "require_signed": false
+  }
+}

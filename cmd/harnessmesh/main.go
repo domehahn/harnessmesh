@@ -35,6 +35,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/plugin"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/report"
+	"github.com/domehahn/harnessmesh/internal/skills"
 	"github.com/domehahn/harnessmesh/internal/store"
 	appversion "github.com/domehahn/harnessmesh/internal/version"
 	"github.com/domehahn/harnessmesh/internal/workflow"
@@ -186,7 +187,7 @@ func agentPlatformCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	status := map[string]any{"a2a": map[string]any{"enabled": cfg.AgentPlatform.A2A.Enabled, "listen": cfg.AgentPlatform.A2A.Listen, "token_env": cfg.AgentPlatform.A2A.TokenEnv}, "evaluation": map[string]any{"enabled": cfg.AgentPlatform.Evaluation.Enabled, "min_score": cfg.AgentPlatform.Evaluation.MinScore}, "durable_workflows": map[string]any{"provider": cfg.AgentPlatform.Durable.Provider}, "memory": map[string]any{"enabled": cfg.AgentPlatform.Memory.Enabled, "provider": cfg.AgentPlatform.Memory.Provider}, "browser": map[string]any{"enabled": cfg.AgentPlatform.Browser.Enabled, "provider": cfg.AgentPlatform.Browser.Provider, "approval_required": cfg.AgentPlatform.Browser.RequireApproval}, "llm_gateway": map[string]any{"enabled": cfg.AgentPlatform.LLMGateway.Enabled, "provider": cfg.AgentPlatform.LLMGateway.Provider}}
+	status := map[string]any{"a2a": map[string]any{"enabled": cfg.AgentPlatform.A2A.Enabled, "listen": cfg.AgentPlatform.A2A.Listen, "token_env": cfg.AgentPlatform.A2A.TokenEnv}, "evaluation": map[string]any{"enabled": cfg.AgentPlatform.Evaluation.Enabled, "min_score": cfg.AgentPlatform.Evaluation.MinScore}, "durable_workflows": map[string]any{"provider": cfg.AgentPlatform.Durable.Provider}, "memory": map[string]any{"enabled": cfg.AgentPlatform.Memory.Enabled, "provider": cfg.AgentPlatform.Memory.Provider}, "browser": map[string]any{"enabled": cfg.AgentPlatform.Browser.Enabled, "provider": cfg.AgentPlatform.Browser.Provider, "approval_required": cfg.AgentPlatform.Browser.RequireApproval}, "llm_gateway": map[string]any{"enabled": cfg.AgentPlatform.LLMGateway.Enabled, "provider": cfg.AgentPlatform.LLMGateway.Provider}, "voice": map[string]any{"enabled": cfg.AgentPlatform.Voice.Enabled, "provider": cfg.AgentPlatform.Voice.Provider}}
 	raw, _ := json.MarshalIndent(status, "", "  ")
 	fmt.Println(string(raw))
 	return nil
@@ -978,6 +979,9 @@ func mcpServe(args []string) error {
 	token := fs.String("token", tokenDefault, "remote MCP bearer token")
 	tlsCert := fs.String("tls-cert", os.Getenv("HARNESSMESH_MCP_TLS_CERT"), "TLS certificate for remote MCP")
 	tlsKey := fs.String("tls-key", os.Getenv("HARNESSMESH_MCP_TLS_KEY"), "TLS private key for remote MCP")
+	skillName := fs.String("skill", "", "select a lazy-loaded skill to narrow MCP tools")
+	skillRoot := fs.String("skill-root", "", "skill registry root (default plugins)")
+	skillContext := fs.String("skill-context", "", "select a skill from task context when --skill is omitted")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1058,6 +1062,48 @@ func mcpServe(args []string) error {
 	defer eng.Close()
 
 	server := mcp.NewServer(eng, *sessionID, *caller)
+	var skillRegistry *skills.Registry
+	selectedSkill := strings.TrimSpace(*skillName)
+	if selectedSkill == "" && strings.TrimSpace(*skillContext) != "" {
+		selectedSkill = strings.TrimSpace(*skillContext)
+	}
+	if selectedSkill == "" && cfg.Skills.Enabled {
+		selectedSkill = strings.TrimSpace(cfg.Skills.Selected)
+	}
+	if selectedSkill != "" || cfg.Skills.Enabled {
+		root := strings.TrimSpace(*skillRoot)
+		if root == "" {
+			root = cfg.Skills.Root
+		}
+		if root == "" {
+			root = pluginRoot()
+		}
+		requireSigned := cfg.Skills.RequireSigned || os.Getenv("HARNESSMESH_SKILL_REQUIRE_SIGNED") == "1"
+		reg, skillErr := skills.DiscoverWithOptions(root, cfg.Skills.RequireHash || os.Getenv("HARNESSMESH_SKILL_REQUIRE_HASH") == "1", requireSigned, trusted)
+		if skillErr != nil {
+			return fmt.Errorf("discover skills: %w", skillErr)
+		}
+		skillRegistry = reg
+		if selectedSkill == "" {
+			fmt.Fprintf(os.Stderr, "skills loaded lazily (%d metadata entries)\n", len(reg.List()))
+		} else {
+			var entry skills.Entry
+			var selectErr error
+			if strings.TrimSpace(*skillContext) != "" && strings.TrimSpace(*skillName) == "" && strings.TrimSpace(cfg.Skills.Selected) == "" {
+				entry, selectErr = reg.SelectContext(*skillContext, nil)
+			} else {
+				entry, selectErr = reg.Select(selectedSkill)
+			}
+			if selectErr != nil {
+				return selectErr
+			}
+			server.SetSkill(&entry)
+			fmt.Fprintf(os.Stderr, "skill selected: %s v%s (%d estimated schema tokens)\n", entry.Manifest.Name, entry.Manifest.Version, entry.SchemaTokenEstimate())
+		}
+	}
+	if skillRegistry != nil {
+		server.SetSkillRegistry(skillRegistry)
+	}
 	if registry, registryErr := mcpregistry.New(cfg.MCP); registryErr != nil {
 		return fmt.Errorf("validate MCP registry: %w", registryErr)
 	} else if len(registry.List()) > 0 {

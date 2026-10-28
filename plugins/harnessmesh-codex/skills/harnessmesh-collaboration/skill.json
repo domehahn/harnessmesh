@@ -1,0 +1,10 @@
+{
+  "name": "harnessmesh-collaboration",
+  "version": "1.0.0",
+  "description": "Coordinate multiple agents through shared collaboration spaces.",
+  "triggers": ["collaborate", "connect agents", "agent communication", "shared workspace"],
+  "capabilities": ["collaboration", "messaging"],
+  "tools": ["peer.list", "peer.capabilities", "peer.ask", "peer.reply", "collaboration.status", "collaboration.inbox", "collaboration.publish"],
+  "risk": "low",
+  "sha256": "01ea24ae4f317f0b87229c81e03c831b8f627a0f56233b2f2dac7b73c4dc7ed9"
+}

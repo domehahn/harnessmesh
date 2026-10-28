@@ -16,6 +16,20 @@ import (
 	"github.com/domehahn/harnessmesh/internal/tenant"
 )
 
+func TestObservabilityAttributesAreBoundedAndRedacted(t *testing.T) {
+	attrs := observabilityAttributes(map[string]any{
+		"agent": "claude", "model": "local", "risk_score": 0.2,
+		"prompt": "do not export this", "secret": "do not export this",
+		"route": strings.Repeat("x", 300),
+	})
+	if attrs["agent"] != "claude" || attrs["model"] != "local" || attrs["prompt"] != "" || attrs["secret"] != "" {
+		t.Fatalf("unexpected projected attributes: %#v", attrs)
+	}
+	if len(attrs["route"]) != 256 {
+		t.Fatalf("expected route to be bounded to 256 characters, got %d", len(attrs["route"]))
+	}
+}
+
 func TestDashboardAPIIsTenantScopedAndCanSubmitJob(t *testing.T) {
 	db, err := store.OpenSQLite(t.TempDir() + "/dashboard.db")
 	if err != nil {

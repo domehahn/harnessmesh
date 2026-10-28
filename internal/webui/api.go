@@ -19,6 +19,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/governance"
 	"github.com/domehahn/harnessmesh/internal/identity"
+	"github.com/domehahn/harnessmesh/internal/incident"
 	"github.com/domehahn/harnessmesh/internal/observability"
 	"github.com/domehahn/harnessmesh/internal/protocol"
 	"github.com/domehahn/harnessmesh/internal/replay"
@@ -55,6 +56,10 @@ type MarketplaceCatalog interface {
 
 type AssuranceCatalog interface {
 	AssuranceGraph() map[string]any
+}
+
+type SkillCatalog interface {
+	SkillSnapshot() map[string]any
 }
 
 // MarketplaceManager is the audited lifecycle boundary for marketplace
@@ -107,14 +112,15 @@ type observabilityLogRecord struct {
 }
 
 type observabilitySpanRecord struct {
-	TraceID   string    `json:"trace_id"`
-	SpanID    string    `json:"span_id"`
-	ParentID  string    `json:"parent_span_id,omitempty"`
-	Service   string    `json:"service"`
-	Operation string    `json:"operation"`
-	Start     time.Time `json:"start"`
-	Duration  int64     `json:"duration_ms"`
-	Status    string    `json:"status"`
+	TraceID    string            `json:"trace_id"`
+	SpanID     string            `json:"span_id"`
+	ParentID   string            `json:"parent_span_id,omitempty"`
+	Service    string            `json:"service"`
+	Operation  string            `json:"operation"`
+	Start      time.Time         `json:"start"`
+	Duration   int64             `json:"duration_ms"`
+	Status     string            `json:"status"`
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 func observabilityString(payload map[string]any, key string) string {
@@ -128,6 +134,24 @@ func observabilityNumber(payload map[string]any, key string) int64 {
 		return 0
 	}
 	return int64(value)
+}
+
+// observabilityAttributes projects only bounded, non-sensitive dimensions
+// into spans. Raw prompts, tool arguments, response bodies and credentials
+// are intentionally excluded even when an event payload contains them.
+func observabilityAttributes(payload map[string]any) map[string]string {
+	allowed := []string{"agent", "participant", "model", "route", "backend", "tool", "mcp_server", "policy", "allowed", "risk_score", "status"}
+	attrs := make(map[string]string)
+	for _, key := range allowed {
+		if value, ok := payload[key]; ok {
+			text := fmt.Sprint(value)
+			if len(text) > 256 {
+				text = text[:256]
+			}
+			attrs[key] = text
+		}
+	}
+	return attrs
 }
 
 func observabilityProjection(ctx context.Context, st store.Store, tenantID string) ([]observabilityLogRecord, []observabilitySpanRecord, error) {
@@ -159,7 +183,7 @@ func observabilityProjection(ctx context.Context, st store.Store, tenantID strin
 					level = "error"
 				}
 				logs = append(logs, observabilityLogRecord{ID: event.ID, Source: "worker", Level: level, Message: contextpack.RedactSecrets(event.Message), EventType: event.Type, Timestamp: event.CreatedAt, TraceID: traceID, SpanID: spanID})
-				spans = append(spans, observabilitySpanRecord{TraceID: traceID, SpanID: spanID, ParentID: observabilityString(payload, "parent_span_id"), Service: "worker", Operation: event.Type, Start: event.CreatedAt, Duration: observabilityNumber(payload, "duration_ms"), Status: level})
+				spans = append(spans, observabilitySpanRecord{TraceID: traceID, SpanID: spanID, ParentID: observabilityString(payload, "parent_span_id"), Service: "worker", Operation: event.Type, Start: event.CreatedAt, Duration: observabilityNumber(payload, "duration_ms"), Status: level, Attributes: observabilityAttributes(payload)})
 			}
 		}
 	}
@@ -187,7 +211,7 @@ func observabilityProjection(ctx context.Context, st store.Store, tenantID strin
 				level = "warn"
 			}
 			logs = append(logs, observabilityLogRecord{ID: fmt.Sprintf("session_%d", event.ID), Source: "security-gate", Level: level, Message: contextpack.RedactSecrets(reason), EventType: event.EventType, Timestamp: event.Timestamp, TraceID: traceID, SpanID: spanID, Payload: map[string]any{"risk_score": event.Payload["risk_score"], "allowed": event.Payload["allowed"]}})
-			spans = append(spans, observabilitySpanRecord{TraceID: traceID, SpanID: spanID, Service: "security-gate", Operation: event.EventType, Start: event.Timestamp, Status: level})
+			spans = append(spans, observabilitySpanRecord{TraceID: traceID, SpanID: spanID, Service: "security-gate", Operation: event.EventType, Start: event.Timestamp, Status: level, Attributes: observabilityAttributes(event.Payload)})
 		}
 	}
 	sort.Slice(logs, func(i, j int) bool { return logs[i].Timestamp.After(logs[j].Timestamp) })
@@ -212,6 +236,7 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 	var marketplace MarketplaceCatalog
 	var marketplaceManager MarketplaceManager
 	var assuranceCatalog AssuranceCatalog
+	var skillCatalog SkillCatalog
 	for _, integration := range integrations {
 		if configured, ok := integration.(secrets.Manager); ok {
 			secretManager = configured
@@ -224,6 +249,9 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 		}
 		if configured, ok := integration.(AssuranceCatalog); ok {
 			assuranceCatalog = configured
+		}
+		if configured, ok := integration.(SkillCatalog); ok {
+			skillCatalog = configured
 		}
 	}
 	const maxRateLimitClients = 10000
@@ -632,6 +660,14 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				plugins = marketplace.ConfiguredPlugins()
 			}
 			writeJSON(w, map[string]any{"tenant": who.Tenant, "agents": orchestratorAgents(orchestrator), "mcp_servers": items, "plugins": plugins})
+			return
+		}
+		if path == "/skills" && r.Method == http.MethodGet {
+			if skillCatalog == nil {
+				writeJSON(w, map[string]any{"enabled": false, "selected": "", "skills": []any{}})
+				return
+			}
+			writeJSON(w, skillCatalog.SkillSnapshot())
 			return
 		}
 		if path == "/assurance/graph" && r.Method == http.MethodGet {
@@ -1090,7 +1126,7 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 			}
 			spanRecords := make([]observability.Span, 0, len(spans))
 			for _, span := range spans {
-				spanRecords = append(spanRecords, observability.Span{TraceID: span.TraceID, SpanID: span.SpanID, ParentID: span.ParentID, Service: span.Service, Operation: span.Operation, Start: span.Start, Duration: span.Duration, Status: span.Status})
+				spanRecords = append(spanRecords, observability.Span{TraceID: span.TraceID, SpanID: span.SpanID, ParentID: span.ParentID, Service: span.Service, Operation: span.Operation, Start: span.Start, Duration: span.Duration, Status: span.Status, Attributes: span.Attributes})
 			}
 			if e = exporter.Export(ctx, who.Tenant, logRecords, spanRecords); e != nil {
 				http.Error(w, e.Error(), http.StatusBadGateway)
@@ -1491,7 +1527,8 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 					unhealthy = append(unhealthy, agent)
 				}
 			}
-			writeJSON(w, map[string]any{"tenant": who.Tenant, "failed_jobs": failed, "dead_jobs": dead, "unhealthy_agents": unhealthy, "requires_attention": len(failed)+len(dead)+len(unhealthy) > 0})
+			incidents := incident.FromPosture(who.Tenant, len(failed), len(dead), len(unhealthy), time.Now().UTC())
+			writeJSON(w, map[string]any{"tenant": who.Tenant, "failed_jobs": failed, "dead_jobs": dead, "unhealthy_agents": unhealthy, "incidents": incidents, "requires_attention": len(incidents) > 0})
 		case "/simulation":
 			if r.Method == http.MethodGet {
 				writeJSON(w, map[string]any{"tenant": who.Tenant, "scenarios": simulation.Catalog()})

@@ -278,6 +278,19 @@ A denied request returns:
 
 If the configured `default_backend` fails and `fallback.enabled` is true, HarnessMesh tries the next backend in `fallback.order` - but only entries that pass the same zero-credit/allow-deny check. A `fallback.order` containing `codex` or `openai-api` is rejected at config-load time; even if it somehow weren't, `Registry.FallbackChain()` filters it out before ever trying it. If every allowed backend fails, the request returns an error - it never silently escalates to a forbidden backend.
 
+### Optional automatic routing
+
+`provider.automatic_routing` can be enabled to promote a backend after enough
+observed attempts meet the configured success-rate and average-cost policy.
+It affects only requests without an explicit `X-HarnessMesh-Backend`; explicit
+selection, zero-credit mode, allowlists and denylists remain authoritative.
+The default is disabled. Outcomes are held for the lifetime of the gateway
+process and are represented in the normal audit/provenance stream; restarting
+the gateway resets the evidence window unless `state_file` is configured. When
+configured, that file contains only route, success, cost and latency outcome
+metadata and is written atomically; place it on a persistent volume in
+Compose/Kubernetes deployments.
+
 ### Explicit Codex peer vs. automatic Codex fallback
 
 These are different things and both are correctly preserved:

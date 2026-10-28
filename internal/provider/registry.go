@@ -1,13 +1,18 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/domehahn/harnessmesh/internal/config"
+	"github.com/domehahn/harnessmesh/internal/modelrouting"
 )
 
 type BackendFactory func(name string, cfg config.ProviderBackendConfig) (InferenceBackend, error)
@@ -119,6 +124,9 @@ type Registry struct {
 	policy     Policy
 	backends   map[string]InferenceBackend
 	backendCfg map[string]config.ProviderBackendConfig
+	auto       *modelrouting.AutoRouter
+	autoState  string
+	autoMu     sync.Mutex
 }
 
 // NewRegistry constructs every configured backend eagerly (so misconfiguration
@@ -128,6 +136,14 @@ type Registry struct {
 func NewRegistry(cfg config.ProviderGatewayConfig, listenAddr string) (*Registry, error) {
 	policy := NewPolicy(cfg)
 	reg := &Registry{policy: policy, backends: map[string]InferenceBackend{}, backendCfg: map[string]config.ProviderBackendConfig{}}
+	reg.auto = modelrouting.NewAutoRouter(modelrouting.AutoPolicy{
+		Enabled:        cfg.AutomaticRouting.Enabled,
+		MinSamples:     cfg.AutomaticRouting.MinSamples,
+		MinSuccessRate: cfg.AutomaticRouting.MinSuccessRate,
+		MaxCost:        cfg.AutomaticRouting.MaxAverageCost,
+	})
+	reg.autoState = strings.TrimSpace(cfg.AutomaticRouting.StateFile)
+	reg.loadAutomaticState()
 
 	for name, bCfg := range cfg.Backends {
 		// A denied/metered backend is still constructed and registered here
@@ -202,6 +218,11 @@ func isLoopbackOrWildcard(host string) bool {
 // registry was built with, not a mechanism for picking up a runtime
 // environment-variable change.
 func (r *Registry) Resolve(name string) (InferenceBackend, error) {
+	if name == "" && r.auto != nil {
+		if active := r.auto.Active(); active != "" {
+			name = active
+		}
+	}
 	if name == "" {
 		name = r.policy.DefaultBackend
 	}
@@ -220,6 +241,59 @@ func (r *Registry) Resolve(name string) (InferenceBackend, error) {
 		return nil, &BackendUnavailableError{Backend: name, Reason: "not registered"}
 	}
 	return backend, nil
+}
+
+// ObserveOutcome feeds completed backend attempts into the opt-in automatic
+// router. The route changes only after the router's evidence policy is met.
+func (r *Registry) ObserveOutcome(route string, success bool, cost float64, latencyMS int64) {
+	if r == nil || r.auto == nil || route == "" {
+		return
+	}
+	r.auto.Observe(modelrouting.Outcome{Route: route, Success: success, Cost: cost, LatencyMS: latencyMS})
+	_, _ = r.auto.Apply()
+	r.persistAutomaticState()
+}
+
+func (r *Registry) AutomaticRoute() string {
+	if r == nil || r.auto == nil {
+		return ""
+	}
+	return r.auto.Active()
+}
+
+func (r *Registry) loadAutomaticState() {
+	if r.autoState == "" || r.auto == nil {
+		return
+	}
+	raw, err := os.ReadFile(r.autoState)
+	if err != nil {
+		return
+	}
+	var outcomes []modelrouting.Outcome
+	if json.Unmarshal(raw, &outcomes) == nil {
+		r.auto.Load(outcomes)
+		_, _ = r.auto.Apply()
+	}
+}
+
+func (r *Registry) persistAutomaticState() {
+	if r.autoState == "" || r.auto == nil {
+		return
+	}
+	r.autoMu.Lock()
+	defer r.autoMu.Unlock()
+	raw, err := json.Marshal(r.auto.Snapshot())
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(r.autoState), 0o750); err != nil {
+		return
+	}
+	tmp := r.autoState + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o640); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, r.autoState)
 }
 
 // FallbackChain returns the ordered list of backend names to try after the

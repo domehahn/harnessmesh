@@ -51,6 +51,25 @@ Browser, memory and LLM-gateway integrations are explicit, opt-in adapter
 boundaries with allowlists and approval requirements; they do not create
 implicit network access or bypass HarnessMesh policy.
 
+Skills can narrow an MCP session to a reviewed workflow and lazy-load its
+`SKILL.md` only after selection:
+
+```bash
+bin/harnessmesh mcp serve --skill harnessmesh-review --skill-root plugins
+```
+
+See [`docs/skills.md`](docs/skills.md) for manifests, hashes, capability
+bindings, simulation and token-efficiency reporting.
+
+The runtime also exposes a provider-neutral Action Firewall for MCP/A2A,
+browser, provider and external-agent adapters. It produces stable action
+digests, data-flow decisions and explainable block reasons; see
+[`docs/action-firewall.md`](docs/action-firewall.md).
+
+HarnessMesh-compatible SDKs and the machine-readable production compatibility
+profile are available under [`sdk/`](sdk/) and
+[`docs/compatibility-standard.md`](docs/compatibility-standard.md).
+
 > HarnessMesh is not a generic public LLM proxy and it is not a replacement for a model router such as NVIDIA NeMo Switchyard. Its core is agent collaboration, evidence, durable knowledge, operational control, and verified change delivery. The provider gateway is an independent plane designed specifically for controlled Codex-compatible inference routing.
 
 Current source version: **v0.2.0**.
@@ -71,6 +90,7 @@ profile and provides the same tenant-scoped control plane with:
 - tenant members, roles and API-key issuance/revocation;
 - a credential-free adapter registry contract for built-in and external agent integrations;
 - a registrable Provider Backend SDK with policy-checked fallback resolution;
+- orchestration SDK usage for Go, TypeScript and Python, documented in [`docs/orchestration-sdks.md`](docs/orchestration-sdks.md);
 - deep links, local pagination, keyboard-accessible navigation and authenticated E2E coverage.
 
 The console stores credentials only in browser session storage. It polls the

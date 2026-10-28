@@ -13,6 +13,8 @@ import (
 	authn "github.com/domehahn/harnessmesh/internal/auth"
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/creditguard"
+	"github.com/domehahn/harnessmesh/internal/provenance"
+	"github.com/domehahn/harnessmesh/internal/securitygate"
 )
 
 const (
@@ -24,25 +26,29 @@ const (
 // AuditRecord is one entry in the provider gateway's audit trail (mission
 // section 39). Prompts are never included by default.
 type AuditRecord struct {
-	Timestamp     time.Time `json:"timestamp"`
-	RequestID     string    `json:"request_id"`
-	CorrelationID string    `json:"correlation_id,omitempty"`
-	Route         string    `json:"route,omitempty"`
-	Method        string    `json:"method,omitempty"`
-	ClientVersion string    `json:"client_version,omitempty"`
-	Client        string    `json:"client,omitempty"`
-	Model         string    `json:"model,omitempty"`
-	Backend       string    `json:"backend,omitempty"`
-	Result        string    `json:"result"` // "ok", "error"
-	Status        int       `json:"status,omitempty"`
-	Stream        bool      `json:"stream,omitempty"`
-	ErrorClass    string    `json:"error_class,omitempty"`
-	Cancelled     bool      `json:"cancelled,omitempty"`
-	TimedOut      bool      `json:"timed_out,omitempty"`
-	PolicyDenied  bool      `json:"policy_denied,omitempty"`
-	LatencyMS     int64     `json:"latency_ms"`
-	DurationMS    int64     `json:"duration_ms"`
-	StreamStatus  string    `json:"stream_status,omitempty"`
+	Timestamp          time.Time `json:"timestamp"`
+	RequestID          string    `json:"request_id"`
+	CorrelationID      string    `json:"correlation_id,omitempty"`
+	Route              string    `json:"route,omitempty"`
+	Method             string    `json:"method,omitempty"`
+	ClientVersion      string    `json:"client_version,omitempty"`
+	Client             string    `json:"client,omitempty"`
+	Model              string    `json:"model,omitempty"`
+	Backend            string    `json:"backend,omitempty"`
+	Result             string    `json:"result"` // "ok", "error"
+	Status             int       `json:"status,omitempty"`
+	Stream             bool      `json:"stream,omitempty"`
+	ErrorClass         string    `json:"error_class,omitempty"`
+	Cancelled          bool      `json:"cancelled,omitempty"`
+	TimedOut           bool      `json:"timed_out,omitempty"`
+	PolicyDenied       bool      `json:"policy_denied,omitempty"`
+	LatencyMS          int64     `json:"latency_ms"`
+	DurationMS         int64     `json:"duration_ms"`
+	StreamStatus       string    `json:"stream_status,omitempty"`
+	ProvenanceSequence uint64    `json:"provenance_sequence,omitempty"`
+	ProvenanceDigest   string    `json:"provenance_digest,omitempty"`
+	ProvenancePrevious string    `json:"provenance_previous,omitempty"`
+	ProvenanceRoot     string    `json:"provenance_root,omitempty"`
 }
 
 // AuditSink receives AuditRecords. Tests use an in-memory implementation;
@@ -78,10 +84,11 @@ type Server struct {
 	backendFailures sync.Map
 
 	nextRequestID atomic.Uint64
+	provenance    *provenance.Chain
 }
 
 func NewServer(cfg config.ProviderGatewayConfig, registry *Registry) *Server {
-	return &Server{registry: registry, cfg: cfg, audit: noopAuditSink{}}
+	return &Server{registry: registry, cfg: cfg, audit: noopAuditSink{}, provenance: provenance.New()}
 }
 
 // NewMetadataOnlyServer creates the explicitly test-scoped gateway used by
@@ -101,6 +108,27 @@ func (s *Server) SetAuditSink(a AuditSink) {
 		a = noopAuditSink{}
 	}
 	s.audit = a
+}
+
+// recordAudit adds a digest-only, tamper-evident request chain to the audit
+// record. The existing sink remains the persistence boundary (stderr, file,
+// SIEM or an application-owned sink), so the provider gateway stays
+// independent of the collaboration database.
+func (s *Server) recordAudit(record AuditRecord) {
+	if s.provenance != nil {
+		event, err := s.provenance.Append("provider.request", record.RequestID, map[string]any{
+			"route": record.Route, "method": record.Method, "model": record.Model,
+			"backend": record.Backend, "result": record.Result, "status": record.Status,
+			"stream": record.Stream, "error_class": record.ErrorClass,
+		}, record.Timestamp)
+		if err == nil {
+			record.ProvenanceSequence = event.Sequence
+			record.ProvenanceDigest = event.Digest
+			record.ProvenancePrevious = event.Previous
+			record.ProvenanceRoot = s.provenance.Root()
+		}
+	}
+	s.audit.Record(record)
 }
 
 func (s *Server) requestID() string {
@@ -167,6 +195,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "harnessmesh_provider_streams_active %d\n", s.activeReqs.Load())
 	fmt.Fprintf(w, "harnessmesh_provider_responses_requests_total %d\n", s.responses.Load())
 	fmt.Fprintf(w, "harnessmesh_zero_api_billing_policy_denials_total %d\n", s.denials.Load())
+	if route := s.registry.AutomaticRoute(); route != "" {
+		fmt.Fprintf(w, "harnessmesh_provider_automatic_route{backend=%q} 1\n", route)
+	}
 	fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"openai-api\"} %d\n", creditguard.Calls(creditguard.BackendOpenAIAPI))
 	fmt.Fprintf(w, "harnessmesh_metered_backend_calls_total{backend=\"codex\"} %d\n", creditguard.Calls(creditguard.BackendCodex))
 	s.backendCalls.Range(func(k, v any) bool {
@@ -201,6 +232,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"active_streams":        s.activeReqs.Load(),
 		"openai_api_calls":      creditguard.Calls(creditguard.BackendOpenAIAPI),
 		"codex_calls":           creditguard.Calls(creditguard.BackendCodex),
+		"automatic_route":       s.registry.AutomaticRoute(),
 	})
 }
 
@@ -237,7 +269,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", codexModelCatalogETag)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(codexModelCatalogJSON)
-		s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, Route: r.URL.Path, Method: r.Method, Client: r.UserAgent(), ClientVersion: clientVersion, Result: "ok", Status: http.StatusOK, LatencyMS: time.Since(start).Milliseconds()})
+		s.recordAudit(AuditRecord{Timestamp: start, RequestID: requestID, Route: r.URL.Path, Method: r.Method, Client: r.UserAgent(), ClientVersion: clientVersion, Result: "ok", Status: http.StatusOK, LatencyMS: time.Since(start).Milliseconds()})
 		return
 	}
 
@@ -250,7 +282,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
-	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, Route: r.URL.Path, Method: r.Method, Client: r.UserAgent(), Result: "ok", Status: http.StatusOK, LatencyMS: time.Since(start).Milliseconds()})
+	s.recordAudit(AuditRecord{Timestamp: start, RequestID: requestID, Route: r.URL.Path, Method: r.Method, Client: r.UserAgent(), Result: "ok", Status: http.StatusOK, LatencyMS: time.Since(start).Milliseconds()})
 }
 
 // withAuth enforces bearer-token auth (fail closed if unconfigured),
@@ -347,10 +379,29 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backendName := backendNameFromRequest(r, req)
+	if securitygate.CheckEnabled() {
+		requestContent, marshalErr := json.Marshal(req)
+		if marshalErr != nil {
+			s.errors.Add(1)
+			writeProviderError(w, http.StatusBadRequest, fmt.Errorf("inspect request: %w", marshalErr))
+			return
+		}
+		_, decision, securityErr := securitygate.CheckContext(r.Context(), string(requestContent), "provider-gateway", "provider:"+backendName, "", "provider.inference", "")
+		if securityErr != nil || decision.Redacted {
+			s.errors.Add(1)
+			s.recordAudit(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: r.URL.Path, Method: r.Method, Model: req.Model, Backend: backendName, Result: "error", Status: http.StatusForbidden, Stream: req.Stream, ErrorClass: "provider_action_firewall", PolicyDenied: true, LatencyMS: time.Since(start).Milliseconds()})
+			reason := decision.Reason
+			if reason == "" {
+				reason = "provider request blocked by action firewall"
+			}
+			writeProviderError(w, http.StatusForbidden, &ForbiddenError{Reason: reason})
+			return
+		}
+	}
 	backend, err := s.registry.Resolve(backendName)
 	if err != nil {
 		s.recordDenialIfPolicy(err)
-		s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: r.URL.Path, Method: r.Method, Model: req.Model, Backend: backendName, Result: "error", Status: statusForProviderError(err), Stream: req.Stream, ErrorClass: fmt.Sprintf("%T", err), PolicyDenied: isPolicyError(err), LatencyMS: time.Since(start).Milliseconds()})
+		s.recordAudit(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: r.URL.Path, Method: r.Method, Model: req.Model, Backend: backendName, Result: "error", Status: statusForProviderError(err), Stream: req.Stream, ErrorClass: fmt.Sprintf("%T", err), PolicyDenied: isPolicyError(err), LatencyMS: time.Since(start).Milliseconds()})
 		writeProviderError(w, statusForProviderError(err), err)
 		return
 	}
@@ -423,7 +474,7 @@ func (s *Server) streamHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 	if usedBackend != nil {
 		backendName = usedBackend.Name()
 	}
-	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: r.URL.Path, Method: r.Method, Model: req.Model, Backend: backendName, Result: status, Status: http.StatusOK, Stream: true, ErrorClass: errorClass(err), Cancelled: err == context.Canceled, TimedOut: err == context.DeadlineExceeded, LatencyMS: time.Since(start).Milliseconds(), StreamStatus: status})
+	s.recordAudit(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: r.URL.Path, Method: r.Method, Model: req.Model, Backend: backendName, Result: status, Status: http.StatusOK, Stream: true, ErrorClass: errorClass(err), Cancelled: err == context.Canceled, TimedOut: err == context.DeadlineExceeded, LatencyMS: time.Since(start).Milliseconds(), StreamStatus: status})
 }
 
 func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, attempts []InferenceBackend, req Request, requestID, correlationID string, start time.Time) {
@@ -458,7 +509,7 @@ func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, attemp
 	if err != nil {
 		status = "error"
 		s.errors.Add(1)
-		s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: "/v1/responses", Method: http.MethodPost, Model: req.Model, Backend: backend.Name(), Result: status, Status: statusForProviderError(err), Stream: false, ErrorClass: errorClass(err), Cancelled: err == context.Canceled, TimedOut: err == context.DeadlineExceeded, LatencyMS: time.Since(start).Milliseconds()})
+		s.recordAudit(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: "/v1/responses", Method: http.MethodPost, Model: req.Model, Backend: backend.Name(), Result: status, Status: statusForProviderError(err), Stream: false, ErrorClass: errorClass(err), Cancelled: err == context.Canceled, TimedOut: err == context.DeadlineExceeded, LatencyMS: time.Since(start).Milliseconds()})
 		writeProviderError(w, statusForProviderError(err), err)
 		return
 	}
@@ -467,7 +518,7 @@ func (s *Server) bufferedHTTP(ctx context.Context, w http.ResponseWriter, attemp
 		writeProviderError(w, http.StatusInternalServerError, fmt.Errorf("backend produced no final response"))
 		return
 	}
-	s.audit.Record(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: "/v1/responses", Method: http.MethodPost, Model: req.Model, Backend: backend.Name(), Result: status, Status: http.StatusOK, Stream: false, LatencyMS: time.Since(start).Milliseconds()})
+	s.recordAudit(AuditRecord{Timestamp: start, RequestID: requestID, CorrelationID: correlationID, Route: "/v1/responses", Method: http.MethodPost, Model: req.Model, Backend: backend.Name(), Result: status, Status: http.StatusOK, Stream: false, LatencyMS: time.Since(start).Milliseconds()})
 	w.Header().Set("X-Request-Id", requestID)
 	writeJSON(w, http.StatusOK, final)
 }
@@ -514,11 +565,13 @@ func (s *Server) runWithFallback(ctx context.Context, attempts []InferenceBacken
 }
 
 func (s *Server) runBackend(ctx context.Context, backend InferenceBackend, req Request, sink Sink) error {
+	start := time.Now()
 	s.incBackendCounter(&s.backendCalls, backend.Name())
 	err := backend.StreamResponse(ctx, req, sink)
 	if err != nil {
 		s.incBackendCounter(&s.backendFailures, backend.Name())
 	}
+	s.registry.ObserveOutcome(backend.Name(), err == nil, 0, time.Since(start).Milliseconds())
 	return err
 }
 
