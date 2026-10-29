@@ -80,10 +80,11 @@ view. Local registries persist this state atomically in
 `.harnessmesh-evaluations.json` below the skill root. A read-only skill root
 continues to work with in-memory evaluation only. Deployments can set
 `skills.evaluation_path` or `HARNESSMESH_SKILL_EVALUATION_PATH` to a writable
-mounted state path. That path must be shared and lock-safe if multiple
-replicas write it; otherwise use one file per replica and aggregate results
-centrally. Evaluation never overrides tenant policy, approvals, the action
-firewall or tool locks. Evaluation is scoped to the exact skill version, so a
+mounted state path. Writers use a short-lived lock file and merge the latest
+counter before each update. The path must still be on shared lock-safe
+storage if multiple replicas write it; otherwise use one file per replica and
+aggregate results centrally. Evaluation never overrides tenant policy,
+approvals, the action firewall or tool locks. Evaluation is scoped to the exact skill version, so a
 newly installed version starts without inheriting an older version's score.
 
 Example workflow markers:

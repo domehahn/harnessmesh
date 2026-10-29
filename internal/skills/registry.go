@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Manifest struct {
@@ -222,6 +223,26 @@ func (r *Registry) ObserveOutcomeVersion(name, version string, success bool) {
 	if r.evaluations == nil {
 		r.evaluations = map[string]Evaluation{}
 	}
+	if r.evaluationPath != "" {
+		if release, err := acquireEvaluationLock(r.evaluationPath); err == nil {
+			defer release()
+			if latest, readErr := readEvaluations(r.evaluationPath); readErr == nil {
+				r.evaluations = latest
+			} else if !errors.Is(readErr, os.ErrNotExist) {
+				// Keep the in-memory state if a transient read error occurs.
+				// The next observation can retry persistence.
+			}
+			r.recordOutcomeLocked(key, success)
+			_ = writeEvaluations(r.evaluationPath, r.evaluations)
+			return
+		}
+	}
+	// Evaluation persistence is best effort. A read-only skill root must not
+	// turn an otherwise authorized tool call into a failure.
+	r.recordOutcomeLocked(key, success)
+}
+
+func (r *Registry) recordOutcomeLocked(key string, success bool) {
 	eval := r.evaluations[key]
 	eval.Runs++
 	if success {
@@ -229,9 +250,6 @@ func (r *Registry) ObserveOutcomeVersion(name, version string, success bool) {
 	}
 	eval.SuccessRate = float64(eval.Successful) / float64(eval.Runs)
 	r.evaluations[key] = eval
-	// Evaluation persistence is best effort. A read-only skill root must not
-	// turn an otherwise authorized tool call into a failure.
-	_ = r.persistEvaluationsLocked()
 }
 
 func (r *Registry) Evaluation(name string) Evaluation {
@@ -279,40 +297,49 @@ func (r *Registry) loadEvaluations() error {
 	if r == nil || r.evaluationPath == "" {
 		return nil
 	}
-	raw, err := os.ReadFile(r.evaluationPath)
+	evaluations, err := readEvaluations(r.evaluationPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	r.evaluations = evaluations
+	return nil
+}
+
+func readEvaluations(path string) (map[string]Evaluation, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
 	var evaluations map[string]Evaluation
 	if err := json.Unmarshal(raw, &evaluations); err != nil {
-		return err
+		return nil, err
+	}
+	if evaluations == nil {
+		evaluations = map[string]Evaluation{}
 	}
 	for name, evaluation := range evaluations {
 		if strings.TrimSpace(name) == "" || evaluation.Runs < 0 || evaluation.Successful < 0 || evaluation.Successful > evaluation.Runs {
-			return fmt.Errorf("invalid evaluation for %q", name)
+			return nil, fmt.Errorf("invalid evaluation for %q", name)
 		}
 		if evaluation.Runs == 0 {
 			evaluation.SuccessRate = 0
 		} else {
 			evaluation.SuccessRate = float64(evaluation.Successful) / float64(evaluation.Runs)
 		}
-		r.evaluations[name] = evaluation
+		evaluations[name] = evaluation
 	}
-	return nil
+	return evaluations, nil
 }
 
-func (r *Registry) persistEvaluationsLocked() error {
-	if r == nil || r.evaluationPath == "" {
-		return nil
-	}
-	raw, err := json.MarshalIndent(r.evaluations, "", "  ")
+func writeEvaluations(path string, evaluations map[string]Evaluation) error {
+	raw, err := json.MarshalIndent(evaluations, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(r.evaluationPath), ".harnessmesh-evaluations-*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".harnessmesh-evaluations-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -333,7 +360,29 @@ func (r *Registry) persistEvaluationsLocked() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, r.evaluationPath)
+	return os.Rename(tmpName, path)
+}
+
+func acquireEvaluationLock(path string) (func(), error) {
+	lockPath := path + ".lock"
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := os.Mkdir(lockPath, 0o700)
+		if err == nil {
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > 30*time.Second {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("evaluation lock timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (r *Registry) Load(name string) (Entry, error) {
