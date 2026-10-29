@@ -5,7 +5,21 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/domehahn/harnessmesh/internal/skills"
 )
+
+func TestSkillStatusRoutingThreshold(t *testing.T) {
+	entry := skills.Entry{Manifest: skills.Manifest{Name: "review", Version: "2.0.0", Risk: "medium"}}
+	status := skillStatus(entry, skills.Evaluation{Runs: 3, Successful: 1, SuccessRate: 1.0 / 3.0})
+	if status["routing"] != "excluded" {
+		t.Fatalf("routing = %v, want excluded", status["routing"])
+	}
+	status = skillStatus(entry, skills.Evaluation{Runs: 3, Successful: 2, SuccessRate: 2.0 / 3.0})
+	if status["routing"] != "preferred" {
+		t.Fatalf("routing = %v, want preferred", status["routing"])
+	}
+}
 
 func TestSecretEnvValueReadsMountedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")

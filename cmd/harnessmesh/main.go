@@ -81,6 +81,8 @@ func main() {
 		err = agentsCmd(os.Args[2:])
 	case "plugins":
 		err = pluginsCmd(os.Args[2:])
+	case "skills":
+		err = skillsCmd(os.Args[2:])
 	case "marketplace":
 		err = marketplaceCmd(os.Args[2:])
 	case "session":
@@ -154,6 +156,7 @@ Usage:
   harnessmesh peer status --session <id>
   harnessmesh agents <list|show <name>>
   harnessmesh plugins <list|validate> [--dir <path>] [--json]
+  harnessmesh skills <list|select|plan> [--root <path>] [--context <text>] [--skill <name>] [--json]
   harnessmesh marketplace <search|import|source|install|approve|activate|deactivate|update|rollback|uninstall> [options]
   harnessmesh session <list|show|messages|resume|stop> [options]
   harnessmesh findings <session-id> [--json]
@@ -232,6 +235,121 @@ func pluginsCmd(args []string) error {
 		return errors.New("one or more executable plugins failed validation")
 	}
 	return nil
+}
+
+func skillsCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh skills <list|select|plan> [options]")
+	}
+	subcmd := args[0]
+	fs := flag.NewFlagSet("skills "+subcmd, flag.ContinueOnError)
+	configPath := fs.String("config", "harnessmesh.json", "config file")
+	root := fs.String("root", "", "skill registry root")
+	contextText := fs.String("context", "", "task context for automatic selection")
+	skillName := fs.String("skill", "", "exact skill name")
+	evaluationPath := fs.String("evaluation-path", "", "evaluation state file")
+	requireHash := fs.Bool("require-hash", false, "require matching SHA-256")
+	requireSignature := fs.Bool("require-signature", false, "require Ed25519 signature")
+	jsonOutput := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if subcmd != "list" && subcmd != "select" && subcmd != "plan" {
+		return fmt.Errorf("unknown skills subcommand %q", subcmd)
+	}
+	cfg, err := loadConfigOrDefault(*configPath)
+	if err != nil {
+		return err
+	}
+	registryRoot := strings.TrimSpace(*root)
+	if registryRoot == "" {
+		registryRoot = strings.TrimSpace(cfg.Skills.Root)
+	}
+	if registryRoot == "" {
+		registryRoot = pluginRoot()
+	}
+	statePath := strings.TrimSpace(*evaluationPath)
+	if statePath == "" {
+		statePath = strings.TrimSpace(cfg.Skills.EvaluationPath)
+	}
+	if envPath := strings.TrimSpace(os.Getenv("HARNESSMESH_SKILL_EVALUATION_PATH")); envPath != "" && statePath == "" {
+		statePath = envPath
+	}
+	trusted, err := plugin.TrustedKeysFromEnvironment()
+	if err != nil {
+		return err
+	}
+	registry, err := skills.DiscoverWithOptions(registryRoot, *requireHash || cfg.Skills.RequireHash || os.Getenv("HARNESSMESH_SKILL_REQUIRE_HASH") == "1", *requireSignature || cfg.Skills.RequireSigned || os.Getenv("HARNESSMESH_SKILL_REQUIRE_SIGNED") == "1", trusted)
+	if err != nil {
+		return err
+	}
+	if statePath != "" {
+		if err := registry.SetEvaluationPath(statePath); err != nil {
+			return err
+		}
+	}
+	if subcmd == "list" {
+		items := make([]map[string]any, 0)
+		for _, entry := range registry.List() {
+			evaluation := registry.Evaluation(entry.Manifest.Name)
+			items = append(items, skillStatus(entry, evaluation))
+		}
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(items)
+		}
+		fmt.Printf("%-28s %-12s %-10s %-10s %-12s %s\n", "SKILL", "VERSION", "RISK", "RUNS", "SUCCESS", "ROUTING")
+		for _, item := range items {
+			status := item["routing"]
+			fmt.Printf("%-28s %-12s %-10s %-10v %-11.1f%% %v\n", item["name"], item["version"], item["risk"], item["runs"], item["success_rate"].(float64)*100, status)
+		}
+		return nil
+	}
+	var entry skills.Entry
+	if strings.TrimSpace(*skillName) != "" {
+		entry, err = registry.Select(*skillName)
+	} else if strings.TrimSpace(*contextText) != "" {
+		entry, err = registry.SelectContext(*contextText, nil)
+	} else {
+		err = errors.New("--skill or --context is required")
+	}
+	if err != nil {
+		return err
+	}
+	if subcmd == "select" {
+		result := skillStatus(entry, registry.Evaluation(entry.Manifest.Name))
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(result)
+		}
+		fmt.Printf("selected %s v%s (%s, %.1f%% success over %d runs)\n", entry.Manifest.Name, entry.Manifest.Version, result["routing"], result["success_rate"].(float64)*100, result["runs"])
+		return nil
+	}
+	plan, err := skills.BuildExecutionPlan(entry, entry.SchemaTokenEstimate())
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(plan)
+	}
+	fmt.Printf("%s v%s · %d steps · %d estimated token savings\n", plan.Skill, plan.Version, len(plan.Steps), plan.EstimatedTokenSavings)
+	for index, step := range plan.Steps {
+		fmt.Printf("%d. %s\n", index+1, step.Tool)
+	}
+	return nil
+}
+
+func skillStatus(entry skills.Entry, evaluation skills.Evaluation) map[string]any {
+	routing := "eligible"
+	if evaluation.Runs >= 3 && evaluation.SuccessRate < 0.5 {
+		routing = "excluded"
+	} else if evaluation.Runs >= 3 {
+		routing = "preferred"
+	}
+	return map[string]any{
+		"name": entry.Manifest.Name, "version": entry.Manifest.Version, "risk": entry.Manifest.Risk,
+		"tools": entry.Manifest.Tools, "verified": entry.Verified, "signature_verified": entry.SignatureVerified,
+		"runs": evaluation.Runs, "successful": evaluation.Successful, "success_rate": evaluation.SuccessRate,
+		"routing": routing,
+	}
 }
 
 func marketplaceCmd(args []string) error {
