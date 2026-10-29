@@ -31,6 +31,7 @@ Example manifest:
   "triggers": ["review repository", "security review"],
   "capabilities": ["review", "evidence"],
   "tools": ["peer.request_review", "peer.submit_finding"],
+  "strict_order": true,
   "risk": "medium",
   "sha256": "..."
 }
@@ -77,6 +78,11 @@ Example workflow markers:
 2. Inspect open issues: [fn: github.issues.list]
 3. Produce the final report.
 ```
+
+Set `strict_order` to `true` when every declared step must run in sequence.
+MCP rejects skipped, repeated or out-of-order steps with an explicit policy
+error; failed steps remain retryable. The default is `false` for compatibility
+with interactive agents.
 
 ## Dashboard
 

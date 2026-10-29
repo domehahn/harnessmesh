@@ -26,6 +26,7 @@ type Manifest struct {
 	Triggers     []string `json:"triggers,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	Tools        []string `json:"tools,omitempty"`
+	StrictOrder  bool     `json:"strict_order,omitempty"`
 	Risk         string   `json:"risk,omitempty"`
 	SHA256       string   `json:"sha256,omitempty"`
 	Signature    string   `json:"signature,omitempty"`

@@ -23,6 +23,7 @@ type ExecutionPlan struct {
 	Digest                  string          `json:"digest"`
 	Steps                   []ExecutionStep `json:"steps"`
 	DeclaredTools           []string        `json:"declared_tools"`
+	StrictOrder             bool            `json:"strict_order"`
 	SchemaTokens            int             `json:"schema_tokens"`
 	FullSchemaTokens        int             `json:"full_schema_tokens"`
 	EstimatedTokenSavings   int             `json:"estimated_token_savings"`
@@ -63,12 +64,19 @@ func BuildExecutionPlan(entry Entry, fullSchemaTokens int) (ExecutionPlan, error
 		}
 	}
 	digest := sha256.Sum256([]byte(entry.Content))
-	plan := ExecutionPlan{Skill: entry.Manifest.Name, Version: entry.Manifest.Version, Digest: hex.EncodeToString(digest[:]), Steps: steps, DeclaredTools: tools, SchemaTokens: entry.SchemaTokenEstimate(), FullSchemaTokens: fullSchemaTokens}
+	plan := ExecutionPlan{Skill: entry.Manifest.Name, Version: entry.Manifest.Version, Digest: hex.EncodeToString(digest[:]), Steps: steps, DeclaredTools: tools, StrictOrder: entry.Manifest.StrictOrder, SchemaTokens: entry.SchemaTokenEstimate(), FullSchemaTokens: fullSchemaTokens}
 	if fullSchemaTokens > plan.SchemaTokens {
 		plan.EstimatedTokenSavings = fullSchemaTokens - plan.SchemaTokens
 		plan.EstimatedSavingsPercent = float64(plan.EstimatedTokenSavings) / float64(fullSchemaTokens) * 100
 	}
 	return plan, nil
+}
+
+func (p ExecutionPlan) ExpectedTool(index int) string {
+	if index < 0 || index >= len(p.Steps) {
+		return ""
+	}
+	return p.Steps[index].Tool
 }
 
 func (p ExecutionPlan) AllowsTool(tool string) bool {

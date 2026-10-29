@@ -83,6 +83,8 @@ type Server struct {
 	skill              *skills.Entry
 	skillRegistry      *skills.Registry
 	skillPlan          *skills.ExecutionPlan
+	skillOrderMu       sync.Mutex
+	skillOrderIndex    int
 	reliability        *agentreliability.Controller
 	runtimeGraph       *assurance.RuntimeGraph
 	provenance         *provenance.Chain
@@ -700,7 +702,10 @@ func (s *Server) SetGateway(gateway *mcpgateway.Gateway, tools []mcpgateway.Tool
 // selected, hash-verified skill. The MCP server remains the enforcement point:
 // hiding tools in tools/list is not sufficient, so tools/call also checks it.
 func (s *Server) SetSkill(entry *skills.Entry) {
+	s.skillOrderMu.Lock()
+	defer s.skillOrderMu.Unlock()
 	s.skillPlan = nil
+	s.skillOrderIndex = 0
 	s.skill = nil
 	if entry != nil {
 		fullSchemaTokens := len(s.ListTools()) * 80
@@ -1502,6 +1507,9 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		if s.skillPlan != nil && !s.skillPlan.AllowsTool(callParams.Name) {
 			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32003, Message: "tool is not allowed by skill execution plan", Data: callParams.Name}}, nil
 		}
+		if expected, ok := s.expectedSkillTool(); ok && expected != callParams.Name {
+			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32004, Message: "skill execution order violation", Data: map[string]string{"expected_tool": expected, "received_tool": callParams.Name}}}, nil
+		}
 		argsDigest, _ := assurance.Fingerprint(string(callParams.Arguments))
 		intent := map[string]any{"tool": callParams.Name, "arguments_digest": argsDigest}
 		if s.skillPlan != nil {
@@ -1532,6 +1540,7 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 			}, nil
 		}
 		s.recordProvenance(ctx, "execution.complete", callParams.Name, map[string]any{"status": "success"})
+		s.advanceSkillTool(callParams.Name)
 
 		resJSON, _ := json.MarshalIndent(res, "", "  ")
 		return &JSONRPCResponse{
@@ -1550,6 +1559,24 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 			ID:      req.ID,
 			Error:   &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Method not found: %s", req.Method)},
 		}, nil
+	}
+}
+
+func (s *Server) expectedSkillTool() (string, bool) {
+	s.skillOrderMu.Lock()
+	defer s.skillOrderMu.Unlock()
+	if s.skillPlan == nil || !s.skillPlan.StrictOrder {
+		return "", false
+	}
+	expected := s.skillPlan.ExpectedTool(s.skillOrderIndex)
+	return expected, expected != ""
+}
+
+func (s *Server) advanceSkillTool(tool string) {
+	s.skillOrderMu.Lock()
+	defer s.skillOrderMu.Unlock()
+	if s.skillPlan != nil && s.skillPlan.StrictOrder && s.skillPlan.ExpectedTool(s.skillOrderIndex) == tool {
+		s.skillOrderIndex++
 	}
 }
 
