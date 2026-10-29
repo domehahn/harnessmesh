@@ -1584,6 +1584,19 @@ func (s *Server) recordProvenance(ctx context.Context, kind, subject string, pay
 	if s.provenance == nil {
 		return
 	}
+	if s.skillPlan != nil {
+		copyPayload := make(map[string]any, len(payload)+5)
+		for key, value := range payload {
+			copyPayload[key] = value
+		}
+		copyPayload["skill"] = s.skillPlan.Skill
+		copyPayload["skill_version"] = s.skillPlan.Version
+		copyPayload["skill_plan_digest"] = s.skillPlan.Digest
+		copyPayload["schema_tokens"] = s.skillPlan.SchemaTokens
+		copyPayload["full_schema_tokens"] = s.skillPlan.FullSchemaTokens
+		copyPayload["estimated_token_savings"] = s.skillPlan.EstimatedTokenSavings
+		payload = copyPayload
+	}
 	event, err := s.provenance.Append(kind, subject, payload, time.Now().UTC())
 	if err != nil || s.engine == nil {
 		return
