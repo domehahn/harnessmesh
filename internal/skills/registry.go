@@ -63,6 +63,17 @@ type Evaluation struct {
 	SuccessRate float64 `json:"success_rate"`
 }
 
+type SelectionCandidate struct {
+	Name                string     `json:"name"`
+	Version             string     `json:"version"`
+	Score               int        `json:"score"`
+	MatchedName         bool       `json:"matched_name"`
+	MatchedTriggers     []string   `json:"matched_triggers,omitempty"`
+	MatchedCapabilities []string   `json:"matched_capabilities,omitempty"`
+	Evaluation          Evaluation `json:"evaluation"`
+	Routing             string     `json:"routing"`
+}
+
 func Discover(root string, requireHash bool) (*Registry, error) {
 	return DiscoverWithOptions(root, requireHash, false, nil)
 }
@@ -160,45 +171,68 @@ func (r *Registry) Select(query string) (Entry, error) {
 // optional capabilities. Mature evaluation results can exclude unreliable
 // skills and prefer reliable ones; ties remain deterministic by name.
 func (r *Registry) SelectContext(query string, capabilities []string) (Entry, error) {
+	candidates, err := r.ExplainContext(query, capabilities)
+	if err != nil {
+		return Entry{}, err
+	}
+	for _, candidate := range candidates {
+		if candidate.Score > 0 && candidate.Routing != "excluded" {
+			return r.Load(candidate.Name)
+		}
+	}
+	return Entry{}, fmt.Errorf("no skill matches context %q", query)
+}
+
+// ExplainContext returns the deterministic candidates used by SelectContext.
+// It performs no loading or tool execution, making it safe for diagnostics.
+func (r *Registry) ExplainContext(query string, capabilities []string) ([]SelectionCandidate, error) {
 	text := strings.ToLower(strings.TrimSpace(query))
 	if text == "" {
-		return Entry{}, errors.New("skill context is required")
+		return nil, errors.New("skill context is required")
 	}
 	capSet := map[string]bool{}
 	for _, capability := range capabilities {
 		capSet[strings.ToLower(strings.TrimSpace(capability))] = true
 	}
-	bestName, bestScore := "", 0
+	candidates := make([]SelectionCandidate, 0, len(r.Entries))
 	for name, entry := range r.Entries {
 		eval := r.Evaluation(name)
+		candidate := SelectionCandidate{Name: entry.Manifest.Name, Version: entry.Manifest.Version, Evaluation: eval, Routing: "eligible"}
 		if eval.Runs >= 3 && eval.SuccessRate < 0.5 {
-			continue
+			candidate.Routing = "excluded"
+		} else if eval.Runs >= 3 {
+			candidate.Routing = "preferred"
 		}
 		score := 0
 		if strings.Contains(text, strings.ToLower(entry.Manifest.Name)) {
+			candidate.MatchedName = true
 			score += 100
 		}
 		for _, trigger := range entry.Manifest.Triggers {
 			if strings.Contains(text, strings.ToLower(trigger)) {
+				candidate.MatchedTriggers = append(candidate.MatchedTriggers, trigger)
 				score += 20
 			}
 		}
 		for _, capability := range entry.Manifest.Capabilities {
 			if capSet[strings.ToLower(capability)] {
+				candidate.MatchedCapabilities = append(candidate.MatchedCapabilities, capability)
 				score += 10
 			}
 		}
 		if eval.Runs >= 3 {
 			score += int(eval.SuccessRate * 10)
 		}
-		if score > bestScore || (score > 0 && score == bestScore && (bestName == "" || name < bestName)) {
-			bestName, bestScore = name, score
+		candidate.Score = score
+		candidates = append(candidates, candidate)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
 		}
-	}
-	if bestScore == 0 {
-		return Entry{}, fmt.Errorf("no skill matches context %q", query)
-	}
-	return r.Load(bestName)
+		return candidates[i].Name < candidates[j].Name
+	})
+	return candidates, nil
 }
 
 func (r *Registry) ObserveOutcome(name string, success bool) {

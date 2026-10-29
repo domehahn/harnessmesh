@@ -120,6 +120,22 @@ func TestContextSelectionUsesObservedEvaluation(t *testing.T) {
 	}
 }
 
+func TestExplainContextReportsExcludedCandidate(t *testing.T) {
+	r := &Registry{Entries: map[string]Entry{
+		"review": {Manifest: Manifest{Name: "review", Version: "1.0.0", Triggers: []string{"security review"}}},
+	}}
+	for i := 0; i < 3; i++ {
+		r.ObserveOutcome("review", false)
+	}
+	candidates, err := r.ExplainContext("security review", nil)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("unexpected candidates: %#v, %v", candidates, err)
+	}
+	if candidates[0].Routing != "excluded" || len(candidates[0].MatchedTriggers) != 1 {
+		t.Fatalf("unexpected explanation: %#v", candidates[0])
+	}
+}
+
 func TestEvaluationSurvivesRegistryRestart(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "review")
