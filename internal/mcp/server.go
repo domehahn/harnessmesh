@@ -1503,7 +1503,13 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32003, Message: "tool is not allowed by skill execution plan", Data: callParams.Name}}, nil
 		}
 		argsDigest, _ := assurance.Fingerprint(string(callParams.Arguments))
-		s.recordProvenance(ctx, "intent", callParams.Name, map[string]any{"tool": callParams.Name, "arguments_digest": argsDigest})
+		intent := map[string]any{"tool": callParams.Name, "arguments_digest": argsDigest}
+		if s.skillPlan != nil {
+			intent["skill"] = s.skillPlan.Skill
+			intent["skill_version"] = s.skillPlan.Version
+			intent["skill_plan_digest"] = s.skillPlan.Digest
+		}
+		s.recordProvenance(ctx, "intent", callParams.Name, intent)
 
 		guardedArgs, guardErr := s.guardToolCall(ctx, callParams.Name, callParams.Arguments)
 		if guardErr != nil {
