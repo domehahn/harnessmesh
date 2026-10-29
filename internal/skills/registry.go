@@ -201,21 +201,34 @@ func (r *Registry) SelectContext(query string, capabilities []string) (Entry, er
 }
 
 func (r *Registry) ObserveOutcome(name string, success bool) {
+	version := ""
+	if r != nil {
+		if entry, ok := r.Entries[name]; ok {
+			version = entry.Manifest.Version
+		}
+	}
+	r.ObserveOutcomeVersion(name, version, success)
+}
+
+// ObserveOutcomeVersion records a result for an exact skill version. A new
+// artifact version therefore starts with a clean evaluation history.
+func (r *Registry) ObserveOutcomeVersion(name, version string, success bool) {
 	if r == nil || name == "" {
 		return
 	}
+	key := evaluationKey(name, version)
 	r.evalMu.Lock()
 	defer r.evalMu.Unlock()
 	if r.evaluations == nil {
 		r.evaluations = map[string]Evaluation{}
 	}
-	eval := r.evaluations[name]
+	eval := r.evaluations[key]
 	eval.Runs++
 	if success {
 		eval.Successful++
 	}
 	eval.SuccessRate = float64(eval.Successful) / float64(eval.Runs)
-	r.evaluations[name] = eval
+	r.evaluations[key] = eval
 	// Evaluation persistence is best effort. A read-only skill root must not
 	// turn an otherwise authorized tool call into a failure.
 	_ = r.persistEvaluationsLocked()
@@ -224,7 +237,20 @@ func (r *Registry) ObserveOutcome(name string, success bool) {
 func (r *Registry) Evaluation(name string) Evaluation {
 	r.evalMu.RLock()
 	defer r.evalMu.RUnlock()
-	return r.evaluations[name]
+	version := ""
+	if entry, ok := r.Entries[name]; ok {
+		version = entry.Manifest.Version
+	}
+	return r.evaluations[evaluationKey(name, version)]
+}
+
+func evaluationKey(name, version string) string {
+	name = strings.TrimSpace(name)
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return name
+	}
+	return name + "@" + version
 }
 
 // SetEvaluationPath changes the durable evaluation file before the registry is
