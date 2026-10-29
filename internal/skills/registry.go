@@ -227,6 +227,28 @@ func (r *Registry) Evaluation(name string) Evaluation {
 	return r.evaluations[name]
 }
 
+// SetEvaluationPath changes the durable evaluation file before the registry is
+// used for context selection. It is intended for deployments that mount a
+// writable state directory separately from the skill artifacts.
+func (r *Registry) SetEvaluationPath(path string) error {
+	if r == nil {
+		return errors.New("skill registry is nil")
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	r.evalMu.Lock()
+	defer r.evalMu.Unlock()
+	r.evaluationPath = absPath
+	r.evaluations = map[string]Evaluation{}
+	return r.loadEvaluations()
+}
+
 func (r *Registry) loadEvaluations() error {
 	if r == nil || r.evaluationPath == "" {
 		return nil

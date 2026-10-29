@@ -150,3 +150,43 @@ func TestEvaluationSurvivesRegistryRestart(t *testing.T) {
 		t.Fatalf("persisted evaluation = %#v", got)
 	}
 }
+
+func TestEvaluationPathCanBeConfiguredOutsideSkillRoot(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "review")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("# review\n")
+	sum := sha256.Sum256(content)
+	manifest := `{"name":"review","version":"1.0.0","sha256":"` + hex.EncodeToString(sum[:]) + `"}`
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	statePath := filepath.Join(stateDir, "evaluations.json")
+	registry, err := Discover(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetEvaluationPath(statePath); err != nil {
+		t.Fatal(err)
+	}
+	registry.ObserveOutcome("review", true)
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("evaluation state was not written: %v", err)
+	}
+	reloaded, err := Discover(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reloaded.SetEvaluationPath(statePath); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Evaluation("review"); got.Runs != 1 || got.Successful != 1 {
+		t.Fatalf("configured evaluation path was not loaded: %#v", got)
+	}
+}

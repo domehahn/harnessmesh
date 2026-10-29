@@ -78,10 +78,12 @@ preference when candidates are otherwise equally relevant. The current
 evaluation is exposed in `GET /api/v1/dashboard/skills` and the optimization
 view. Local registries persist this state atomically in
 `.harnessmesh-evaluations.json` below the skill root. A read-only skill root
-continues to work with in-memory evaluation only; multi-replica deployments
-should use a shared durable evaluation store before enabling cross-replica
-routing decisions. Evaluation never overrides tenant policy, approvals, the
-action firewall or tool locks.
+continues to work with in-memory evaluation only. Deployments can set
+`skills.evaluation_path` or `HARNESSMESH_SKILL_EVALUATION_PATH` to a writable
+mounted state path. That path must be shared and lock-safe if multiple
+replicas write it; otherwise use one file per replica and aggregate results
+centrally. Evaluation never overrides tenant policy, approvals, the action
+firewall or tool locks.
 
 Example workflow markers:
 
