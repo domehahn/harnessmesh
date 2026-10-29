@@ -14,6 +14,14 @@ transport; a selected skill limits which tools are visible and callable.
 6. `tools/call` enforces the same allowlist, so hiding a tool is not the
    security boundary by itself.
 
+After selection, HarnessMesh builds an execution plan from the verified
+`SKILL.md`. Explicit `[fn: tool.name]` markers define the deterministic order;
+undeclared tools are ignored and remaining declared tools are appended in
+stable lexical order. The plan digest, steps and estimated schema-token saving
+are exposed through `GET /api/v1/dashboard/skills` and the console. The plan
+is an execution contract, not an authorization bypass: MCP registry policy,
+the action firewall, approvals and tenant identity remain authoritative.
+
 Example manifest:
 
 ```json
@@ -60,6 +68,15 @@ Markdown document is loaded only after a match. HarnessMesh records the
 selected skill, version, hash status and estimated schema-token reduction in
 the process log; downstream telemetry can attach that information to the
 session trace.
+
+Example workflow markers:
+
+```markdown
+## Workflow
+1. Fetch repository metadata: [fn: github.repo.get]
+2. Inspect open issues: [fn: github.issues.list]
+3. Produce the final report.
+```
 
 ## Dashboard
 

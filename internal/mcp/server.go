@@ -82,6 +82,7 @@ type Server struct {
 	gatewayTools       []ToolDefinition
 	skill              *skills.Entry
 	skillRegistry      *skills.Registry
+	skillPlan          *skills.ExecutionPlan
 	reliability        *agentreliability.Controller
 	runtimeGraph       *assurance.RuntimeGraph
 	provenance         *provenance.Chain
@@ -698,14 +699,27 @@ func (s *Server) SetGateway(gateway *mcpgateway.Gateway, tools []mcpgateway.Tool
 // SetSkill narrows the exposed MCP surface to the tools declared by a
 // selected, hash-verified skill. The MCP server remains the enforcement point:
 // hiding tools in tools/list is not sufficient, so tools/call also checks it.
-func (s *Server) SetSkill(entry *skills.Entry) { s.skill = entry }
+func (s *Server) SetSkill(entry *skills.Entry) {
+	s.skillPlan = nil
+	s.skill = nil
+	if entry != nil {
+		fullSchemaTokens := len(s.ListTools()) * 80
+		if plan, err := skills.BuildExecutionPlan(*entry, fullSchemaTokens); err == nil {
+			s.skillPlan = &plan
+		}
+	}
+	s.skill = entry
+}
 
 func (s *Server) SetSkillRegistry(registry *skills.Registry) { s.skillRegistry = registry }
 
 func (s *Server) SkillSnapshot() map[string]any {
-	result := map[string]any{"enabled": s.skillRegistry != nil, "selected": "", "skills": []map[string]any{}}
+	result := map[string]any{"enabled": s.skillRegistry != nil, "selected": "", "skills": []map[string]any{}, "execution_plan": nil}
 	if s.skill != nil {
 		result["selected"] = s.skill.Manifest.Name
+	}
+	if s.skillPlan != nil {
+		result["execution_plan"] = s.skillPlan
 	}
 	if s.skillRegistry != nil {
 		items := make([]map[string]any, 0)
@@ -1484,6 +1498,9 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		}
 		if !s.skillAllowsTool(callParams.Name) {
 			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32003, Message: "tool is not allowed by selected skill", Data: callParams.Name}}, nil
+		}
+		if s.skillPlan != nil && !s.skillPlan.AllowsTool(callParams.Name) {
+			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32003, Message: "tool is not allowed by skill execution plan", Data: callParams.Name}}, nil
 		}
 		argsDigest, _ := assurance.Fingerprint(string(callParams.Arguments))
 		s.recordProvenance(ctx, "intent", callParams.Name, map[string]any{"tool": callParams.Name, "arguments_digest": argsDigest})
