@@ -729,6 +729,7 @@ func (s *Server) SkillSnapshot() map[string]any {
 	if s.skillRegistry != nil {
 		items := make([]map[string]any, 0)
 		for _, entry := range s.skillRegistry.List() {
+			evaluation := s.skillRegistry.Evaluation(entry.Manifest.Name)
 			items = append(items, map[string]any{
 				"name": entry.Manifest.Name, "version": entry.Manifest.Version,
 				"description": entry.Manifest.Description, "triggers": entry.Manifest.Triggers,
@@ -736,6 +737,7 @@ func (s *Server) SkillSnapshot() map[string]any {
 				"risk": entry.Manifest.Risk, "loaded": entry.Loaded, "verified": entry.Verified,
 				"signature_verified":    entry.SignatureVerified,
 				"schema_token_estimate": entry.SchemaTokenEstimate(),
+				"evaluation":            evaluation,
 			})
 		}
 		result["skills"] = items
@@ -1527,6 +1529,9 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		s.recordProvenance(ctx, "policy.allow", callParams.Name, map[string]any{"tool": callParams.Name})
 		res, err := s.executeTool(ctx, callParams.Name, guardedArgs)
 		if err != nil {
+			if s.skillRegistry != nil && s.skill != nil {
+				s.skillRegistry.ObserveOutcome(s.skill.Manifest.Name, false)
+			}
 			s.recordProvenance(ctx, "execution.error", callParams.Name, map[string]any{"error": err.Error()})
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
@@ -1540,6 +1545,9 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 			}, nil
 		}
 		s.recordProvenance(ctx, "execution.complete", callParams.Name, map[string]any{"status": "success"})
+		if s.skillRegistry != nil && s.skill != nil {
+			s.skillRegistry.ObserveOutcome(s.skill.Manifest.Name, true)
+		}
 		s.advanceSkillTool(callParams.Name)
 
 		resJSON, _ := json.MarshalIndent(res, "", "  ")
