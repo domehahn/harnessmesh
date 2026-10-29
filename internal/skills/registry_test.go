@@ -190,3 +190,17 @@ func TestEvaluationPathCanBeConfiguredOutsideSkillRoot(t *testing.T) {
 		t.Fatalf("configured evaluation path was not loaded: %#v", got)
 	}
 }
+
+func TestEvaluationIsScopedToSkillVersion(t *testing.T) {
+	r := &Registry{Entries: map[string]Entry{
+		"review": {Manifest: Manifest{Name: "review", Version: "2.0.0"}},
+	}}
+	r.ObserveOutcomeVersion("review", "1.0.0", false)
+	if got := r.Evaluation("review"); got.Runs != 0 {
+		t.Fatalf("old version evaluation leaked into current version: %#v", got)
+	}
+	r.ObserveOutcomeVersion("review", "2.0.0", true)
+	if got := r.Evaluation("review"); got.Runs != 1 || got.Successful != 1 {
+		t.Fatalf("current version evaluation missing: %#v", got)
+	}
+}

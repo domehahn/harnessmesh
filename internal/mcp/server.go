@@ -1530,7 +1530,7 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		res, err := s.executeTool(ctx, callParams.Name, guardedArgs)
 		if err != nil {
 			if s.skillRegistry != nil && s.skill != nil {
-				s.skillRegistry.ObserveOutcome(s.skill.Manifest.Name, false)
+				s.skillRegistry.ObserveOutcomeVersion(s.skill.Manifest.Name, s.skill.Manifest.Version, false)
 			}
 			s.recordProvenance(ctx, "execution.error", callParams.Name, map[string]any{"error": err.Error()})
 			return &JSONRPCResponse{
@@ -1546,7 +1546,7 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		}
 		s.recordProvenance(ctx, "execution.complete", callParams.Name, map[string]any{"status": "success"})
 		if s.skillRegistry != nil && s.skill != nil {
-			s.skillRegistry.ObserveOutcome(s.skill.Manifest.Name, true)
+			s.skillRegistry.ObserveOutcomeVersion(s.skill.Manifest.Name, s.skill.Manifest.Version, true)
 		}
 		s.advanceSkillTool(callParams.Name)
 

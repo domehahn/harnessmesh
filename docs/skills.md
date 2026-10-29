@@ -83,7 +83,8 @@ continues to work with in-memory evaluation only. Deployments can set
 mounted state path. That path must be shared and lock-safe if multiple
 replicas write it; otherwise use one file per replica and aggregate results
 centrally. Evaluation never overrides tenant policy, approvals, the action
-firewall or tool locks.
+firewall or tool locks. Evaluation is scoped to the exact skill version, so a
+newly installed version starts without inheriting an older version's score.
 
 Example workflow markers:
 
