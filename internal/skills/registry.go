@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 type Manifest struct {
@@ -50,6 +51,14 @@ type Registry struct {
 	RequireSignature  bool
 	TrustedPublicKeys []ed25519.PublicKey
 	root              *os.Root
+	evalMu            sync.RWMutex
+	evaluations       map[string]Evaluation
+}
+
+type Evaluation struct {
+	Runs        int     `json:"runs"`
+	Successful  int     `json:"successful"`
+	SuccessRate float64 `json:"success_rate"`
 }
 
 func Discover(root string, requireHash bool) (*Registry, error) {
@@ -99,7 +108,7 @@ func DiscoverWithOptions(root string, requireHash, requireSignature bool, truste
 	if err != nil {
 		return nil, err
 	}
-	return &Registry{Root: absRoot, Entries: entries, RequireHash: requireHash, RequireSignature: requireSignature, TrustedPublicKeys: trusted, root: rootFS}, nil
+	return &Registry{Root: absRoot, Entries: entries, RequireHash: requireHash, RequireSignature: requireSignature, TrustedPublicKeys: trusted, root: rootFS, evaluations: map[string]Evaluation{}}, nil
 }
 
 func (r *Registry) List() []Entry {
@@ -133,7 +142,8 @@ func (r *Registry) Select(query string) (Entry, error) {
 }
 
 // SelectContext chooses the highest-scoring skill for a task description and
-// optional evaluated capabilities. Ties are deterministic by name.
+// optional capabilities. Mature evaluation results can exclude unreliable
+// skills and prefer reliable ones; ties remain deterministic by name.
 func (r *Registry) SelectContext(query string, capabilities []string) (Entry, error) {
 	text := strings.ToLower(strings.TrimSpace(query))
 	if text == "" {
@@ -145,6 +155,10 @@ func (r *Registry) SelectContext(query string, capabilities []string) (Entry, er
 	}
 	bestName, bestScore := "", 0
 	for name, entry := range r.Entries {
+		eval := r.Evaluation(name)
+		if eval.Runs >= 3 && eval.SuccessRate < 0.5 {
+			continue
+		}
 		score := 0
 		if strings.Contains(text, strings.ToLower(entry.Manifest.Name)) {
 			score += 100
@@ -159,6 +173,9 @@ func (r *Registry) SelectContext(query string, capabilities []string) (Entry, er
 				score += 10
 			}
 		}
+		if eval.Runs >= 3 {
+			score += int(eval.SuccessRate * 10)
+		}
 		if score > bestScore || (score > 0 && score == bestScore && (bestName == "" || name < bestName)) {
 			bestName, bestScore = name, score
 		}
@@ -167,6 +184,30 @@ func (r *Registry) SelectContext(query string, capabilities []string) (Entry, er
 		return Entry{}, fmt.Errorf("no skill matches context %q", query)
 	}
 	return r.Load(bestName)
+}
+
+func (r *Registry) ObserveOutcome(name string, success bool) {
+	if r == nil || name == "" {
+		return
+	}
+	r.evalMu.Lock()
+	defer r.evalMu.Unlock()
+	if r.evaluations == nil {
+		r.evaluations = map[string]Evaluation{}
+	}
+	eval := r.evaluations[name]
+	eval.Runs++
+	if success {
+		eval.Successful++
+	}
+	eval.SuccessRate = float64(eval.Successful) / float64(eval.Runs)
+	r.evaluations[name] = eval
+}
+
+func (r *Registry) Evaluation(name string) Evaluation {
+	r.evalMu.RLock()
+	defer r.evalMu.RUnlock()
+	return r.evaluations[name]
 }
 
 func (r *Registry) Load(name string) (Entry, error) {
