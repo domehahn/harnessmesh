@@ -119,3 +119,34 @@ func TestContextSelectionUsesObservedEvaluation(t *testing.T) {
 		t.Fatalf("unexpected evaluation: %#v", evaluation)
 	}
 }
+
+func TestEvaluationSurvivesRegistryRestart(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "review")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("# review\n")
+	sum := sha256.Sum256(content)
+	manifest := `{"name":"review","version":"1.0.0","triggers":["review"],"sha256":"` + hex.EncodeToString(sum[:]) + `"}`
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Discover(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.ObserveOutcome("review", true)
+	first.ObserveOutcome("review", false)
+
+	second, err := Discover(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.Evaluation("review"); got.Runs != 2 || got.Successful != 1 || got.SuccessRate != 0.5 {
+		t.Fatalf("persisted evaluation = %#v", got)
+	}
+}
