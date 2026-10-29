@@ -23,3 +23,10 @@ func TestBuildExecutionPlanRejectsToollessSkill(t *testing.T) {
 		t.Fatal("expected tool-less skill to be rejected")
 	}
 }
+
+func TestBuildExecutionPlanCarriesStrictOrder(t *testing.T) {
+	plan, err := BuildExecutionPlan(Entry{Manifest: Manifest{Name: "strict", Version: "1", Tools: []string{"one", "two"}, StrictOrder: true}}, 160)
+	if err != nil || !plan.StrictOrder || plan.ExpectedTool(0) != "one" || plan.ExpectedTool(2) != "" {
+		t.Fatalf("unexpected strict plan: %+v, err=%v", plan, err)
+	}
+}
