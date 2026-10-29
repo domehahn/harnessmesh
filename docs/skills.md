@@ -70,10 +70,13 @@ The same routing state is available without the web console:
 harnessmesh skills list --root plugins
 harnessmesh skills select --root plugins --context "perform a security review"
 harnessmesh skills plan --root plugins --skill harnessmesh-review
+harnessmesh skills explain --root plugins --context "perform a security review"
 ```
 
 Add `--json` for CI or operations tooling. `skills list` reports the exact
 version, verification state, evaluation sample and current routing decision.
+`skills explain` additionally shows every candidate's score, matched trigger or
+capability, and exclusion reason without loading or executing tools.
 
 The selected skill's metadata is small enough to use for routing. The full
 Markdown document is loaded only after a match. HarnessMesh records the

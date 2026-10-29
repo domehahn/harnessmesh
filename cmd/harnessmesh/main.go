@@ -156,7 +156,7 @@ Usage:
   harnessmesh peer status --session <id>
   harnessmesh agents <list|show <name>>
   harnessmesh plugins <list|validate> [--dir <path>] [--json]
-  harnessmesh skills <list|select|plan> [--root <path>] [--context <text>] [--skill <name>] [--json]
+  harnessmesh skills <list|select|plan|explain> [--root <path>] [--context <text>] [--skill <name>] [--json]
   harnessmesh marketplace <search|import|source|install|approve|activate|deactivate|update|rollback|uninstall> [options]
   harnessmesh session <list|show|messages|resume|stop> [options]
   harnessmesh findings <session-id> [--json]
@@ -239,7 +239,7 @@ func pluginsCmd(args []string) error {
 
 func skillsCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: harnessmesh skills <list|select|plan> [options]")
+		return errors.New("usage: harnessmesh skills <list|select|plan|explain> [options]")
 	}
 	subcmd := args[0]
 	fs := flag.NewFlagSet("skills "+subcmd, flag.ContinueOnError)
@@ -254,7 +254,7 @@ func skillsCmd(args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if subcmd != "list" && subcmd != "select" && subcmd != "plan" {
+	if subcmd != "list" && subcmd != "select" && subcmd != "plan" && subcmd != "explain" {
 		return fmt.Errorf("unknown skills subcommand %q", subcmd)
 	}
 	cfg, err := loadConfigOrDefault(*configPath)
@@ -301,6 +301,23 @@ func skillsCmd(args []string) error {
 		for _, item := range items {
 			status := item["routing"]
 			fmt.Printf("%-28s %-12s %-10s %-10v %-11.1f%% %v\n", item["name"], item["version"], item["risk"], item["runs"], item["success_rate"].(float64)*100, status)
+		}
+		return nil
+	}
+	if subcmd == "explain" {
+		if strings.TrimSpace(*contextText) == "" {
+			return errors.New("--context is required")
+		}
+		candidates, err := registry.ExplainContext(*contextText, nil)
+		if err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(candidates)
+		}
+		fmt.Printf("%-28s %-10s %-10s %-10s %s\n", "SKILL", "SCORE", "RUNS", "SUCCESS", "ROUTING")
+		for _, candidate := range candidates {
+			fmt.Printf("%-28s %-10d %-10d %-9.1f%% %s\n", candidate.Name, candidate.Score, candidate.Evaluation.Runs, candidate.Evaluation.SuccessRate*100, candidate.Routing)
 		}
 		return nil
 	}
