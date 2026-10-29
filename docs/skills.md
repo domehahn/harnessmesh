@@ -64,6 +64,17 @@ Or configure it:
 }
 ```
 
+The same routing state is available without the web console:
+
+```bash
+harnessmesh skills list --root plugins
+harnessmesh skills select --root plugins --context "perform a security review"
+harnessmesh skills plan --root plugins --skill harnessmesh-review
+```
+
+Add `--json` for CI or operations tooling. `skills list` reports the exact
+version, verification state, evaluation sample and current routing decision.
+
 The selected skill's metadata is small enough to use for routing. The full
 Markdown document is loaded only after a match. HarnessMesh records the
 selected skill, version, hash status and estimated schema-token reduction in
