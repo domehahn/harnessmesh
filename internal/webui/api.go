@@ -1593,9 +1593,19 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 				SampleCount int64   `json:"sample_count"`
 				TrustScore  float64 `json:"trust_score"`
 			}
+			type skillBucket struct {
+				Skill                 string  `json:"skill"`
+				Version               string  `json:"version"`
+				Successful            int     `json:"successful"`
+				Failed                int     `json:"failed"`
+				SuccessRate           float64 `json:"success_rate"`
+				Runs                  int     `json:"runs"`
+				EstimatedTokenSavings int64   `json:"estimated_token_savings"`
+			}
 			byAgent := map[string]*usageBucket{}
 			byModel := map[string]*usageBucket{}
 			bySession := map[string]*usageBucket{}
+			bySkill := map[string]*skillBucket{}
 			add := func(target map[string]*usageBucket, key string, item store.UsageRecord) {
 				if key == "" {
 					key = "unknown"
@@ -1622,7 +1632,47 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 					add(byModel, item.Model, item)
 					add(bySession, item.SessionID, item)
 				}
+				events, eventsErr := st.GetEvents(ctx, session.ID)
+				if eventsErr != nil {
+					http.Error(w, eventsErr.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				for _, event := range events {
+					if !strings.HasPrefix(event.EventType, "provenance.execution.") {
+						continue
+					}
+					skill, _ := event.Payload["skill"].(string)
+					if skill == "" {
+						continue
+					}
+					version, _ := event.Payload["skill_version"].(string)
+					key := skill + "@" + version
+					bucket := bySkill[key]
+					if bucket == nil {
+						bucket = &skillBucket{Skill: skill, Version: version}
+						bySkill[key] = bucket
+					}
+					bucket.Runs++
+					if event.EventType == "provenance.execution.complete" {
+						bucket.Successful++
+					} else {
+						bucket.Failed++
+					}
+					if savings, ok := event.Payload["estimated_token_savings"].(float64); ok {
+						bucket.EstimatedTokenSavings += int64(savings)
+					}
+				}
 			}
+			skillQuality := make([]skillBucket, 0, len(bySkill))
+			for _, bucket := range bySkill {
+				if bucket.Runs > 0 {
+					bucket.SuccessRate = float64(bucket.Successful) / float64(bucket.Runs)
+				}
+				skillQuality = append(skillQuality, *bucket)
+			}
+			sort.Slice(skillQuality, func(i, j int) bool {
+				return skillQuality[i].Skill+skillQuality[i].Version < skillQuality[j].Skill+skillQuality[j].Version
+			})
 			toList := func(values map[string]*usageBucket) []usageBucket {
 				out := make([]usageBucket, 0, len(values))
 				for _, value := range values {
@@ -1678,11 +1728,12 @@ func APIHandlerWithOrchestrator(st store.Store, orchestrator Orchestrator, integ
 			writeJSON(w, map[string]any{
 				"tenant": who.Tenant, "connections": connections,
 				"by_agent": toList(byAgent), "by_model": toList(byModel), "by_session": toList(bySession),
-				"quality":      quality,
-				"routing":      governance.Recommend(routingCandidates),
-				"transports":   map[string]any{"mcp": mcp, "bridge": bridge},
-				"credits":      credits,
-				"optimization": map[string]any{"status": "agent-routing-active-model-routing-observational", "recommendation": "Agent task selection already applies the configured economy policy; model/provider route changes remain recommendation-only until explicitly enabled by provider policy", "automatic_changes": false, "automatic_agent_routing": true},
+				"quality":       quality,
+				"skill_quality": skillQuality,
+				"routing":       governance.Recommend(routingCandidates),
+				"transports":    map[string]any{"mcp": mcp, "bridge": bridge},
+				"credits":       credits,
+				"optimization":  map[string]any{"status": "agent-routing-active-model-routing-observational", "recommendation": "Agent task selection already applies the configured economy policy; model/provider route changes remain recommendation-only until explicitly enabled by provider policy", "automatic_changes": false, "automatic_agent_routing": true},
 			})
 		default:
 			http.NotFound(w, r)
