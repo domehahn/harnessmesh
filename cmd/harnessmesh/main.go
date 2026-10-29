@@ -1083,6 +1083,15 @@ func mcpServe(args []string) error {
 		if skillErr != nil {
 			return fmt.Errorf("discover skills: %w", skillErr)
 		}
+		evaluationPath := strings.TrimSpace(cfg.Skills.EvaluationPath)
+		if envPath := strings.TrimSpace(os.Getenv("HARNESSMESH_SKILL_EVALUATION_PATH")); envPath != "" {
+			evaluationPath = envPath
+		}
+		if evaluationPath != "" {
+			if err := reg.SetEvaluationPath(evaluationPath); err != nil {
+				return fmt.Errorf("configure skill evaluation path: %w", err)
+			}
+		}
 		skillRegistry = reg
 		if selectedSkill == "" {
 			fmt.Fprintf(os.Stderr, "skills loaded lazily (%d metadata entries)\n", len(reg.List()))
