@@ -76,9 +76,12 @@ runs, a skill with a success rate below 50% is excluded from context-driven
 selection; otherwise its success rate is used as a deterministic routing
 preference when candidates are otherwise equally relevant. The current
 evaluation is exposed in `GET /api/v1/dashboard/skills` and the optimization
-view. This is deliberately conservative: evaluation state is process-local
-until a durable evaluation store is configured, and it never overrides tenant
-policy, approvals, the action firewall or tool locks.
+view. Local registries persist this state atomically in
+`.harnessmesh-evaluations.json` below the skill root. A read-only skill root
+continues to work with in-memory evaluation only; multi-replica deployments
+should use a shared durable evaluation store before enabling cross-replica
+routing decisions. Evaluation never overrides tenant policy, approvals, the
+action firewall or tool locks.
 
 Example workflow markers:
 

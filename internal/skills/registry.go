@@ -53,6 +53,7 @@ type Registry struct {
 	root              *os.Root
 	evalMu            sync.RWMutex
 	evaluations       map[string]Evaluation
+	evaluationPath    string
 }
 
 type Evaluation struct {
@@ -108,7 +109,20 @@ func DiscoverWithOptions(root string, requireHash, requireSignature bool, truste
 	if err != nil {
 		return nil, err
 	}
-	return &Registry{Root: absRoot, Entries: entries, RequireHash: requireHash, RequireSignature: requireSignature, TrustedPublicKeys: trusted, root: rootFS, evaluations: map[string]Evaluation{}}, nil
+	registry := &Registry{
+		Root:              absRoot,
+		Entries:           entries,
+		RequireHash:       requireHash,
+		RequireSignature:  requireSignature,
+		TrustedPublicKeys: trusted,
+		root:              rootFS,
+		evaluations:       map[string]Evaluation{},
+		evaluationPath:    filepath.Join(absRoot, ".harnessmesh-evaluations.json"),
+	}
+	if err := registry.loadEvaluations(); err != nil {
+		return nil, fmt.Errorf("load skill evaluations: %w", err)
+	}
+	return registry, nil
 }
 
 func (r *Registry) List() []Entry {
@@ -202,12 +216,76 @@ func (r *Registry) ObserveOutcome(name string, success bool) {
 	}
 	eval.SuccessRate = float64(eval.Successful) / float64(eval.Runs)
 	r.evaluations[name] = eval
+	// Evaluation persistence is best effort. A read-only skill root must not
+	// turn an otherwise authorized tool call into a failure.
+	_ = r.persistEvaluationsLocked()
 }
 
 func (r *Registry) Evaluation(name string) Evaluation {
 	r.evalMu.RLock()
 	defer r.evalMu.RUnlock()
 	return r.evaluations[name]
+}
+
+func (r *Registry) loadEvaluations() error {
+	if r == nil || r.evaluationPath == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(r.evaluationPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var evaluations map[string]Evaluation
+	if err := json.Unmarshal(raw, &evaluations); err != nil {
+		return err
+	}
+	for name, evaluation := range evaluations {
+		if strings.TrimSpace(name) == "" || evaluation.Runs < 0 || evaluation.Successful < 0 || evaluation.Successful > evaluation.Runs {
+			return fmt.Errorf("invalid evaluation for %q", name)
+		}
+		if evaluation.Runs == 0 {
+			evaluation.SuccessRate = 0
+		} else {
+			evaluation.SuccessRate = float64(evaluation.Successful) / float64(evaluation.Runs)
+		}
+		r.evaluations[name] = evaluation
+	}
+	return nil
+}
+
+func (r *Registry) persistEvaluationsLocked() error {
+	if r == nil || r.evaluationPath == "" {
+		return nil
+	}
+	raw, err := json.MarshalIndent(r.evaluations, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(r.evaluationPath), ".harnessmesh-evaluations-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, r.evaluationPath)
 }
 
 func (r *Registry) Load(name string) (Entry, error) {
