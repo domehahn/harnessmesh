@@ -1,6 +1,11 @@
 package evaluation
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestScoreRunIsDeterministicAndFailClosed(t *testing.T) {
 	score, err := ScoreRun(Run{Tenant: "t1", TaskID: "job-1", Expected: "ok", Output: "ok", Success: true, PolicyOK: true, HumanApproved: true, Steps: []Step{{Name: "tool", Kind: "tool", Status: "completed", PolicyOK: true}}})
@@ -30,5 +35,59 @@ func TestAggregateAndRank(t *testing.T) {
 	}
 	if got := Rank(map[string]Score{"slow": {Overall: .2}, "good": {Overall: .9}}); got[0] != "good" {
 		t.Fatalf("unexpected rank: %v", got)
+	}
+}
+
+func TestDeepEvalExportRedactsSecretsAndPreservesTools(t *testing.T) {
+	run := Run{
+		Tenant:           "tenant-a",
+		SessionID:        "sess-1",
+		TaskID:           "task-1",
+		Input:            "inspect token sk-secret12345678901234567890",
+		Expected:         "clean",
+		Output:           "clean",
+		RetrievalContext: []string{`doc with password="supersecretvalue"`},
+		Success:          true,
+		PolicyOK:         true,
+		HumanApproved:    true,
+		Steps: []Step{
+			{
+				Name:       "repository.search",
+				Kind:       "tool",
+				Status:     "completed",
+				ToolInput:  "query=auth",
+				ToolOutput: "found 2 files",
+				Context:    "step context",
+				PolicyOK:   true,
+			},
+		},
+	}
+
+	var rawRuns bytes.Buffer
+	if err := json.NewEncoder(&rawRuns).Encode(run); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadRunsJSONL(&rawRuns)
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("LoadRunsJSONL failed: %v (%d)", err, len(loaded))
+	}
+
+	var exported bytes.Buffer
+	if err := ExportDeepEvalJSONL(&exported, loaded); err != nil {
+		t.Fatal(err)
+	}
+	out := exported.String()
+	if strings.Contains(out, "sk-secret12345678901234567890") || strings.Contains(out, "supersecretvalue") {
+		t.Fatalf("expected secrets to be redacted in DeepEval export: %s", out)
+	}
+	var tc DeepEvalTestCase
+	if err := json.Unmarshal(exported.Bytes(), &tc); err != nil {
+		t.Fatal(err)
+	}
+	if len(tc.ToolsCalled) != 1 || tc.ToolsCalled[0].Name != "repository.search" {
+		t.Fatalf("unexpected tools_called: %#v", tc.ToolsCalled)
+	}
+	if tc.AdditionalMetadata["tenant"] != "tenant-a" {
+		t.Fatalf("missing tenant metadata: %#v", tc.AdditionalMetadata)
 	}
 }

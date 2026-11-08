@@ -80,6 +80,20 @@ func TestNewHarnessCapabilities(t *testing.T) {
 		t.Fatalf("unexpected copilot ID/type: %s/%s", hCopilot.ID(), hCopilot.AdapterType())
 	}
 
+	// OpenHands adapter test
+	ohCfg := config.AgentConfig{
+		Adapter:  "openhands",
+		Role:     "reviewer",
+		Writable: false,
+	}
+	hOpenHands, err := NewHarness("openhands-peer", ohCfg, config.SwitchyardConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error creating openhands harness: %v", err)
+	}
+	if hOpenHands.ID() != "openhands-peer" || hOpenHands.AdapterType() != "openhands" {
+		t.Fatalf("unexpected openhands ID/type: %s/%s", hOpenHands.ID(), hOpenHands.AdapterType())
+	}
+
 	// Fake adapter test
 	fakeCfg := config.AgentConfig{
 		Adapter: "fake",

@@ -4,10 +4,16 @@
 package evaluation
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/domehahn/harnessmesh/internal/contextpack"
 )
 
 type Step struct {
@@ -17,19 +23,24 @@ type Step struct {
 	Duration    time.Duration `json:"duration_ms"`
 	InputBytes  int           `json:"input_bytes,omitempty"`
 	OutputBytes int           `json:"output_bytes,omitempty"`
+	ToolInput   string        `json:"tool_input,omitempty"`
+	ToolOutput  string        `json:"tool_output,omitempty"`
+	Context     string        `json:"context,omitempty"`
 	PolicyOK    bool          `json:"policy_ok"`
 }
 
 type Run struct {
-	Tenant        string `json:"tenant"`
-	SessionID     string `json:"session_id"`
-	TaskID        string `json:"task_id"`
-	Expected      string `json:"expected,omitempty"`
-	Output        string `json:"output,omitempty"`
-	Success       bool   `json:"success"`
-	PolicyOK      bool   `json:"policy_ok"`
-	HumanApproved bool   `json:"human_approved"`
-	Steps         []Step `json:"steps,omitempty"`
+	Tenant           string   `json:"tenant"`
+	SessionID        string   `json:"session_id"`
+	TaskID           string   `json:"task_id"`
+	Input            string   `json:"input,omitempty"`
+	Expected         string   `json:"expected,omitempty"`
+	Output           string   `json:"output,omitempty"`
+	RetrievalContext []string `json:"retrieval_context,omitempty"`
+	Success          bool     `json:"success"`
+	PolicyOK         bool     `json:"policy_ok"`
+	HumanApproved    bool     `json:"human_approved"`
+	Steps            []Step   `json:"steps,omitempty"`
 }
 
 type Score struct {
@@ -135,4 +146,122 @@ func clamp(v float64) float64 {
 		return 1
 	}
 	return v
+}
+
+// DeepEvalToolCall represents a single observed tool invocation in DeepEval's
+// LLMTestCase schema. All string fields are secret-redacted before export.
+type DeepEvalToolCall struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Input       string `json:"input,omitempty"`
+	Output      string `json:"output,omitempty"`
+	Status      string `json:"status,omitempty"`
+	PolicyOK    bool   `json:"policy_ok"`
+}
+
+// DeepEvalTestCase is a secret-redacted, schema-compatible projection of a
+// HarnessMesh Run for offline CI evaluation with DeepEval.
+type DeepEvalTestCase struct {
+	Input              string             `json:"input"`
+	ActualOutput       string             `json:"actual_output"`
+	ExpectedOutput     string             `json:"expected_output,omitempty"`
+	RetrievalContext   []string           `json:"retrieval_context,omitempty"`
+	Context            []string           `json:"context,omitempty"`
+	ToolsCalled        []DeepEvalToolCall `json:"tools_called,omitempty"`
+	AdditionalMetadata map[string]any     `json:"additional_metadata"`
+}
+
+// ToDeepEvalTestCase converts a deterministic Run into a DeepEvalTestCase with
+// mandatory secret redaction and attached HarnessMesh safety/completion scores.
+func ToDeepEvalTestCase(run Run) (DeepEvalTestCase, error) {
+	score, err := ScoreRun(run)
+	if err != nil {
+		return DeepEvalTestCase{}, err
+	}
+	input := strings.TrimSpace(run.Input)
+	if input == "" {
+		input = run.TaskID
+	}
+	var retrieval []string
+	for _, item := range run.RetrievalContext {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			retrieval = append(retrieval, contextpack.RedactSecrets(trimmed))
+		}
+	}
+	var ctxItems []string
+	var tools []DeepEvalToolCall
+	for _, step := range run.Steps {
+		if trimmed := strings.TrimSpace(step.Context); trimmed != "" {
+			ctxItems = append(ctxItems, contextpack.RedactSecrets(trimmed))
+		}
+		if step.Kind == "tool" || step.ToolInput != "" || step.ToolOutput != "" {
+			tools = append(tools, DeepEvalToolCall{
+				Name:     contextpack.RedactSecrets(step.Name),
+				Input:    contextpack.RedactSecrets(step.ToolInput),
+				Output:   contextpack.RedactSecrets(step.ToolOutput),
+				Status:   step.Status,
+				PolicyOK: step.PolicyOK,
+			})
+		}
+	}
+	return DeepEvalTestCase{
+		Input:            contextpack.RedactSecrets(input),
+		ActualOutput:     contextpack.RedactSecrets(run.Output),
+		ExpectedOutput:   contextpack.RedactSecrets(run.Expected),
+		RetrievalContext: retrieval,
+		Context:          ctxItems,
+		ToolsCalled:      tools,
+		AdditionalMetadata: map[string]any{
+			"tenant":         run.Tenant,
+			"session_id":     run.SessionID,
+			"task_id":        run.TaskID,
+			"success":        run.Success,
+			"policy_ok":      run.PolicyOK,
+			"human_approved": run.HumanApproved,
+			"deterministic":  score,
+		},
+	}, nil
+}
+
+// ExportDeepEvalJSONL writes a slice of Runs as newline-delimited DeepEvalTestCase JSON objects.
+func ExportDeepEvalJSONL(w io.Writer, runs []Run) error {
+	if w == nil {
+		return errors.New("writer is required")
+	}
+	enc := json.NewEncoder(w)
+	for _, run := range runs {
+		tc, err := ToDeepEvalTestCase(run)
+		if err != nil {
+			return err
+		}
+		if err := enc.Encode(tc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// LoadRunsJSONL parses newline-delimited Run JSON objects from r.
+func LoadRunsJSONL(r io.Reader) ([]Run, error) {
+	if r == nil {
+		return nil, errors.New("reader is required")
+	}
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var runs []Run
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		var run Run
+		if err := json.Unmarshal([]byte(line), &run); err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return runs, nil
 }

@@ -154,3 +154,28 @@ func TestScenarioG_IntegrateChatGPTDryRun(t *testing.T) {
 		t.Errorf("expected .mcp.json to exist after non-dry-run, got error: %v", err)
 	}
 }
+
+func TestEvalExportCLIProducesRedactedDeepEvalJSONL(t *testing.T) {
+	tmpDir := t.TempDir()
+	inPath := filepath.Join(tmpDir, "runs.jsonl")
+	outPath := filepath.Join(tmpDir, "deepeval.jsonl")
+
+	dataset := `{"tenant":"t1","session_id":"s1","task_id":"task-1","input":"check sk-secret12345678901234567890","expected":"ok","output":"ok","success":true,"policy_ok":true,"human_approved":true}` + "\n"
+	if err := os.WriteFile(inPath, []byte(dataset), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := evalCmd([]string{"export", "--dataset", inPath, "--format", "deepeval", "--out", outPath}); err != nil {
+		t.Fatalf("evalCmd export failed: %v", err)
+	}
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported map[string]any
+	if err := json.Unmarshal(raw, &exported); err != nil {
+		t.Fatalf("unmarshal exported JSONL failed: %v", err)
+	}
+	if exported["actual_output"] != "ok" {
+		t.Fatalf("unexpected actual_output: %#v", exported)
+	}
+}
