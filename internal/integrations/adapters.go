@@ -14,13 +14,111 @@ import (
 	"strings"
 	"time"
 
+	"github.com/domehahn/harnessmesh/internal/assurance"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 )
 
+const (
+	MemoryTierCore     = "core"
+	MemoryTierArchival = "archival"
+	MemoryTierRecall   = "recall"
+)
+
+// MemoryBlock represents a structured, hierarchical memory block compatible
+// with stateful agent memory providers such as Letta, Cognee and Haystack.
+type MemoryBlock struct {
+	Tier     string `json:"tier"`
+	Label    string `json:"label"`
+	Value    string `json:"value"`
+	ReadOnly bool   `json:"read_only,omitempty"`
+}
+
+func ValidateMemoryTier(tier string) (string, error) {
+	norm := strings.ToLower(strings.TrimSpace(tier))
+	if norm == "" {
+		return MemoryTierCore, nil
+	}
+	switch norm {
+	case MemoryTierCore, MemoryTierArchival, MemoryTierRecall:
+		return norm, nil
+	default:
+		return "", fmt.Errorf("unsupported memory tier %q (expected core, archival or recall)", tier)
+	}
+}
+
 type MemoryClient struct {
+	Provider   string
 	Endpoint   string
 	Token      string
 	HTTPClient *http.Client
+}
+
+func (c MemoryClient) PutBlock(ctx context.Context, tenant, project string, block MemoryBlock) error {
+	if strings.TrimSpace(tenant) == "" || strings.TrimSpace(project) == "" || strings.TrimSpace(block.Label) == "" {
+		return errors.New("tenant, project and block label are required")
+	}
+	if strings.TrimSpace(c.Endpoint) == "" {
+		return errors.New("memory endpoint is required")
+	}
+	tier, err := ValidateMemoryTier(block.Tier)
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"tenant":    tenant,
+		"project":   project,
+		"tier":      tier,
+		"label":     strings.TrimSpace(block.Label),
+		"value":     contextpack.RedactSecrets(block.Value),
+		"read_only": block.ReadOnly,
+	}
+	if p := strings.TrimSpace(c.Provider); p != "" {
+		payload["provider"] = strings.ToLower(p)
+	}
+	body, _ := json.Marshal(payload)
+	return c.do(ctx, http.MethodPost, "/memories/blocks", tenant, body)
+}
+
+func (c MemoryClient) Blocks(ctx context.Context, tenant, project, tier string) ([]MemoryBlock, error) {
+	if strings.TrimSpace(tenant) == "" || strings.TrimSpace(project) == "" {
+		return nil, errors.New("tenant and project are required")
+	}
+	normTier, err := ValidateMemoryTier(tier)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(strings.TrimRight(c.Endpoint, "/") + "/memories/blocks")
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("tenant", tenant)
+	q.Set("project", project)
+	q.Set("tier", normTier)
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	c.headers(req, tenant)
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("memory blocks returned %s", resp.Status)
+	}
+	var result struct {
+		Blocks []MemoryBlock `json:"blocks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	for i := range result.Blocks {
+		result.Blocks[i].Value = contextpack.RedactSecrets(result.Blocks[i].Value)
+	}
+	return result.Blocks, nil
 }
 
 func (c MemoryClient) Put(ctx context.Context, tenant, project, key, value string) error {
@@ -159,4 +257,81 @@ func (p BrowserPolicy) Authorize(rawURL string, approved bool) error {
 		return errors.New("browser action requires approval")
 	}
 	return nil
+}
+
+// BrowserAction describes a structured web interaction step for agentic browser
+// providers such as Playwright, Browser Use and Stagehand.
+type BrowserAction struct {
+	SessionID   string `json:"session_id,omitempty"`
+	Tenant      string `json:"tenant"`
+	Project     string `json:"project,omitempty"`
+	Agent       string `json:"agent"`
+	Provider    string `json:"provider"` // playwright, browser-use, stagehand
+	Kind        string `json:"kind"`     // navigate, act, extract, observe
+	URL         string `json:"url"`
+	Instruction string `json:"instruction,omitempty"`
+	Approved    bool   `json:"approved"`
+}
+
+func ValidateBrowserProvider(provider string) (string, error) {
+	norm := strings.ToLower(strings.TrimSpace(provider))
+	if norm == "" {
+		return "playwright", nil
+	}
+	switch norm {
+	case "playwright", "browser-use", "stagehand":
+		return norm, nil
+	default:
+		return "", fmt.Errorf("unsupported browser provider %q (expected playwright, browser-use or stagehand)", provider)
+	}
+}
+
+// AuthorizeAction enforces HTTPS, domain allowlists, approval gates (always
+// required for mutating "act" steps), secret redaction and the HarnessMesh
+// Action Firewall before a browser adapter executes a step.
+func (p BrowserPolicy) AuthorizeAction(ctx context.Context, firewallPolicy assurance.Policy, action BrowserAction) (assurance.ActionDecision, error) {
+	provider, err := ValidateBrowserProvider(action.Provider)
+	if err != nil {
+		return assurance.ActionDecision{}, err
+	}
+	kind := strings.ToLower(strings.TrimSpace(action.Kind))
+	if kind == "" {
+		kind = "navigate"
+	}
+	switch kind {
+	case "navigate", "act", "extract", "observe":
+	default:
+		return assurance.ActionDecision{}, fmt.Errorf("unsupported browser action kind %q (expected navigate, act, extract or observe)", action.Kind)
+	}
+	if kind == "act" && !action.Approved {
+		return assurance.ActionDecision{}, errors.New("browser act step requires explicit approval")
+	}
+	if err := p.Authorize(action.URL, action.Approved); err != nil {
+		return assurance.ActionDecision{}, err
+	}
+	u, _ := url.Parse(action.URL)
+	host := strings.ToLower(u.Hostname())
+	redactedInstruction := contextpack.RedactSecrets(action.Instruction)
+	fwAction := assurance.Action{
+		SessionID: action.SessionID,
+		Tenant:    action.Tenant,
+		Project:   action.Project,
+		Agent:     action.Agent,
+		Tool:      "browser." + provider,
+		Operation: "browser." + kind,
+		Target:    host,
+		Path:      u.Path,
+		Network:   "https:" + host,
+		Content:   redactedInstruction,
+		DataClass: "web",
+	}
+	flows := []assurance.DataFlow{
+		{
+			Source:      action.Tenant + "." + action.Agent,
+			Destination: host,
+			DataClass:   "web",
+			Allowed:     true,
+		},
+	}
+	return assurance.EvaluateAction(ctx, firewallPolicy, fwAction, flows)
 }

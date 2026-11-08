@@ -35,3 +35,12 @@ The SDKs never expose or log secret values. API keys should be loaded from the
 calling agent's secret manager or environment, not committed to source code.
 All mutation endpoints remain subject to the tenant's identity, role and
 approval policy.
+
+## Typed contracts & A2A interoperability
+
+For structured agent frameworks such as **Pydantic AI**, **LangGraph**,
+**Agno**, **Letta** (Python) and **Mastra** / **Stagehand** (TypeScript), the
+SDKs include validated data models (`DecisionProposal`, `ReviewFinding`,
+`MemoryBlockPayload`, `BrowserActionSpec`, `A2ATaskRequest`) and direct
+tenant-bound `/a2a/v1/tasks` submission helpers (`submit_a2a_task` in Python,
+`submitA2ATask` in TypeScript).

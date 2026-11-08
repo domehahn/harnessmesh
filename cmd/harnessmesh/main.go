@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,6 +26,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/creditguard"
+	"github.com/domehahn/harnessmesh/internal/evaluation"
 	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/jobs"
 	"github.com/domehahn/harnessmesh/internal/knowledge"
@@ -109,6 +111,8 @@ func main() {
 		err = doctor(os.Args[2:])
 	case "agent-platform":
 		err = agentPlatformCmd(os.Args[2:])
+	case "eval":
+		err = evalCmd(os.Args[2:])
 	case "print-config":
 		err = printConfig(os.Args[2:])
 	case "version", "--version", "-v":
@@ -166,7 +170,8 @@ Usage:
   harnessmesh switchyard <doctor|routes|config validate> [options]
   harnessmesh smoke-test antigravity-codex [--config <path>]
   harnessmesh doctor [--config <path>]
-  harnessmesh agent-platform doctor [--config <path>]
+  harnessmesh agent-platform <doctor|eval-export> [--config <path>] [options]
+  harnessmesh eval export --dataset <path> [--format deepeval] [--out <path>]
   harnessmesh print-config [--config <path>]
   harnessmesh version
 
@@ -175,8 +180,14 @@ Run 'harnessmesh <command> --help' for details on a specific command.
 }
 
 func agentPlatformCmd(args []string) error {
-	if len(args) == 0 || args[0] != "doctor" {
-		return errors.New("usage: harnessmesh agent-platform doctor [--config <path>]")
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh agent-platform <doctor|eval-export> [--config <path>]")
+	}
+	if args[0] == "eval-export" {
+		return evalExportCmd(args[1:])
+	}
+	if args[0] != "doctor" {
+		return errors.New("usage: harnessmesh agent-platform <doctor|eval-export> [--config <path>]")
 	}
 	fs := flag.NewFlagSet("agent-platform doctor", flag.ContinueOnError)
 	configPath := fs.String("config", "harnessmesh.json", "config file")
@@ -191,6 +202,55 @@ func agentPlatformCmd(args []string) error {
 	raw, _ := json.MarshalIndent(status, "", "  ")
 	fmt.Println(string(raw))
 	return nil
+}
+
+func evalCmd(args []string) error {
+	if len(args) == 0 || args[0] != "export" {
+		return errors.New("usage: harnessmesh eval export --dataset <path> [--format deepeval] [--out <path>]")
+	}
+	return evalExportCmd(args[1:])
+}
+
+func evalExportCmd(args []string) error {
+	fs := flag.NewFlagSet("eval export", flag.ContinueOnError)
+	configPath := fs.String("config", "harnessmesh.json", "config file")
+	datasetPath := fs.String("dataset", "", "path to input runs JSONL file (defaults to agent_platform.evaluation.dataset_path)")
+	format := fs.String("format", "deepeval", "export format (deepeval)")
+	outPath := fs.String("out", "", "optional output file path (defaults to stdout)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.ToLower(strings.TrimSpace(*format)) != "deepeval" {
+		return fmt.Errorf("unsupported eval export format %q (expected deepeval)", *format)
+	}
+	inPath := strings.TrimSpace(*datasetPath)
+	if inPath == "" {
+		if cfg, err := loadConfigOrDefault(*configPath); err == nil {
+			inPath = strings.TrimSpace(cfg.AgentPlatform.Evaluation.DatasetPath)
+		}
+	}
+	if inPath == "" {
+		return errors.New("--dataset <path> or agent_platform.evaluation.dataset_path is required")
+	}
+	f, err := os.Open(inPath)
+	if err != nil {
+		return fmt.Errorf("open dataset: %w", err)
+	}
+	defer f.Close()
+	runs, err := evaluation.LoadRunsJSONL(f)
+	if err != nil {
+		return fmt.Errorf("parse dataset: %w", err)
+	}
+	var out io.Writer = os.Stdout
+	if strings.TrimSpace(*outPath) != "" {
+		outFile, err := os.OpenFile(*outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("open output file: %w", err)
+		}
+		defer outFile.Close()
+		out = outFile
+	}
+	return evaluation.ExportDeepEvalJSONL(out, runs)
 }
 
 func pluginsCmd(args []string) error {

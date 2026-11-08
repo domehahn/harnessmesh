@@ -5,7 +5,7 @@
       "listen": "127.0.0.1:8790",
       "public_url": "https://mesh.example.test",
       "token_env": "HARNESSMESH_A2A_TOKEN",
-      "allowed_peers": ["claude-code", "codex", "antigravity"],
+      "allowed_peers": ["claude-code", "codex", "antigravity", "openhands"],
       "skills": ["review", "research", "implementation"]
     },
     "evaluation": {
@@ -21,12 +21,12 @@
     },
     "memory": {
       "enabled": false,
-      "provider": "cognee",
-      "endpoint": "http://127.0.0.1:8000"
+      "provider": "letta",
+      "endpoint": "http://127.0.0.1:8283"
     },
     "browser": {
       "enabled": false,
-      "provider": "playwright",
+      "provider": "stagehand",
       "allowed_domains": ["docs.example.test"],
       "require_approval": true
     },

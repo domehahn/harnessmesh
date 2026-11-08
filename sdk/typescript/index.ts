@@ -1,4 +1,42 @@
 export class HarnessMeshError extends Error { constructor(public status: number, message: string) { super(message); } }
+
+export interface DecisionProposal {
+  space_id: string;
+  title: string;
+  summary: string;
+  evidence_ids?: string[];
+  file_scope?: string[];
+}
+
+export interface ReviewFinding {
+  severity: "low" | "medium" | "high" | "critical";
+  file: string;
+  line?: number;
+  title: string;
+  detail: string;
+}
+
+export interface BrowserActionSpec {
+  tenant: string;
+  project?: string;
+  agent: string;
+  provider: "playwright" | "browser-use" | "stagehand";
+  kind: "navigate" | "act" | "extract" | "observe";
+  url: string;
+  instruction?: string;
+  approved: boolean;
+}
+
+export interface A2ATaskRequest {
+  sender?: string;
+  prompt: string;
+  metadata: {
+    space_id: string;
+    channel?: string;
+    [key: string]: unknown;
+  };
+}
+
 export class HarnessMeshClient {
   constructor(readonly baseURL: string, readonly apiKey: string) {}
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -21,4 +59,17 @@ export class HarnessMeshClient {
   decideApproval<T = unknown>(id: string, status: "approved" | "rejected") { return this.request<T>(`/approvals/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ status }) }); }
   observabilityLogs<T = unknown>() { return this.request<T>("/observability/logs"); }
   observabilityTraces<T = unknown>() { return this.request<T>("/observability/traces"); }
+  async submitA2ATask<T = unknown>(tenant: string, a2aToken: string, task: A2ATaskRequest): Promise<T> {
+    const response = await fetch(`${this.baseURL.replace(/\/$/, "")}/a2a/v1/tasks`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${a2aToken}`,
+        "X-HarnessMesh-Tenant": tenant,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(task),
+    });
+    if (!response.ok) throw new HarnessMeshError(response.status, await response.text());
+    return await response.json() as T;
+  }
 }
