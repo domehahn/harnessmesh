@@ -115,6 +115,15 @@ func TestAgentPlatformValidationFailsClosed(t *testing.T) {
 	if _, err := Parse([]byte(`{"version":2,"agent_platform":{"evaluation":{"min_score":1.2}}}`)); err == nil {
 		t.Fatal("expected invalid evaluation threshold to fail")
 	}
+	if _, err := Parse([]byte(`{"version":2,"agents":{"a":{"adapter":"fake"}},"agent_platform":{"browser":{"provider":"unknown"}}}`)); err == nil {
+		t.Fatal("expected unsupported browser provider to fail")
+	}
+	if _, err := Parse([]byte(`{"version":2,"agents":{"a":{"adapter":"openhands"}},"agent_platform":{"browser":{"enabled":true,"provider":"stagehand","allowed_domains":["docs.example.test"],"require_approval":true}}}`)); err != nil {
+		t.Fatalf("expected stagehand browser provider and openhands agent to succeed: %v", err)
+	}
+	if _, err := Parse([]byte(`{"version":2,"agents":{"a":{"adapter":"fake"}},"agent_platform":{"memory":{"enabled":true,"provider":"letta","endpoint":"http://127.0.0.1:8283"}}}`)); err != nil {
+		t.Fatalf("expected letta memory provider to succeed: %v", err)
+	}
 }
 
 func TestSingleWriterConstraint(t *testing.T) {

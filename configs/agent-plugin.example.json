@@ -16,6 +16,24 @@
       },
       "dependencies": [],
       "conflicts": []
+    },
+    "openhands-peer": {
+      "kind": "openhands",
+      "adapter": "openhands",
+      "role": "reviewer",
+      "mode": "on_demand",
+      "execution_mode": "managed",
+      "writable": false,
+      "network_mode": "none",
+      "capabilities": {
+        "read_repository": true,
+        "review": true,
+        "answer_questions": true,
+        "submit_evidence": true,
+        "write_repository": false
+      },
+      "dependencies": [],
+      "conflicts": []
     }
   }
 }

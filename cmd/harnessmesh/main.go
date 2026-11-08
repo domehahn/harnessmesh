@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,6 +26,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
 	"github.com/domehahn/harnessmesh/internal/creditguard"
+	"github.com/domehahn/harnessmesh/internal/evaluation"
 	"github.com/domehahn/harnessmesh/internal/identity"
 	"github.com/domehahn/harnessmesh/internal/jobs"
 	"github.com/domehahn/harnessmesh/internal/knowledge"
@@ -81,6 +83,8 @@ func main() {
 		err = agentsCmd(os.Args[2:])
 	case "plugins":
 		err = pluginsCmd(os.Args[2:])
+	case "skills":
+		err = skillsCmd(os.Args[2:])
 	case "marketplace":
 		err = marketplaceCmd(os.Args[2:])
 	case "session":
@@ -109,6 +113,8 @@ func main() {
 		err = doctor(os.Args[2:])
 	case "agent-platform":
 		err = agentPlatformCmd(os.Args[2:])
+	case "eval":
+		err = evalCmd(os.Args[2:])
 	case "print-config":
 		err = printConfig(os.Args[2:])
 	case "version", "--version", "-v":
@@ -154,6 +160,7 @@ Usage:
   harnessmesh peer status --session <id>
   harnessmesh agents <list|show <name>>
   harnessmesh plugins <list|validate> [--dir <path>] [--json]
+  harnessmesh skills <list|select|plan|explain> [--root <path>] [--context <text>] [--skill <name>] [--json]
   harnessmesh marketplace <search|import|source|install|approve|activate|deactivate|update|rollback|uninstall> [options]
   harnessmesh session <list|show|messages|resume|stop> [options]
   harnessmesh findings <session-id> [--json]
@@ -166,7 +173,8 @@ Usage:
   harnessmesh switchyard <doctor|routes|config validate> [options]
   harnessmesh smoke-test antigravity-codex [--config <path>]
   harnessmesh doctor [--config <path>]
-  harnessmesh agent-platform doctor [--config <path>]
+  harnessmesh agent-platform <doctor|eval-export> [--config <path>] [options]
+  harnessmesh eval export --dataset <path> [--format deepeval] [--out <path>]
   harnessmesh print-config [--config <path>]
   harnessmesh version
 
@@ -175,8 +183,14 @@ Run 'harnessmesh <command> --help' for details on a specific command.
 }
 
 func agentPlatformCmd(args []string) error {
-	if len(args) == 0 || args[0] != "doctor" {
-		return errors.New("usage: harnessmesh agent-platform doctor [--config <path>]")
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh agent-platform <doctor|eval-export> [--config <path>]")
+	}
+	if args[0] == "eval-export" {
+		return evalExportCmd(args[1:])
+	}
+	if args[0] != "doctor" {
+		return errors.New("usage: harnessmesh agent-platform <doctor|eval-export> [--config <path>]")
 	}
 	fs := flag.NewFlagSet("agent-platform doctor", flag.ContinueOnError)
 	configPath := fs.String("config", "harnessmesh.json", "config file")
@@ -191,6 +205,55 @@ func agentPlatformCmd(args []string) error {
 	raw, _ := json.MarshalIndent(status, "", "  ")
 	fmt.Println(string(raw))
 	return nil
+}
+
+func evalCmd(args []string) error {
+	if len(args) == 0 || args[0] != "export" {
+		return errors.New("usage: harnessmesh eval export --dataset <path> [--format deepeval] [--out <path>]")
+	}
+	return evalExportCmd(args[1:])
+}
+
+func evalExportCmd(args []string) error {
+	fs := flag.NewFlagSet("eval export", flag.ContinueOnError)
+	configPath := fs.String("config", "harnessmesh.json", "config file")
+	datasetPath := fs.String("dataset", "", "path to input runs JSONL file (defaults to agent_platform.evaluation.dataset_path)")
+	format := fs.String("format", "deepeval", "export format (deepeval)")
+	outPath := fs.String("out", "", "optional output file path (defaults to stdout)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.ToLower(strings.TrimSpace(*format)) != "deepeval" {
+		return fmt.Errorf("unsupported eval export format %q (expected deepeval)", *format)
+	}
+	inPath := strings.TrimSpace(*datasetPath)
+	if inPath == "" {
+		if cfg, err := loadConfigOrDefault(*configPath); err == nil {
+			inPath = strings.TrimSpace(cfg.AgentPlatform.Evaluation.DatasetPath)
+		}
+	}
+	if inPath == "" {
+		return errors.New("--dataset <path> or agent_platform.evaluation.dataset_path is required")
+	}
+	f, err := os.Open(inPath)
+	if err != nil {
+		return fmt.Errorf("open dataset: %w", err)
+	}
+	defer f.Close()
+	runs, err := evaluation.LoadRunsJSONL(f)
+	if err != nil {
+		return fmt.Errorf("parse dataset: %w", err)
+	}
+	var out io.Writer = os.Stdout
+	if strings.TrimSpace(*outPath) != "" {
+		outFile, err := os.OpenFile(*outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("open output file: %w", err)
+		}
+		defer outFile.Close()
+		out = outFile
+	}
+	return evaluation.ExportDeepEvalJSONL(out, runs)
 }
 
 func pluginsCmd(args []string) error {
@@ -232,6 +295,138 @@ func pluginsCmd(args []string) error {
 		return errors.New("one or more executable plugins failed validation")
 	}
 	return nil
+}
+
+func skillsCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: harnessmesh skills <list|select|plan|explain> [options]")
+	}
+	subcmd := args[0]
+	fs := flag.NewFlagSet("skills "+subcmd, flag.ContinueOnError)
+	configPath := fs.String("config", "harnessmesh.json", "config file")
+	root := fs.String("root", "", "skill registry root")
+	contextText := fs.String("context", "", "task context for automatic selection")
+	skillName := fs.String("skill", "", "exact skill name")
+	evaluationPath := fs.String("evaluation-path", "", "evaluation state file")
+	requireHash := fs.Bool("require-hash", false, "require matching SHA-256")
+	requireSignature := fs.Bool("require-signature", false, "require Ed25519 signature")
+	jsonOutput := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if subcmd != "list" && subcmd != "select" && subcmd != "plan" && subcmd != "explain" {
+		return fmt.Errorf("unknown skills subcommand %q", subcmd)
+	}
+	cfg, err := loadConfigOrDefault(*configPath)
+	if err != nil {
+		return err
+	}
+	registryRoot := strings.TrimSpace(*root)
+	if registryRoot == "" {
+		registryRoot = strings.TrimSpace(cfg.Skills.Root)
+	}
+	if registryRoot == "" {
+		registryRoot = pluginRoot()
+	}
+	statePath := strings.TrimSpace(*evaluationPath)
+	if statePath == "" {
+		statePath = strings.TrimSpace(cfg.Skills.EvaluationPath)
+	}
+	if envPath := strings.TrimSpace(os.Getenv("HARNESSMESH_SKILL_EVALUATION_PATH")); envPath != "" && statePath == "" {
+		statePath = envPath
+	}
+	trusted, err := plugin.TrustedKeysFromEnvironment()
+	if err != nil {
+		return err
+	}
+	registry, err := skills.DiscoverWithOptions(registryRoot, *requireHash || cfg.Skills.RequireHash || os.Getenv("HARNESSMESH_SKILL_REQUIRE_HASH") == "1", *requireSignature || cfg.Skills.RequireSigned || os.Getenv("HARNESSMESH_SKILL_REQUIRE_SIGNED") == "1", trusted)
+	if err != nil {
+		return err
+	}
+	if statePath != "" {
+		if err := registry.SetEvaluationPath(statePath); err != nil {
+			return err
+		}
+	}
+	if subcmd == "list" {
+		items := make([]map[string]any, 0)
+		for _, entry := range registry.List() {
+			evaluation := registry.Evaluation(entry.Manifest.Name)
+			items = append(items, skillStatus(entry, evaluation))
+		}
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(items)
+		}
+		fmt.Printf("%-28s %-12s %-10s %-10s %-12s %s\n", "SKILL", "VERSION", "RISK", "RUNS", "SUCCESS", "ROUTING")
+		for _, item := range items {
+			status := item["routing"]
+			fmt.Printf("%-28s %-12s %-10s %-10v %-11.1f%% %v\n", item["name"], item["version"], item["risk"], item["runs"], item["success_rate"].(float64)*100, status)
+		}
+		return nil
+	}
+	if subcmd == "explain" {
+		if strings.TrimSpace(*contextText) == "" {
+			return errors.New("--context is required")
+		}
+		candidates, err := registry.ExplainContext(*contextText, nil)
+		if err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(candidates)
+		}
+		fmt.Printf("%-28s %-10s %-10s %-10s %s\n", "SKILL", "SCORE", "RUNS", "SUCCESS", "ROUTING")
+		for _, candidate := range candidates {
+			fmt.Printf("%-28s %-10d %-10d %-9.1f%% %s\n", candidate.Name, candidate.Score, candidate.Evaluation.Runs, candidate.Evaluation.SuccessRate*100, candidate.Routing)
+		}
+		return nil
+	}
+	var entry skills.Entry
+	if strings.TrimSpace(*skillName) != "" {
+		entry, err = registry.Select(*skillName)
+	} else if strings.TrimSpace(*contextText) != "" {
+		entry, err = registry.SelectContext(*contextText, nil)
+	} else {
+		err = errors.New("--skill or --context is required")
+	}
+	if err != nil {
+		return err
+	}
+	if subcmd == "select" {
+		result := skillStatus(entry, registry.Evaluation(entry.Manifest.Name))
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(result)
+		}
+		fmt.Printf("selected %s v%s (%s, %.1f%% success over %d runs)\n", entry.Manifest.Name, entry.Manifest.Version, result["routing"], result["success_rate"].(float64)*100, result["runs"])
+		return nil
+	}
+	plan, err := skills.BuildExecutionPlan(entry, entry.SchemaTokenEstimate())
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(plan)
+	}
+	fmt.Printf("%s v%s · %d steps · %d estimated token savings\n", plan.Skill, plan.Version, len(plan.Steps), plan.EstimatedTokenSavings)
+	for index, step := range plan.Steps {
+		fmt.Printf("%d. %s\n", index+1, step.Tool)
+	}
+	return nil
+}
+
+func skillStatus(entry skills.Entry, evaluation skills.Evaluation) map[string]any {
+	routing := "eligible"
+	if evaluation.Runs >= 3 && evaluation.SuccessRate < 0.5 {
+		routing = "excluded"
+	} else if evaluation.Runs >= 3 {
+		routing = "preferred"
+	}
+	return map[string]any{
+		"name": entry.Manifest.Name, "version": entry.Manifest.Version, "risk": entry.Manifest.Risk,
+		"tools": entry.Manifest.Tools, "verified": entry.Verified, "signature_verified": entry.SignatureVerified,
+		"runs": evaluation.Runs, "successful": evaluation.Successful, "success_rate": evaluation.SuccessRate,
+		"routing": routing,
+	}
 }
 
 func marketplaceCmd(args []string) error {
@@ -1082,6 +1277,15 @@ func mcpServe(args []string) error {
 		reg, skillErr := skills.DiscoverWithOptions(root, cfg.Skills.RequireHash || os.Getenv("HARNESSMESH_SKILL_REQUIRE_HASH") == "1", requireSigned, trusted)
 		if skillErr != nil {
 			return fmt.Errorf("discover skills: %w", skillErr)
+		}
+		evaluationPath := strings.TrimSpace(cfg.Skills.EvaluationPath)
+		if envPath := strings.TrimSpace(os.Getenv("HARNESSMESH_SKILL_EVALUATION_PATH")); envPath != "" {
+			evaluationPath = envPath
+		}
+		if evaluationPath != "" {
+			if err := reg.SetEvaluationPath(evaluationPath); err != nil {
+				return fmt.Errorf("configure skill evaluation path: %w", err)
+			}
 		}
 		skillRegistry = reg
 		if selectedSkill == "" {

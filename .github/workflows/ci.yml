@@ -62,6 +62,7 @@ jobs:
 
       - name: Production readiness gate (deterministic; no OpenAI inference)
         run: |
+          npm --prefix frontend ci --no-audit --no-fund
           npx --prefix frontend playwright install --with-deps chromium
           make production-readiness
 

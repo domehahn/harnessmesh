@@ -51,11 +51,12 @@ type Config struct {
 }
 
 type SkillsConfig struct {
-	Enabled       bool   `json:"enabled,omitempty"`
-	Root          string `json:"root,omitempty"`
-	Selected      string `json:"selected,omitempty"`
-	RequireHash   bool   `json:"require_hash,omitempty"`
-	RequireSigned bool   `json:"require_signed,omitempty"`
+	Enabled        bool   `json:"enabled,omitempty"`
+	Root           string `json:"root,omitempty"`
+	Selected       string `json:"selected,omitempty"`
+	RequireHash    bool   `json:"require_hash,omitempty"`
+	RequireSigned  bool   `json:"require_signed,omitempty"`
+	EvaluationPath string `json:"evaluation_path,omitempty"`
 }
 
 // AgentPlatformConfig enables optional interoperability adapters. All
@@ -101,7 +102,7 @@ type AdapterConfig struct {
 
 type BrowserConfig struct {
 	Enabled         bool     `json:"enabled,omitempty"`
-	Provider        string   `json:"provider,omitempty"` // playwright, browser-use
+	Provider        string   `json:"provider,omitempty"` // playwright, browser-use, stagehand
 	AllowedDomains  []string `json:"allowed_domains,omitempty"`
 	RequireApproval bool     `json:"require_approval,omitempty"`
 }
@@ -784,7 +785,7 @@ func Parse(raw []byte) (*Config, error) {
 		}
 
 		switch a.Kind {
-		case "claude", "claude-code", "codex", "openai", "openai-api", "antigravity", "agy", "copilot", "copilot-cli", "github-copilot", "fake", "mock", "external", "mcp-remote", "chatgpt", "browser":
+		case "claude", "claude-code", "codex", "openai", "openai-api", "antigravity", "agy", "copilot", "copilot-cli", "github-copilot", "openhands", "openhands-cli", "all-hands", "fake", "mock", "external", "mcp-remote", "chatgpt", "browser":
 		default:
 			if !a.IsExternal() && !a.Plugin {
 				return nil, fmt.Errorf("agent %q: unsupported kind/adapter %q", name, a.Kind)
@@ -934,12 +935,26 @@ func validateAgentPlatform(cfg *Config) error {
 			return fmt.Errorf("agent_platform.durable_workflows.provider %q is unsupported", p.Durable.Provider)
 		}
 	}
+	if p.Browser.Provider != "" {
+		switch strings.ToLower(strings.TrimSpace(p.Browser.Provider)) {
+		case "playwright", "browser-use", "stagehand":
+		default:
+			return fmt.Errorf("agent_platform.browser.provider %q is unsupported (expected playwright, browser-use or stagehand)", p.Browser.Provider)
+		}
+	}
 	if p.Browser.Enabled {
 		if len(p.Browser.AllowedDomains) == 0 {
 			return fmt.Errorf("agent_platform.browser.allowed_domains is required when browser integration is enabled")
 		}
 		if !p.Browser.RequireApproval {
 			return fmt.Errorf("agent_platform.browser.require_approval must remain true")
+		}
+	}
+	if p.Memory.Provider != "" {
+		switch strings.ToLower(strings.TrimSpace(p.Memory.Provider)) {
+		case "cognee", "letta", "haystack", "custom":
+		default:
+			return fmt.Errorf("agent_platform.memory.provider %q is unsupported (expected cognee, letta, haystack or custom)", p.Memory.Provider)
 		}
 	}
 	for name, adapter := range map[string]AdapterConfig{"memory": p.Memory, "llm_gateway": p.LLMGateway} {

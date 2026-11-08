@@ -82,6 +82,9 @@ type Server struct {
 	gatewayTools       []ToolDefinition
 	skill              *skills.Entry
 	skillRegistry      *skills.Registry
+	skillPlan          *skills.ExecutionPlan
+	skillOrderMu       sync.Mutex
+	skillOrderIndex    int
 	reliability        *agentreliability.Controller
 	runtimeGraph       *assurance.RuntimeGraph
 	provenance         *provenance.Chain
@@ -698,18 +701,35 @@ func (s *Server) SetGateway(gateway *mcpgateway.Gateway, tools []mcpgateway.Tool
 // SetSkill narrows the exposed MCP surface to the tools declared by a
 // selected, hash-verified skill. The MCP server remains the enforcement point:
 // hiding tools in tools/list is not sufficient, so tools/call also checks it.
-func (s *Server) SetSkill(entry *skills.Entry) { s.skill = entry }
+func (s *Server) SetSkill(entry *skills.Entry) {
+	s.skillOrderMu.Lock()
+	defer s.skillOrderMu.Unlock()
+	s.skillPlan = nil
+	s.skillOrderIndex = 0
+	s.skill = nil
+	if entry != nil {
+		fullSchemaTokens := len(s.ListTools()) * 80
+		if plan, err := skills.BuildExecutionPlan(*entry, fullSchemaTokens); err == nil {
+			s.skillPlan = &plan
+		}
+	}
+	s.skill = entry
+}
 
 func (s *Server) SetSkillRegistry(registry *skills.Registry) { s.skillRegistry = registry }
 
 func (s *Server) SkillSnapshot() map[string]any {
-	result := map[string]any{"enabled": s.skillRegistry != nil, "selected": "", "skills": []map[string]any{}}
+	result := map[string]any{"enabled": s.skillRegistry != nil, "selected": "", "skills": []map[string]any{}, "execution_plan": nil}
 	if s.skill != nil {
 		result["selected"] = s.skill.Manifest.Name
+	}
+	if s.skillPlan != nil {
+		result["execution_plan"] = s.skillPlan
 	}
 	if s.skillRegistry != nil {
 		items := make([]map[string]any, 0)
 		for _, entry := range s.skillRegistry.List() {
+			evaluation := s.skillRegistry.Evaluation(entry.Manifest.Name)
 			items = append(items, map[string]any{
 				"name": entry.Manifest.Name, "version": entry.Manifest.Version,
 				"description": entry.Manifest.Description, "triggers": entry.Manifest.Triggers,
@@ -717,6 +737,7 @@ func (s *Server) SkillSnapshot() map[string]any {
 				"risk": entry.Manifest.Risk, "loaded": entry.Loaded, "verified": entry.Verified,
 				"signature_verified":    entry.SignatureVerified,
 				"schema_token_estimate": entry.SchemaTokenEstimate(),
+				"evaluation":            evaluation,
 			})
 		}
 		result["skills"] = items
@@ -1485,8 +1506,20 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		if !s.skillAllowsTool(callParams.Name) {
 			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32003, Message: "tool is not allowed by selected skill", Data: callParams.Name}}, nil
 		}
+		if s.skillPlan != nil && !s.skillPlan.AllowsTool(callParams.Name) {
+			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32003, Message: "tool is not allowed by skill execution plan", Data: callParams.Name}}, nil
+		}
+		if expected, ok := s.expectedSkillTool(); ok && expected != callParams.Name {
+			return &JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32004, Message: "skill execution order violation", Data: map[string]string{"expected_tool": expected, "received_tool": callParams.Name}}}, nil
+		}
 		argsDigest, _ := assurance.Fingerprint(string(callParams.Arguments))
-		s.recordProvenance(ctx, "intent", callParams.Name, map[string]any{"tool": callParams.Name, "arguments_digest": argsDigest})
+		intent := map[string]any{"tool": callParams.Name, "arguments_digest": argsDigest}
+		if s.skillPlan != nil {
+			intent["skill"] = s.skillPlan.Skill
+			intent["skill_version"] = s.skillPlan.Version
+			intent["skill_plan_digest"] = s.skillPlan.Digest
+		}
+		s.recordProvenance(ctx, "intent", callParams.Name, intent)
 
 		guardedArgs, guardErr := s.guardToolCall(ctx, callParams.Name, callParams.Arguments)
 		if guardErr != nil {
@@ -1496,6 +1529,9 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 		s.recordProvenance(ctx, "policy.allow", callParams.Name, map[string]any{"tool": callParams.Name})
 		res, err := s.executeTool(ctx, callParams.Name, guardedArgs)
 		if err != nil {
+			if s.skillRegistry != nil && s.skill != nil {
+				s.skillRegistry.ObserveOutcomeVersion(s.skill.Manifest.Name, s.skill.Manifest.Version, false)
+			}
 			s.recordProvenance(ctx, "execution.error", callParams.Name, map[string]any{"error": err.Error()})
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
@@ -1509,6 +1545,10 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 			}, nil
 		}
 		s.recordProvenance(ctx, "execution.complete", callParams.Name, map[string]any{"status": "success"})
+		if s.skillRegistry != nil && s.skill != nil {
+			s.skillRegistry.ObserveOutcomeVersion(s.skill.Manifest.Name, s.skill.Manifest.Version, true)
+		}
+		s.advanceSkillTool(callParams.Name)
 
 		resJSON, _ := json.MarshalIndent(res, "", "  ")
 		return &JSONRPCResponse{
@@ -1530,9 +1570,40 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (*JSONRPCRespons
 	}
 }
 
+func (s *Server) expectedSkillTool() (string, bool) {
+	s.skillOrderMu.Lock()
+	defer s.skillOrderMu.Unlock()
+	if s.skillPlan == nil || !s.skillPlan.StrictOrder {
+		return "", false
+	}
+	expected := s.skillPlan.ExpectedTool(s.skillOrderIndex)
+	return expected, expected != ""
+}
+
+func (s *Server) advanceSkillTool(tool string) {
+	s.skillOrderMu.Lock()
+	defer s.skillOrderMu.Unlock()
+	if s.skillPlan != nil && s.skillPlan.StrictOrder && s.skillPlan.ExpectedTool(s.skillOrderIndex) == tool {
+		s.skillOrderIndex++
+	}
+}
+
 func (s *Server) recordProvenance(ctx context.Context, kind, subject string, payload map[string]any) {
 	if s.provenance == nil {
 		return
+	}
+	if s.skillPlan != nil {
+		copyPayload := make(map[string]any, len(payload)+5)
+		for key, value := range payload {
+			copyPayload[key] = value
+		}
+		copyPayload["skill"] = s.skillPlan.Skill
+		copyPayload["skill_version"] = s.skillPlan.Version
+		copyPayload["skill_plan_digest"] = s.skillPlan.Digest
+		copyPayload["schema_tokens"] = s.skillPlan.SchemaTokens
+		copyPayload["full_schema_tokens"] = s.skillPlan.FullSchemaTokens
+		copyPayload["estimated_token_savings"] = s.skillPlan.EstimatedTokenSavings
+		payload = copyPayload
 	}
 	event, err := s.provenance.Append(kind, subject, payload, time.Now().UTC())
 	if err != nil || s.engine == nil {

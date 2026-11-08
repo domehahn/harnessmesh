@@ -4,6 +4,7 @@
     "root": "plugins",
     "selected": "harnessmesh-review",
     "require_hash": true,
-    "require_signed": false
+    "require_signed": false,
+    "evaluation_path": "var/skill-evaluations.json"
   }
 }

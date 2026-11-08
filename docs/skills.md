@@ -14,6 +14,14 @@ transport; a selected skill limits which tools are visible and callable.
 6. `tools/call` enforces the same allowlist, so hiding a tool is not the
    security boundary by itself.
 
+After selection, HarnessMesh builds an execution plan from the verified
+`SKILL.md`. Explicit `[fn: tool.name]` markers define the deterministic order;
+undeclared tools are ignored and remaining declared tools are appended in
+stable lexical order. The plan digest, steps and estimated schema-token saving
+are exposed through `GET /api/v1/dashboard/skills` and the console. The plan
+is an execution contract, not an authorization bypass: MCP registry policy,
+the action firewall, approvals and tenant identity remain authoritative.
+
 Example manifest:
 
 ```json
@@ -23,6 +31,7 @@ Example manifest:
   "triggers": ["review repository", "security review"],
   "capabilities": ["review", "evidence"],
   "tools": ["peer.request_review", "peer.submit_finding"],
+  "strict_order": true,
   "risk": "medium",
   "sha256": "..."
 }
@@ -55,11 +64,56 @@ Or configure it:
 }
 ```
 
+The same routing state is available without the web console:
+
+```bash
+harnessmesh skills list --root plugins
+harnessmesh skills select --root plugins --context "perform a security review"
+harnessmesh skills plan --root plugins --skill harnessmesh-review
+harnessmesh skills explain --root plugins --context "perform a security review"
+```
+
+Add `--json` for CI or operations tooling. `skills list` reports the exact
+version, verification state, evaluation sample and current routing decision.
+`skills explain` additionally shows every candidate's score, matched trigger or
+capability, and exclusion reason without loading or executing tools.
+
 The selected skill's metadata is small enough to use for routing. The full
 Markdown document is loaded only after a match. HarnessMesh records the
 selected skill, version, hash status and estimated schema-token reduction in
 the process log; downstream telemetry can attach that information to the
 session trace.
+
+Selection also learns from completed executions. Successful and failed calls
+are counted per skill in the running registry. After at least three observed
+runs, a skill with a success rate below 50% is excluded from context-driven
+selection; otherwise its success rate is used as a deterministic routing
+preference when candidates are otherwise equally relevant. The current
+evaluation is exposed in `GET /api/v1/dashboard/skills` and the optimization
+view. Local registries persist this state atomically in
+`.harnessmesh-evaluations.json` below the skill root. A read-only skill root
+continues to work with in-memory evaluation only. Deployments can set
+`skills.evaluation_path` or `HARNESSMESH_SKILL_EVALUATION_PATH` to a writable
+mounted state path. Writers use a short-lived lock file and merge the latest
+counter before each update. The path must still be on shared lock-safe
+storage if multiple replicas write it; otherwise use one file per replica and
+aggregate results centrally. Evaluation never overrides tenant policy,
+approvals, the action firewall or tool locks. Evaluation is scoped to the exact skill version, so a
+newly installed version starts without inheriting an older version's score.
+
+Example workflow markers:
+
+```markdown
+## Workflow
+1. Fetch repository metadata: [fn: github.repo.get]
+2. Inspect open issues: [fn: github.issues.list]
+3. Produce the final report.
+```
+
+Set `strict_order` to `true` when every declared step must run in sequence.
+MCP rejects skipped, repeated or out-of-order steps with an explicit policy
+error; failed steps remain retryable. The default is `false` for compatibility
+with interactive agents.
 
 ## Dashboard
 

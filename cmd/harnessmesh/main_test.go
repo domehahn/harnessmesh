@@ -5,7 +5,21 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/domehahn/harnessmesh/internal/skills"
 )
+
+func TestSkillStatusRoutingThreshold(t *testing.T) {
+	entry := skills.Entry{Manifest: skills.Manifest{Name: "review", Version: "2.0.0", Risk: "medium"}}
+	status := skillStatus(entry, skills.Evaluation{Runs: 3, Successful: 1, SuccessRate: 1.0 / 3.0})
+	if status["routing"] != "excluded" {
+		t.Fatalf("routing = %v, want excluded", status["routing"])
+	}
+	status = skillStatus(entry, skills.Evaluation{Runs: 3, Successful: 2, SuccessRate: 2.0 / 3.0})
+	if status["routing"] != "preferred" {
+		t.Fatalf("routing = %v, want preferred", status["routing"])
+	}
+}
 
 func TestSecretEnvValueReadsMountedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")
@@ -138,5 +152,30 @@ func TestScenarioG_IntegrateChatGPTDryRun(t *testing.T) {
 
 	if _, err := os.Stat(mcpPath); err != nil {
 		t.Errorf("expected .mcp.json to exist after non-dry-run, got error: %v", err)
+	}
+}
+
+func TestEvalExportCLIProducesRedactedDeepEvalJSONL(t *testing.T) {
+	tmpDir := t.TempDir()
+	inPath := filepath.Join(tmpDir, "runs.jsonl")
+	outPath := filepath.Join(tmpDir, "deepeval.jsonl")
+
+	dataset := `{"tenant":"t1","session_id":"s1","task_id":"task-1","input":"check sk-secret12345678901234567890","expected":"ok","output":"ok","success":true,"policy_ok":true,"human_approved":true}` + "\n"
+	if err := os.WriteFile(inPath, []byte(dataset), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := evalCmd([]string{"export", "--dataset", inPath, "--format", "deepeval", "--out", outPath}); err != nil {
+		t.Fatalf("evalCmd export failed: %v", err)
+	}
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported map[string]any
+	if err := json.Unmarshal(raw, &exported); err != nil {
+		t.Fatalf("unmarshal exported JSONL failed: %v", err)
+	}
+	if exported["actual_output"] != "ok" {
+		t.Fatalf("unexpected actual_output: %#v", exported)
 	}
 }
