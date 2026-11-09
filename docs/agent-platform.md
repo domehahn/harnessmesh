@@ -35,6 +35,10 @@ exported, secret-redacted traces in a separate CI job:
 ```bash
 harnessmesh eval export --dataset ./evaluations/production.jsonl \
   --format deepeval --out ./evaluations/deepeval.jsonl
+
+# Export secret-redacted, human-approved golden traces for Model-Harness Co-Evolution
+harnessmesh eval export --dataset ./evaluations/production.jsonl \
+  --format golden --min-score 0.85 --out ./evaluations/golden.jsonl
 ```
 
 ## Browser, memory and LLM gateway adapters

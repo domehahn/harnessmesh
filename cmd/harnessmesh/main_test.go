@@ -178,4 +178,44 @@ func TestEvalExportCLIProducesRedactedDeepEvalJSONL(t *testing.T) {
 	if exported["actual_output"] != "ok" {
 		t.Fatalf("unexpected actual_output: %#v", exported)
 	}
+
+	goldenPath := filepath.Join(tmpDir, "golden.jsonl")
+	if err := evalCmd([]string{"export", "--dataset", inPath, "--format", "golden", "--min-score", "0.9", "--out", goldenPath}); err != nil {
+		t.Fatalf("evalCmd golden export failed: %v", err)
+	}
+	goldenRaw, err := os.ReadFile(goldenPath)
+	if err != nil || len(goldenRaw) == 0 {
+		t.Fatalf("expected golden JSONL output, got err=%v len=%d", err, len(goldenRaw))
+	}
+}
+
+func TestSkillsProposeAndProbeCLI(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "review-skill")
+	if err := os.MkdirAll(skillDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"review-skill","version":"1.0.0","tools":["collaboration.inbox"],"strict_order":false}`
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Review\n1. [fn: collaboration.inbox]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	basePath := filepath.Join(tmpDir, "baseline.jsonl")
+	candPath := filepath.Join(tmpDir, "candidate.jsonl")
+	baseRun := `{"tenant":"t1","session_id":"s1","task_id":"task-1","success":false,"policy_ok":true,"human_approved":true,"steps":[{"name":"collaboration.inbox","kind":"tool","status":"completed","policy_ok":true},{"name":"peer.request_review","kind":"tool","status":"completed","policy_ok":true}]}` + "\n"
+	candRun := `{"tenant":"t1","session_id":"s2","task_id":"task-1","success":true,"policy_ok":true,"human_approved":true,"steps":[{"name":"collaboration.inbox","kind":"tool","status":"completed","policy_ok":true},{"name":"peer.request_review","kind":"tool","status":"completed","policy_ok":true}]}` + "\n"
+	if err := os.WriteFile(basePath, []byte(baseRun), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(candPath, []byte(candRun), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := skillsCmd([]string{"propose", "--root", tmpDir, "--skill", "review-skill", "--dataset", basePath, "--json"}); err != nil {
+		t.Fatalf("skills propose failed: %v", err)
+	}
+	if err := skillsCmd([]string{"probe", "--root", tmpDir, "--skill", "review-skill", "--baseline", basePath, "--candidate", candPath, "--min-score", "0.8", "--json"}); err != nil {
+		t.Fatalf("skills probe failed: %v", err)
+	}
 }

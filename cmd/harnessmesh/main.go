@@ -160,7 +160,7 @@ Usage:
   harnessmesh peer status --session <id>
   harnessmesh agents <list|show <name>>
   harnessmesh plugins <list|validate> [--dir <path>] [--json]
-  harnessmesh skills <list|select|plan|explain> [--root <path>] [--context <text>] [--skill <name>] [--json]
+  harnessmesh skills <list|select|plan|explain|propose|probe> [--root <path>] [--context <text>] [--skill <name>] [--json]
   harnessmesh marketplace <search|import|source|install|approve|activate|deactivate|update|rollback|uninstall> [options]
   harnessmesh session <list|show|messages|resume|stop> [options]
   harnessmesh findings <session-id> [--json]
@@ -174,7 +174,7 @@ Usage:
   harnessmesh smoke-test antigravity-codex [--config <path>]
   harnessmesh doctor [--config <path>]
   harnessmesh agent-platform <doctor|eval-export> [--config <path>] [options]
-  harnessmesh eval export --dataset <path> [--format deepeval] [--out <path>]
+  harnessmesh eval export --dataset <path> [--format deepeval|golden] [--min-score <float>] [--out <path>]
   harnessmesh print-config [--config <path>]
   harnessmesh version
 
@@ -209,7 +209,7 @@ func agentPlatformCmd(args []string) error {
 
 func evalCmd(args []string) error {
 	if len(args) == 0 || args[0] != "export" {
-		return errors.New("usage: harnessmesh eval export --dataset <path> [--format deepeval] [--out <path>]")
+		return errors.New("usage: harnessmesh eval export --dataset <path> [--format deepeval|golden] [--min-score <float>] [--out <path>]")
 	}
 	return evalExportCmd(args[1:])
 }
@@ -218,18 +218,24 @@ func evalExportCmd(args []string) error {
 	fs := flag.NewFlagSet("eval export", flag.ContinueOnError)
 	configPath := fs.String("config", "harnessmesh.json", "config file")
 	datasetPath := fs.String("dataset", "", "path to input runs JSONL file (defaults to agent_platform.evaluation.dataset_path)")
-	format := fs.String("format", "deepeval", "export format (deepeval)")
+	format := fs.String("format", "deepeval", "export format (deepeval or golden)")
+	minScore := fs.Float64("min-score", 0, "minimum score threshold for golden trace export")
 	outPath := fs.String("out", "", "optional output file path (defaults to stdout)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.ToLower(strings.TrimSpace(*format)) != "deepeval" {
-		return fmt.Errorf("unsupported eval export format %q (expected deepeval)", *format)
+	normFormat := strings.ToLower(strings.TrimSpace(*format))
+	if normFormat != "deepeval" && normFormat != "golden" {
+		return fmt.Errorf("unsupported eval export format %q (expected deepeval or golden)", *format)
 	}
 	inPath := strings.TrimSpace(*datasetPath)
-	if inPath == "" {
-		if cfg, err := loadConfigOrDefault(*configPath); err == nil {
+	scoreThreshold := *minScore
+	if cfg, err := loadConfigOrDefault(*configPath); err == nil {
+		if inPath == "" {
 			inPath = strings.TrimSpace(cfg.AgentPlatform.Evaluation.DatasetPath)
+		}
+		if scoreThreshold <= 0 {
+			scoreThreshold = cfg.AgentPlatform.Evaluation.MinScore
 		}
 	}
 	if inPath == "" {
@@ -252,6 +258,9 @@ func evalExportCmd(args []string) error {
 		}
 		defer outFile.Close()
 		out = outFile
+	}
+	if normFormat == "golden" {
+		return evaluation.ExportGoldenJSONL(out, runs, scoreThreshold)
 	}
 	return evaluation.ExportDeepEvalJSONL(out, runs)
 }
@@ -299,7 +308,7 @@ func pluginsCmd(args []string) error {
 
 func skillsCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: harnessmesh skills <list|select|plan|explain> [options]")
+		return errors.New("usage: harnessmesh skills <list|select|plan|explain|propose|probe> [options]")
 	}
 	subcmd := args[0]
 	fs := flag.NewFlagSet("skills "+subcmd, flag.ContinueOnError)
@@ -307,6 +316,10 @@ func skillsCmd(args []string) error {
 	root := fs.String("root", "", "skill registry root")
 	contextText := fs.String("context", "", "task context for automatic selection")
 	skillName := fs.String("skill", "", "exact skill name")
+	datasetPath := fs.String("dataset", "", "runs JSONL dataset for propose")
+	baselinePath := fs.String("baseline", "", "baseline runs JSONL dataset for probe")
+	candidatePath := fs.String("candidate", "", "candidate runs JSONL dataset for probe")
+	minScore := fs.Float64("min-score", 0, "minimum score threshold for probe promotion")
 	evaluationPath := fs.String("evaluation-path", "", "evaluation state file")
 	requireHash := fs.Bool("require-hash", false, "require matching SHA-256")
 	requireSignature := fs.Bool("require-signature", false, "require Ed25519 signature")
@@ -314,7 +327,7 @@ func skillsCmd(args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if subcmd != "list" && subcmd != "select" && subcmd != "plan" && subcmd != "explain" {
+	if subcmd != "list" && subcmd != "select" && subcmd != "plan" && subcmd != "explain" && subcmd != "propose" && subcmd != "probe" {
 		return fmt.Errorf("unknown skills subcommand %q", subcmd)
 	}
 	cfg, err := loadConfigOrDefault(*configPath)
@@ -398,6 +411,69 @@ func skillsCmd(args []string) error {
 			return json.NewEncoder(os.Stdout).Encode(result)
 		}
 		fmt.Printf("selected %s v%s (%s, %.1f%% success over %d runs)\n", entry.Manifest.Name, entry.Manifest.Version, result["routing"], result["success_rate"].(float64)*100, result["runs"])
+		return nil
+	}
+	if subcmd == "propose" {
+		inPath := strings.TrimSpace(*datasetPath)
+		if inPath == "" {
+			inPath = strings.TrimSpace(cfg.AgentPlatform.Evaluation.DatasetPath)
+		}
+		if inPath == "" {
+			return errors.New("--dataset <path> or agent_platform.evaluation.dataset_path is required")
+		}
+		f, err := os.Open(inPath)
+		if err != nil {
+			return fmt.Errorf("open dataset: %w", err)
+		}
+		defer f.Close()
+		runs, err := evaluation.LoadRunsJSONL(f)
+		if err != nil {
+			return fmt.Errorf("parse dataset: %w", err)
+		}
+		proposal, err := skills.ProposeHarnessPatch(entry, runs)
+		if err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(proposal)
+		}
+		fmt.Printf("%s v%s -> v%s (requires_approval=%v, strict_order=%v, +%d tools)\n", proposal.Skill, proposal.BaseVersion, proposal.ProposedVersion, proposal.RequiresApproval, proposal.EnableStrictOrder, len(proposal.AddedTools))
+		return nil
+	}
+	if subcmd == "probe" {
+		if strings.TrimSpace(*baselinePath) == "" || strings.TrimSpace(*candidatePath) == "" {
+			return errors.New("--baseline <path> and --candidate <path> are required")
+		}
+		bf, err := os.Open(strings.TrimSpace(*baselinePath))
+		if err != nil {
+			return fmt.Errorf("open baseline: %w", err)
+		}
+		defer bf.Close()
+		baseRuns, err := evaluation.LoadRunsJSONL(bf)
+		if err != nil {
+			return fmt.Errorf("parse baseline: %w", err)
+		}
+		cf, err := os.Open(strings.TrimSpace(*candidatePath))
+		if err != nil {
+			return fmt.Errorf("open candidate: %w", err)
+		}
+		defer cf.Close()
+		candRuns, err := evaluation.LoadRunsJSONL(cf)
+		if err != nil {
+			return fmt.Errorf("parse candidate: %w", err)
+		}
+		threshold := *minScore
+		if threshold <= 0 {
+			threshold = cfg.AgentPlatform.Evaluation.MinScore
+		}
+		report, err := skills.ProbeHarness(entry, baseRuns, candRuns, threshold)
+		if err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(report)
+		}
+		fmt.Printf("%s v%s -> v%s · decision=%s (delta=%+.2f, requires_approval=%v)\n", report.Skill, report.BaseVersion, report.CandidateVersion, report.Decision, report.Comparison.ScoreDelta, report.RequiresApproval)
 		return nil
 	}
 	plan, err := skills.BuildExecutionPlan(entry, entry.SchemaTokenEstimate())

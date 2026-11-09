@@ -69,6 +69,30 @@ class MemoryBlockPayload:
     def model_dump(self) -> Dict[str, Any]:
         return self.to_dict()
 
+@dataclass(frozen=True)
+class HarnessPatchProposal:
+    """Approval-gated recursive harness optimization proposal (Propose-Probe-Compose)."""
+    skill: str
+    base_version: str
+    proposed_version: str
+    requires_approval: bool = True
+    added_tools: List[str] = field(default_factory=list)
+    enable_strict_order: bool = False
+    suggested_steps: List[str] = field(default_factory=list)
+    findings: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.skill.strip() or not self.base_version.strip() or not self.proposed_version.strip():
+            raise ValueError("skill, base_version and proposed_version are required")
+        if not self.requires_approval:
+            raise ValueError("requires_approval must remain True for harness mutations")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def model_dump(self) -> Dict[str, Any]:
+        return self.to_dict()
+
 class Client:
     def __init__(self, base_url: str, api_key: str):
         self.base_url = base_url.rstrip('/')

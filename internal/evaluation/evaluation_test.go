@@ -91,3 +91,46 @@ func TestDeepEvalExportRedactsSecretsAndPreservesTools(t *testing.T) {
 		t.Fatalf("missing tenant metadata: %#v", tc.AdditionalMetadata)
 	}
 }
+
+func TestFilterGoldenRunsAndCompareHarnesses(t *testing.T) {
+	baseline := []Run{
+		{Tenant: "t1", SessionID: "s1", TaskID: "task-1", Input: "fix auth", Output: "partial", Success: false, PolicyOK: true, HumanApproved: true},
+		{Tenant: "t1", SessionID: "s2", TaskID: "task-2", Input: "fix db", Output: "ok", Success: true, PolicyOK: true, HumanApproved: true},
+	}
+	candidate := []Run{
+		{Tenant: "t1", SessionID: "s3", TaskID: "task-1", Input: "fix auth sk-secret12345678901234567890", Output: "ok", Success: true, PolicyOK: true, HumanApproved: true},
+		{Tenant: "t1", SessionID: "s4", TaskID: "task-2", Input: "fix db", Output: "ok", Success: true, PolicyOK: true, HumanApproved: true},
+	}
+
+	comp, err := CompareHarnesses(baseline, candidate, 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comp.Recommendation != "promote" || comp.ScoreDelta <= 0 {
+		t.Fatalf("expected promote recommendation with positive delta, got %#v", comp)
+	}
+
+	// Unsafe candidate must fail closed with rollback
+	unsafeCandidate := []Run{
+		{Tenant: "t1", SessionID: "s5", TaskID: "task-1", Output: "ok", Success: true, PolicyOK: false, HumanApproved: true},
+	}
+	unsafeComp, err := CompareHarnesses(baseline, unsafeCandidate, 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsafeComp.Recommendation != "rollback" {
+		t.Fatalf("expected rollback for unsafe candidate, got %#v", unsafeComp)
+	}
+
+	var goldenBuf bytes.Buffer
+	if err := ExportGoldenJSONL(&goldenBuf, append(baseline, candidate...), 0.9); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(goldenBuf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 golden traces, got %d: %s", len(lines), goldenBuf.String())
+	}
+	if strings.Contains(goldenBuf.String(), "sk-secret12345678901234567890") {
+		t.Fatalf("expected golden trace export to redact secrets: %s", goldenBuf.String())
+	}
+}

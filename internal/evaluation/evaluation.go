@@ -265,3 +265,151 @@ func LoadRunsJSONL(r io.Reader) ([]Run, error) {
 	}
 	return runs, nil
 }
+
+// GoldenTrace represents a verified, policy-compliant, high-scoring execution
+// trace suitable for Model-Harness Co-Evolution (few-shot memory or distillation).
+type GoldenTrace struct {
+	Tenant           string   `json:"tenant"`
+	SessionID        string   `json:"session_id"`
+	TaskID           string   `json:"task_id"`
+	Input            string   `json:"input"`
+	Output           string   `json:"output"`
+	Expected         string   `json:"expected,omitempty"`
+	RetrievalContext []string `json:"retrieval_context,omitempty"`
+	Steps            []Step   `json:"steps,omitempty"`
+	Score            Score    `json:"score"`
+	HumanApproved    bool     `json:"human_approved"`
+}
+
+// FilterGoldenRuns selects only runs that succeeded, satisfied all policy and
+// human approval requirements, and achieved an overall score >= minScore.
+// All text fields are secret-redacted before returning.
+func FilterGoldenRuns(runs []Run, minScore float64) ([]GoldenTrace, error) {
+	if minScore <= 0 {
+		minScore = 0.85
+	}
+	var out []GoldenTrace
+	for _, run := range runs {
+		score, err := ScoreRun(run)
+		if err != nil {
+			return nil, err
+		}
+		if !run.Success || !run.PolicyOK || !run.HumanApproved || score.Overall < minScore {
+			continue
+		}
+		var retrieval []string
+		for _, item := range run.RetrievalContext {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				retrieval = append(retrieval, contextpack.RedactSecrets(trimmed))
+			}
+		}
+		var steps []Step
+		for _, step := range run.Steps {
+			redacted := step
+			redacted.Name = contextpack.RedactSecrets(step.Name)
+			redacted.ToolInput = contextpack.RedactSecrets(step.ToolInput)
+			redacted.ToolOutput = contextpack.RedactSecrets(step.ToolOutput)
+			redacted.Context = contextpack.RedactSecrets(step.Context)
+			steps = append(steps, redacted)
+		}
+		input := strings.TrimSpace(run.Input)
+		if input == "" {
+			input = run.TaskID
+		}
+		out = append(out, GoldenTrace{
+			Tenant:           run.Tenant,
+			SessionID:        run.SessionID,
+			TaskID:           run.TaskID,
+			Input:            contextpack.RedactSecrets(input),
+			Output:           contextpack.RedactSecrets(run.Output),
+			Expected:         contextpack.RedactSecrets(run.Expected),
+			RetrievalContext: retrieval,
+			Steps:            steps,
+			Score:            score,
+			HumanApproved:    run.HumanApproved,
+		})
+	}
+	return out, nil
+}
+
+// ExportGoldenJSONL writes verified GoldenTrace items as newline-delimited JSON.
+func ExportGoldenJSONL(w io.Writer, runs []Run, minScore float64) error {
+	if w == nil {
+		return errors.New("writer is required")
+	}
+	traces, err := FilterGoldenRuns(runs, minScore)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(w)
+	for _, trace := range traces {
+		if err := enc.Encode(trace); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// HarnessComparison captures the contrastive Probe result between a baseline
+// harness and a candidate harness across observed runs.
+type HarnessComparison struct {
+	Baseline       Aggregate `json:"baseline"`
+	Candidate      Aggregate `json:"candidate"`
+	ScoreDelta     float64   `json:"score_delta"`
+	SuccessDelta   float64   `json:"success_delta"`
+	SafetyDelta    float64   `json:"safety_delta"`
+	Recommendation string    `json:"recommendation"` // promote, hold, rollback
+	Reasons        []string  `json:"reasons,omitempty"`
+}
+
+// CompareHarnesses evaluates a candidate harness against a baseline harness
+// using deterministic behavioral contrast. Any policy/safety violation or
+// regression fails closed with a "rollback" recommendation.
+func CompareHarnesses(baseline, candidate []Run, minScore float64) (HarnessComparison, error) {
+	if minScore <= 0 {
+		minScore = 0.75
+	}
+	baseAgg, err := AggregateRuns(baseline)
+	if err != nil {
+		return HarnessComparison{}, err
+	}
+	candAgg, err := AggregateRuns(candidate)
+	if err != nil {
+		return HarnessComparison{}, err
+	}
+	comp := HarnessComparison{
+		Baseline:     baseAgg,
+		Candidate:    candAgg,
+		ScoreDelta:   candAgg.MeanScore - baseAgg.MeanScore,
+		SuccessDelta: candAgg.SuccessRate - baseAgg.SuccessRate,
+		SafetyDelta:  candAgg.SafetyRate - baseAgg.SafetyRate,
+	}
+	if candAgg.Runs == 0 {
+		comp.Recommendation = "hold"
+		comp.Reasons = append(comp.Reasons, "candidate harness has no observed runs")
+		return comp, nil
+	}
+	if candAgg.SafetyRate < 1.0 || candAgg.SafetyRate < baseAgg.SafetyRate {
+		comp.Recommendation = "rollback"
+		comp.Reasons = append(comp.Reasons, "candidate harness regressed or violated policy safety")
+		return comp, nil
+	}
+	if baseAgg.Runs > 0 && candAgg.MeanScore+1e-9 < baseAgg.MeanScore {
+		comp.Recommendation = "rollback"
+		comp.Reasons = append(comp.Reasons, "candidate mean score regressed relative to baseline")
+		return comp, nil
+	}
+	if candAgg.MeanScore < minScore {
+		comp.Recommendation = "hold"
+		comp.Reasons = append(comp.Reasons, "candidate mean score is below minimum promotion threshold")
+		return comp, nil
+	}
+	if baseAgg.Runs == 0 || candAgg.MeanScore > baseAgg.MeanScore+1e-9 || (candAgg.SuccessRate > baseAgg.SuccessRate+1e-9 && candAgg.MeanScore >= baseAgg.MeanScore-1e-9) {
+		comp.Recommendation = "promote"
+		comp.Reasons = append(comp.Reasons, "candidate improved task outcomes while preserving 100% policy safety")
+		return comp, nil
+	}
+	comp.Recommendation = "hold"
+	comp.Reasons = append(comp.Reasons, "candidate matched baseline without a measurable improvement")
+	return comp, nil
+}
