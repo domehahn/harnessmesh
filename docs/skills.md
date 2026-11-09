@@ -130,3 +130,28 @@ enabled, HarnessMesh verifies an Ed25519 signature over the SHA-256 digest of
 before activation. The built-in example skills are
 hash-pinned and unsigned by default, so signed mode must be supplied with
 organization-owned signed manifests.
+
+## Recursive Harness Optimization (Propose–Probe–Compose)
+
+HarnessMesh supports controlled, evidence-driven harness refinement without
+runtime self-modification:
+
+1. **Propose (`harnessmesh skills propose`):** Inspects observed execution
+   traces (`runs.jsonl`) against a skill's manifest and `SKILL.md` to propose
+   missing policy-compliant tool bindings, explicit `[fn: tool]` step markers,
+   or `strict_order: true` when retry/failure patterns are observed. Every
+   proposal carries `requires_approval: true`.
+2. **Probe & Compose (`harnessmesh skills probe`):** Compares baseline run
+   traces against candidate run traces using deterministic behavioral contrast
+   (`evaluation.CompareHarnesses`). Any policy/safety violation or regression
+   fails closed with `decision: "rollback"`; measurable improvements with 100%
+   safety produce `decision: "promote"`.
+
+```bash
+harnessmesh skills propose --root plugins --skill harnessmesh-review \
+  --dataset ./evaluations/baseline.jsonl --json
+
+harnessmesh skills probe --root plugins --skill harnessmesh-review \
+  --baseline ./evaluations/baseline.jsonl \
+  --candidate ./evaluations/candidate.jsonl --min-score 0.80 --json
+```

@@ -37,6 +37,26 @@ export interface A2ATaskRequest {
   };
 }
 
+export interface HarnessPatchProposal {
+  skill: string;
+  base_version: string;
+  proposed_version: string;
+  requires_approval: true;
+  added_tools?: string[];
+  enable_strict_order?: boolean;
+  suggested_steps?: string[];
+  findings?: string[];
+}
+
+export interface HarnessProbeReport {
+  skill: string;
+  base_version: string;
+  candidate_version: string;
+  proposal: HarnessPatchProposal;
+  decision: "promote" | "hold" | "rollback";
+  requires_approval: true;
+}
+
 export class HarnessMeshClient {
   constructor(readonly baseURL: string, readonly apiKey: string) {}
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
