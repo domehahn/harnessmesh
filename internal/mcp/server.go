@@ -23,6 +23,7 @@ import (
 	"github.com/domehahn/harnessmesh/internal/config"
 	"github.com/domehahn/harnessmesh/internal/creditguard"
 	"github.com/domehahn/harnessmesh/internal/identity"
+	"github.com/domehahn/harnessmesh/internal/integrations"
 	"github.com/domehahn/harnessmesh/internal/knowledge"
 	"github.com/domehahn/harnessmesh/internal/mcpgateway"
 	"github.com/domehahn/harnessmesh/internal/protocol"
@@ -1402,6 +1403,44 @@ func (s *Server) ListTools() []ToolDefinition {
 				"change_id": map[string]any{"type": "string", "description": "Change transaction ID"},
 			}, "required": []string{"change_id"}},
 		},
+		ToolDefinition{
+			Name: "knowledge.cognify", Description: "Run the Cognee-inspired ECL (Extract, Cognify, Load) knowledge graph pipeline over matching records and optional k-hop subgraph focus.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"query":      map[string]any{"type": "string", "description": "Optional search query"},
+				"project_id": map[string]any{"type": "string", "description": "Optional project filter"},
+				"focus_id":   map[string]any{"type": "string", "description": "Optional node ID (e.g. 'file:internal/mcp/server.go' or 'agent:codex') for subgraph extraction"},
+				"max_hops":   map[string]any{"type": "integer", "description": "Max hops around focus_id (1-4)"},
+				"limit":      map[string]any{"type": "integer", "description": "Maximum archive records to cognify"},
+			}},
+		},
+		ToolDefinition{
+			Name: "memory.block.put", Description: "Store a structured, hierarchical Letta/Cognee/Haystack memory block (core, archival, or recall tier) with secret redaction.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"project_id": map[string]any{"type": "string", "description": "Project identifier"},
+				"tier":       map[string]any{"type": "string", "enum": []string{"core", "archival", "recall"}, "description": "Memory tier"},
+				"label":      map[string]any{"type": "string", "description": "Memory block label"},
+				"value":      map[string]any{"type": "string", "description": "Memory block content"},
+				"read_only":  map[string]any{"type": "boolean", "description": "Whether the block is read-only"},
+			}, "required": []string{"label", "value"}},
+		},
+		ToolDefinition{
+			Name: "memory.block.list", Description: "List structured hierarchical memory blocks for a tier (core, archival, or recall).",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"project_id": map[string]any{"type": "string", "description": "Project identifier"},
+				"tier":       map[string]any{"type": "string", "enum": []string{"core", "archival", "recall"}, "description": "Memory tier"},
+			}},
+		},
+		ToolDefinition{
+			Name: "browser.authorize", Description: "Authorize a Stagehand, Browser-Use, or Playwright web action against HTTPS, domain allowlists, approval gates, and the HarnessMesh Action Firewall.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"provider":        map[string]any{"type": "string", "enum": []string{"playwright", "browser-use", "stagehand"}, "description": "Browser automation provider"},
+				"kind":            map[string]any{"type": "string", "enum": []string{"navigate", "act", "extract", "observe"}, "description": "Browser step kind"},
+				"url":             map[string]any{"type": "string", "description": "Target HTTPS URL"},
+				"instruction":     map[string]any{"type": "string", "description": "Step instruction"},
+				"approved":        map[string]any{"type": "boolean", "description": "Whether an operator approved this step"},
+				"allowed_domains": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Allowed HTTPS domains when not preconfigured"},
+			}, "required": []string{"url"}},
+		},
 	)
 	if s.gateway != nil {
 		// Remote discovery is intentionally not performed during tools/list:
@@ -2461,6 +2500,214 @@ func (s *Server) executeToolUnsafe(ctx context.Context, toolName string, argsJSO
 			"stale":         gate.StaleObligations,
 			"reasons":       gate.Reasons,
 		}, nil
+
+	case "knowledge.cognify":
+		var req struct {
+			Query     string `json:"query"`
+			ProjectID string `json:"project_id"`
+			FocusID   string `json:"focus_id"`
+			MaxHops   int    `json:"max_hops"`
+			Limit     int    `json:"limit"`
+		}
+		if len(argsJSON) > 0 {
+			if err := json.Unmarshal(argsJSON, &req); err != nil {
+				return nil, fmt.Errorf("parse knowledge.cognify args: %w", err)
+			}
+		}
+		if err := s.authorizeProject(req.ProjectID); err != nil {
+			return nil, err
+		}
+		if req.Limit <= 0 {
+			req.Limit = 200
+		}
+		records, err := s.engine.KnowledgeSearch(ctx, req.Query, knowledge.SearchOptions{
+			ProjectID: req.ProjectID,
+			Limit:     req.Limit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		graph := knowledge.Cognify(records)
+		if strings.TrimSpace(req.FocusID) != "" {
+			graph = knowledge.Subgraph(graph, req.FocusID, req.MaxHops)
+		}
+		return graph, nil
+
+	case "memory.block.put":
+		var req struct {
+			ProjectID string `json:"project_id"`
+			Tier      string `json:"tier"`
+			Label     string `json:"label"`
+			Value     string `json:"value"`
+			ReadOnly  bool   `json:"read_only"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse memory.block.put args: %w", err)
+		}
+		if err := s.authorizeProject(req.ProjectID); err != nil {
+			return nil, err
+		}
+		tier, err := integrations.ValidateMemoryTier(req.Tier)
+		if err != nil {
+			return nil, err
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" || strings.TrimSpace(req.Value) == "" {
+			return nil, fmt.Errorf("memory block label and value are required")
+		}
+		projectID := strings.TrimSpace(req.ProjectID)
+		if projectID == "" {
+			projectID = "default"
+		}
+		tenantID := "default"
+		if id, idErr := tenant.FromContext(ctx); idErr == nil && strings.TrimSpace(id.Tenant) != "" {
+			tenantID = strings.TrimSpace(id.Tenant)
+		}
+		block := integrations.MemoryBlock{
+			Tier:     tier,
+			Label:    label,
+			Value:    req.Value,
+			ReadOnly: req.ReadOnly,
+		}
+		ap := s.engine.AgentPlatformConfig()
+		if ap.Memory.Enabled && strings.TrimSpace(ap.Memory.Endpoint) != "" {
+			client := integrations.MemoryClient{
+				Provider: ap.Memory.Provider,
+				Endpoint: ap.Memory.Endpoint,
+			}
+			if err := client.PutBlock(ctx, tenantID, projectID, block); err != nil {
+				return nil, err
+			}
+		}
+		tags := []string{"tier:" + tier, "label:" + label}
+		if req.ReadOnly {
+			tags = append(tags, "read_only:true")
+		}
+		rec, err := s.engine.KnowledgeRemember(ctx, req.Value, "memory_block", caller, projectID, tags)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":    "stored",
+			"record_id": rec.ID,
+			"tier":      tier,
+			"label":     label,
+			"read_only": req.ReadOnly,
+		}, nil
+
+	case "memory.block.list":
+		var req struct {
+			ProjectID string `json:"project_id"`
+			Tier      string `json:"tier"`
+		}
+		if len(argsJSON) > 0 {
+			if err := json.Unmarshal(argsJSON, &req); err != nil {
+				return nil, fmt.Errorf("parse memory.block.list args: %w", err)
+			}
+		}
+		if err := s.authorizeProject(req.ProjectID); err != nil {
+			return nil, err
+		}
+		tier, err := integrations.ValidateMemoryTier(req.Tier)
+		if err != nil {
+			return nil, err
+		}
+		projectID := strings.TrimSpace(req.ProjectID)
+		if projectID == "" {
+			projectID = "default"
+		}
+		tenantID := "default"
+		if id, idErr := tenant.FromContext(ctx); idErr == nil && strings.TrimSpace(id.Tenant) != "" {
+			tenantID = strings.TrimSpace(id.Tenant)
+		}
+		ap := s.engine.AgentPlatformConfig()
+		if ap.Memory.Enabled && strings.TrimSpace(ap.Memory.Endpoint) != "" {
+			client := integrations.MemoryClient{
+				Provider: ap.Memory.Provider,
+				Endpoint: ap.Memory.Endpoint,
+			}
+			blocks, err := client.Blocks(ctx, tenantID, projectID, tier)
+			if err == nil {
+				return map[string]any{"tier": tier, "blocks": blocks, "count": len(blocks)}, nil
+			}
+		}
+		records, err := s.engine.KnowledgeSearch(ctx, "", knowledge.SearchOptions{
+			ProjectID: projectID,
+			Kind:      "memory_block",
+			Limit:     100,
+		})
+		if err != nil {
+			return nil, err
+		}
+		blocks := make([]integrations.MemoryBlock, 0)
+		wantTierTag := "tier:" + tier
+		for _, rec := range records {
+			matchedTier := false
+			label := ""
+			readOnly := false
+			for _, t := range rec.Tags {
+				if t == wantTierTag {
+					matchedTier = true
+				} else if strings.HasPrefix(t, "label:") {
+					label = strings.TrimPrefix(t, "label:")
+				} else if t == "read_only:true" {
+					readOnly = true
+				}
+			}
+			if matchedTier {
+				blocks = append(blocks, integrations.MemoryBlock{
+					Tier:     tier,
+					Label:    label,
+					Value:    rec.Text,
+					ReadOnly: readOnly,
+				})
+			}
+		}
+		return map[string]any{"tier": tier, "blocks": blocks, "count": len(blocks)}, nil
+
+	case "browser.authorize":
+		var req struct {
+			Provider       string   `json:"provider"`
+			Kind           string   `json:"kind"`
+			URL            string   `json:"url"`
+			Instruction    string   `json:"instruction"`
+			Approved       bool     `json:"approved"`
+			AllowedDomains []string `json:"allowed_domains"`
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse browser.authorize args: %w", err)
+		}
+		ap := s.engine.AgentPlatformConfig()
+		allowedDomains := ap.Browser.AllowedDomains
+		if len(allowedDomains) == 0 {
+			allowedDomains = req.AllowedDomains
+		}
+		policy := integrations.BrowserPolicy{
+			AllowedDomains:  allowedDomains,
+			RequireApproval: ap.Browser.RequireApproval,
+		}
+		provider := req.Provider
+		if provider == "" {
+			provider = ap.Browser.Provider
+		}
+		tenantID := "default"
+		if id, idErr := tenant.FromContext(ctx); idErr == nil && strings.TrimSpace(id.Tenant) != "" {
+			tenantID = strings.TrimSpace(id.Tenant)
+		}
+		decision, err := policy.AuthorizeAction(ctx, assurance.Policy{}, integrations.BrowserAction{
+			SessionID:   s.sessionID,
+			Tenant:      tenantID,
+			Agent:       caller,
+			Provider:    provider,
+			Kind:        req.Kind,
+			URL:         req.URL,
+			Instruction: req.Instruction,
+			Approved:    req.Approved,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return decision, nil
 
 	default:
 		return nil, fmt.Errorf("unknown collaboration tool %q", toolName)

@@ -72,8 +72,8 @@ func TestMCPServerHandshakeAndTools(t *testing.T) {
 		t.Fatalf("unexpected tools/list result type: %T", resp.Result)
 	}
 	tools, ok := resMap["tools"].([]ToolDefinition)
-	if !ok || len(tools) != 42 {
-		t.Fatalf("expected 42 tools, got: %d", len(tools))
+	if !ok || len(tools) != 46 {
+		t.Fatalf("expected 46 tools, got: %d", len(tools))
 	}
 
 	// 3. tools/call peer.list
@@ -216,8 +216,8 @@ func TestMCPServer_StdioContract(t *testing.T) {
 	}
 	resMap := listResp.Result.(map[string]any)
 	toolsSlice := resMap["tools"].([]any)
-	if len(toolsSlice) != 42 {
-		t.Fatalf("expected 42 tools, got %d", len(toolsSlice))
+	if len(toolsSlice) != 46 {
+		t.Fatalf("expected 46 tools, got %d", len(toolsSlice))
 	}
 
 	// 3. Send peer.list over pipe
@@ -698,5 +698,87 @@ func TestMCPServer_EffectiveCallerFromContext(t *testing.T) {
 	}
 	if len(toolRes.Content) == 0 || !strings.Contains(toolRes.Content[0].Text, "cannot spoof sender identity") {
 		t.Fatalf("unexpected error message: %+v", toolRes.Content)
+	}
+}
+
+func TestMCPMemoryBlocksBrowserAuthorizeAndCognify(t *testing.T) {
+	tmpDir := t.TempDir()
+	st, err := store.OpenSQLite(filepath.Join(tmpDir, "mcp_deep.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		Version: 2,
+		Agents: map[string]config.AgentConfig{
+			"claude": {Kind: "claude", Role: "executor", Writable: true},
+		},
+		AgentPlatform: config.AgentPlatformConfig{
+			Browser: config.BrowserConfig{
+				Enabled:         true,
+				Provider:        "stagehand",
+				AllowedDomains:  []string{"docs.example.test"},
+				RequireApproval: true,
+			},
+		},
+	}
+	eng := collaboration.NewEngine(collaboration.EngineConfig{
+		Config:    cfg,
+		Store:     st,
+		Repo:      tmpDir,
+		Projector: contextpack.New(tmpDir, cfg.Context),
+		Harnesses: map[string]agent.Harness{},
+	})
+	defer eng.Close()
+
+	ctx := context.Background()
+	sess, err := eng.CreateSession(ctx, "hm_mcp_deep", "Deep MCP integration test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(eng, sess.ID, "claude")
+
+	// 1. memory.block.put
+	putReq := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory.block.put","arguments":{"project_id":"mesh","tier":"core","label":"arch_rule","value":"Inspect internal/mcp/server.go with @codex"}}}`)
+	resp, err := server.HandleMessage(ctx, putReq)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("memory.block.put failed: err=%v resp=%+v", err, resp)
+	}
+	if tr, ok := resp.Result.(ToolCallResult); !ok || tr.IsError {
+		t.Fatalf("unexpected memory.block.put result: %+v", resp.Result)
+	}
+
+	// 2. memory.block.list
+	listReq := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory.block.list","arguments":{"project_id":"mesh","tier":"core"}}}`)
+	resp, err = server.HandleMessage(ctx, listReq)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("memory.block.list failed: err=%v resp=%+v", err, resp)
+	}
+	tr := resp.Result.(ToolCallResult)
+	if tr.IsError || !strings.Contains(tr.Content[0].Text, "arch_rule") {
+		t.Fatalf("unexpected memory.block.list output: %+v", tr)
+	}
+
+	// 3. knowledge.cognify
+	cogReq := []byte(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"knowledge.cognify","arguments":{"project_id":"mesh","focus_id":"file:internal/mcp/server.go","max_hops":1}}}`)
+	resp, err = server.HandleMessage(ctx, cogReq)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("knowledge.cognify failed: err=%v resp=%+v", err, resp)
+	}
+	tr = resp.Result.(ToolCallResult)
+	if tr.IsError || !strings.Contains(tr.Content[0].Text, "AFFECTS_FILE") {
+		t.Fatalf("unexpected knowledge.cognify output: %+v", tr)
+	}
+
+	// 4. browser.authorize
+	brReq := []byte(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"browser.authorize","arguments":{"provider":"stagehand","kind":"extract","url":"https://docs.example.test/api","instruction":"extract endpoints","approved":true}}}`)
+	resp, err = server.HandleMessage(ctx, brReq)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("browser.authorize failed: err=%v resp=%+v", err, resp)
+	}
+	tr = resp.Result.(ToolCallResult)
+	if tr.IsError || !strings.Contains(tr.Content[0].Text, "docs.example.test") || !strings.Contains(tr.Content[0].Text, "action_digest") {
+		t.Fatalf("unexpected browser.authorize output: %+v", tr)
 	}
 }

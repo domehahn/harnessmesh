@@ -94,6 +94,20 @@ func TestNewHarnessCapabilities(t *testing.T) {
 		t.Fatalf("unexpected openhands ID/type: %s/%s", hOpenHands.ID(), hOpenHands.AdapterType())
 	}
 
+	// A2A adapter test
+	a2aCfg := config.AgentConfig{
+		Adapter:  "a2a",
+		Role:     "reviewer",
+		Writable: false,
+	}
+	hA2A, err := NewHarness("a2a-crew", a2aCfg, config.SwitchyardConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error creating a2a harness: %v", err)
+	}
+	if hA2A.ID() != "a2a-crew" || hA2A.AdapterType() != "a2a" {
+		t.Fatalf("unexpected a2a ID/type: %s/%s", hA2A.ID(), hA2A.AdapterType())
+	}
+
 	// Fake adapter test
 	fakeCfg := config.AgentConfig{
 		Adapter: "fake",

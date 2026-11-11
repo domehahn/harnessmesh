@@ -57,6 +57,72 @@ export interface HarnessProbeReport {
   requires_approval: true;
 }
 
+export type OrchestrationFramework = "langgraph" | "crewai" | "autogen" | "agno";
+
+export interface WorkflowCheckpoint {
+  checkpoint_id: string;
+  framework: OrchestrationFramework;
+  session_id: string;
+  step: number;
+  agent: string;
+  state_digest: string;
+  approvals_ok: boolean;
+}
+
+export interface AgentHandoff {
+  from_agent: string;
+  to_agent: string;
+  framework: OrchestrationFramework;
+  reason: string;
+  scope?: string[];
+  state_digest?: string;
+  approved: boolean;
+}
+
+export class OrchestrationBridge {
+  readonly checkpoints: WorkflowCheckpoint[] = [];
+  readonly handoffs: AgentHandoff[] = [];
+
+  constructor(
+    readonly framework: OrchestrationFramework,
+    readonly sessionID: string,
+  ) {}
+
+  recordCheckpoint(step: number, agent: string, stateDigest: string, approvalsOk = true): WorkflowCheckpoint {
+    const cp: WorkflowCheckpoint = {
+      checkpoint_id: `${this.sessionID}-step-${step}`,
+      framework: this.framework,
+      session_id: this.sessionID,
+      step,
+      agent,
+      state_digest: stateDigest,
+      approvals_ok: approvalsOk,
+    };
+    this.checkpoints.push(cp);
+    return cp;
+  }
+
+  authorizeHandoff(fromAgent: string, toAgent: string, reason: string, scope: string[] = [], stateDigest = "", approved = true): AgentHandoff {
+    if (!fromAgent.trim() || !toAgent.trim() || fromAgent.trim() === toAgent.trim()) {
+      throw new Error("fromAgent and toAgent must be non-empty and distinct");
+    }
+    if (!approved) {
+      throw new Error("unapproved multi-agent handoff rejected by policy");
+    }
+    const ho: AgentHandoff = {
+      from_agent: fromAgent,
+      to_agent: toAgent,
+      framework: this.framework,
+      reason,
+      scope,
+      state_digest: stateDigest,
+      approved,
+    };
+    this.handoffs.push(ho);
+    return ho;
+  }
+}
+
 export class HarnessMeshClient {
   constructor(readonly baseURL: string, readonly apiKey: string) {}
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {

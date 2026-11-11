@@ -177,6 +177,13 @@ func (e *Engine) Store() store.Store {
 	return e.store
 }
 
+func (e *Engine) AgentPlatformConfig() config.AgentPlatformConfig {
+	if e.cfg == nil {
+		return config.AgentPlatformConfig{}
+	}
+	return e.cfg.AgentPlatform
+}
+
 func (e *Engine) securityCheck(ctx context.Context, sessionID, source, content string) (string, error) {
 	if !securitygate.CheckEnabled() {
 		return content, nil
