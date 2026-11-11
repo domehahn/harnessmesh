@@ -118,3 +118,64 @@ func TestLettaTieredMemoryBlocksRedactSecretsAndEnforceTenant(t *testing.T) {
 		t.Fatalf("expected secret redaction on retrieved block: %#v", blocks[0])
 	}
 }
+
+func TestBifrostGatewayAuthorizeRouteAndTelemetry(t *testing.T) {
+	gw := GatewayClient{}
+	// Under ZeroAPIBilling, primary metered route falls back to local/self-hosted candidate
+	dec, err := gw.AuthorizeRoute(GatewayRouteRequest{
+		Tenant:           "tenant-a",
+		Agent:            "codex",
+		Model:            "openai-api",
+		Fallbacks:        []string{"ollama/qwen3-coder"},
+		SemanticCache:    true,
+		EstimatedTokens:  1200,
+		EstimatedCostUSD: 0.002,
+		MaxCostUSD:       0.05,
+		ZeroAPIBilling:   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected AuthorizeRoute error: %v", err)
+	}
+	if !dec.Allowed || !dec.FallbackUsed || dec.SelectedModel != "ollama/qwen3-coder" || dec.CachePolicy != "semantic-cache" {
+		t.Fatalf("unexpected route decision: %#v", dec)
+	}
+
+	// Budget ceiling exceeded fails closed
+	_, err = gw.AuthorizeRoute(GatewayRouteRequest{
+		Tenant:           "tenant-a",
+		Agent:            "codex",
+		Model:            "ollama/qwen3-coder",
+		EstimatedCostUSD: 0.50,
+		MaxCostUSD:       0.10,
+	})
+	if err == nil {
+		t.Fatal("expected budget ceiling violation to fail")
+	}
+
+	// Telemetry report sends X-HarnessMesh-Tenant
+	var gotTenant string
+	var gotReport GatewayUsageReport
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTenant = r.Header.Get("X-HarnessMesh-Tenant")
+		_ = json.NewDecoder(r.Body).Decode(&gotReport)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	gw.Endpoint = srv.URL
+	gw.Token = "gw-tok"
+	if err := gw.ReportUsage(context.Background(), GatewayUsageReport{
+		Tenant:        "tenant-a",
+		Agent:         "codex",
+		SelectedModel: "ollama/qwen3-coder",
+		LatencyMS:     18,
+		Tokens:        950,
+		CacheHit:      true,
+		FallbackUsed:  true,
+	}); err != nil {
+		t.Fatalf("ReportUsage failed: %v", err)
+	}
+	if gotTenant != "tenant-a" || !gotReport.CacheHit || gotReport.SelectedModel != "ollama/qwen3-coder" {
+		t.Fatalf("unexpected telemetry report: tenant=%q report=%#v", gotTenant, gotReport)
+	}
+}

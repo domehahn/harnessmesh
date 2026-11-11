@@ -5,14 +5,18 @@
 package a2a
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/domehahn/harnessmesh/internal/contextpack"
 )
 
 const ProtocolVersion = "a2a/v1"
@@ -149,7 +153,9 @@ func (s *Server) taskEndpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/a2a/v1/tasks/")
+	trimmed := strings.TrimPrefix(r.URL.Path, "/a2a/v1/tasks/")
+	stream := strings.HasSuffix(trimmed, "/stream") || strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	id := strings.TrimSuffix(trimmed, "/stream")
 	s.mu.RLock()
 	task, ok := s.tasks[id]
 	s.mu.RUnlock()
@@ -161,7 +167,126 @@ func (s *Server) taskEndpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tenant mismatch", http.StatusForbidden)
 		return
 	}
+	if stream {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		raw, _ := json.Marshal(task)
+		_, _ = fmt.Fprintf(w, "event: task.status\ndata: %s\n\n", string(raw))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return
+	}
 	writeJSON(w, http.StatusOK, task)
+}
+
+// Client is the outbound A2A federation client used by HarnessMesh to discover
+// and delegate tasks to remote A2A-compliant agent clusters (e.g. CrewAI,
+// LangGraph or Agno services) while preserving tenant isolation and redacting
+// secrets before network egress.
+type Client struct {
+	Endpoint   string
+	Token      string
+	HTTPClient *http.Client
+}
+
+func (c Client) Discover(ctx context.Context) (AgentCard, error) {
+	if strings.TrimSpace(c.Endpoint) == "" {
+		return AgentCard{}, errors.New("a2a endpoint is required")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.Endpoint, "/")+"/.well-known/agent-card.json", nil)
+	if err != nil {
+		return AgentCard{}, err
+	}
+	c.headers(req, "")
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return AgentCard{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return AgentCard{}, fmt.Errorf("a2a discovery returned %s", resp.Status)
+	}
+	var card AgentCard
+	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {
+		return AgentCard{}, err
+	}
+	return card, nil
+}
+
+func (c Client) SubmitTask(ctx context.Context, req TaskRequest) (Task, error) {
+	if strings.TrimSpace(c.Endpoint) == "" {
+		return Task{}, errors.New("a2a endpoint is required")
+	}
+	if strings.TrimSpace(req.Tenant) == "" || strings.TrimSpace(req.Input) == "" {
+		return Task{}, errors.New("a2a tenant and input are required")
+	}
+	req.Input = contextpack.RedactSecrets(req.Input)
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return Task{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.Endpoint, "/")+"/a2a/v1/tasks", bytes.NewReader(raw))
+	if err != nil {
+		return Task{}, err
+	}
+	c.headers(httpReq, req.Tenant)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.client().Do(httpReq)
+	if err != nil {
+		return Task{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return Task{}, fmt.Errorf("a2a task submission returned %s", resp.Status)
+	}
+	var task Task
+	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
+		return Task{}, err
+	}
+	task.Output = contextpack.RedactSecrets(task.Output)
+	return task, nil
+}
+
+func (c Client) GetTask(ctx context.Context, tenant, taskID string) (Task, error) {
+	if strings.TrimSpace(c.Endpoint) == "" || strings.TrimSpace(tenant) == "" || strings.TrimSpace(taskID) == "" {
+		return Task{}, errors.New("a2a endpoint, tenant and taskID are required")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.Endpoint, "/")+"/a2a/v1/tasks/"+strings.TrimSpace(taskID), nil)
+	if err != nil {
+		return Task{}, err
+	}
+	c.headers(httpReq, tenant)
+	resp, err := c.client().Do(httpReq)
+	if err != nil {
+		return Task{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return Task{}, fmt.Errorf("a2a task lookup returned %s", resp.Status)
+	}
+	var task Task
+	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
+		return Task{}, err
+	}
+	task.Output = contextpack.RedactSecrets(task.Output)
+	return task, nil
+}
+
+func (c Client) headers(req *http.Request, tenant string) {
+	if tenant != "" {
+		req.Header.Set("X-HarnessMesh-Tenant", tenant)
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+}
+
+func (c Client) client() *http.Client {
+	if c.HTTPClient != nil {
+		return c.HTTPClient
+	}
+	return &http.Client{Timeout: 20 * time.Second}
 }
 
 func (s *Server) security(next http.Handler) http.Handler {

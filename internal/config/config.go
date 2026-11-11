@@ -785,7 +785,7 @@ func Parse(raw []byte) (*Config, error) {
 		}
 
 		switch a.Kind {
-		case "claude", "claude-code", "codex", "openai", "openai-api", "antigravity", "agy", "copilot", "copilot-cli", "github-copilot", "openhands", "openhands-cli", "all-hands", "fake", "mock", "external", "mcp-remote", "chatgpt", "browser":
+		case "claude", "claude-code", "codex", "openai", "openai-api", "antigravity", "agy", "copilot", "copilot-cli", "github-copilot", "openhands", "openhands-cli", "all-hands", "a2a", "a2a-remote", "fake", "mock", "external", "mcp-remote", "chatgpt", "browser":
 		default:
 			if !a.IsExternal() && !a.Plugin {
 				return nil, fmt.Errorf("agent %q: unsupported kind/adapter %q", name, a.Kind)

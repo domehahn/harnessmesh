@@ -16,6 +16,7 @@ import (
 
 	"github.com/domehahn/harnessmesh/internal/assurance"
 	"github.com/domehahn/harnessmesh/internal/contextpack"
+	"github.com/domehahn/harnessmesh/internal/creditguard"
 )
 
 const (
@@ -226,6 +227,148 @@ func (c GatewayClient) client() *http.Client {
 		return c.HTTPClient
 	}
 	return &http.Client{Timeout: 10 * time.Second}
+}
+
+// GatewayRouteRequest describes a routing, fallback, semantic-cache and budget
+// check for an external LLM gateway such as Bifrost.
+type GatewayRouteRequest struct {
+	Tenant           string   `json:"tenant"`
+	Agent            string   `json:"agent"`
+	Model            string   `json:"model"`
+	Fallbacks        []string `json:"fallbacks,omitempty"`
+	SemanticCache    bool     `json:"semantic_cache"`
+	EstimatedTokens  int64    `json:"estimated_tokens"`
+	EstimatedCostUSD float64  `json:"estimated_cost_usd"`
+	MaxCostUSD       float64  `json:"max_cost_usd"`
+	ZeroAPIBilling   bool     `json:"zero_api_billing"`
+}
+
+// GatewayRouteDecision captures the deterministic policy decision and telemetry
+// metadata before dispatching through a gateway.
+type GatewayRouteDecision struct {
+	Allowed       bool           `json:"allowed"`
+	SelectedModel string         `json:"selected_model"`
+	FallbackUsed  bool           `json:"fallback_used"`
+	FallbackChain []string       `json:"fallback_chain,omitempty"`
+	CachePolicy   string         `json:"cache_policy"` // semantic-cache, bypass
+	Reason        string         `json:"reason"`
+	Telemetry     map[string]any `json:"telemetry"`
+}
+
+// GatewayUsageReport records post-call latency, token, cost and cache-hit
+// telemetry for a gateway invocation.
+type GatewayUsageReport struct {
+	Tenant        string  `json:"tenant"`
+	Agent         string  `json:"agent"`
+	SelectedModel string  `json:"selected_model"`
+	LatencyMS     int64   `json:"latency_ms"`
+	Tokens        int64   `json:"tokens"`
+	CostUSD       float64 `json:"cost_usd"`
+	CacheHit      bool    `json:"cache_hit"`
+	FallbackUsed  bool    `json:"fallback_used"`
+}
+
+func isMeteredRoute(candidate string) bool {
+	norm := strings.ToLower(strings.TrimSpace(candidate))
+	if creditguard.NormalizeBackend(norm) != "" {
+		return true
+	}
+	return strings.HasPrefix(norm, "openai/") || strings.HasPrefix(norm, "openai-api:") || strings.HasPrefix(norm, "codex:")
+}
+
+// AuthorizeRoute enforces zero-API-billing isolation, fallback promotion,
+// budget ceilings and semantic-cache policy for Bifrost-like LLM gateways.
+func (c GatewayClient) AuthorizeRoute(req GatewayRouteRequest) (GatewayRouteDecision, error) {
+	if strings.TrimSpace(req.Tenant) == "" || strings.TrimSpace(req.Model) == "" {
+		return GatewayRouteDecision{}, errors.New("gateway tenant and model are required")
+	}
+	cachePolicy := "bypass"
+	if req.SemanticCache {
+		cachePolicy = "semantic-cache"
+	}
+	candidates := append([]string{strings.TrimSpace(req.Model)}, req.Fallbacks...)
+	selected := ""
+	fallbackUsed := false
+	for idx, cand := range candidates {
+		cand = strings.TrimSpace(cand)
+		if cand == "" {
+			continue
+		}
+		if req.ZeroAPIBilling && isMeteredRoute(cand) {
+			continue
+		}
+		selected = cand
+		fallbackUsed = idx > 0
+		break
+	}
+	if selected == "" {
+		return GatewayRouteDecision{
+			Allowed:       false,
+			FallbackChain: candidates,
+			CachePolicy:   cachePolicy,
+			Reason:        "all candidate gateway routes blocked by zero-api-billing policy",
+		}, errors.New("gateway route blocked by zero-api-billing policy")
+	}
+	if req.MaxCostUSD > 0 && req.EstimatedCostUSD > req.MaxCostUSD {
+		return GatewayRouteDecision{
+			Allowed:       false,
+			SelectedModel: selected,
+			FallbackUsed:  fallbackUsed,
+			FallbackChain: candidates,
+			CachePolicy:   cachePolicy,
+			Reason:        fmt.Sprintf("estimated cost %.4f USD exceeds ceiling %.4f USD", req.EstimatedCostUSD, req.MaxCostUSD),
+		}, errors.New("gateway route exceeds max_cost_usd ceiling")
+	}
+	return GatewayRouteDecision{
+		Allowed:       true,
+		SelectedModel: selected,
+		FallbackUsed:  fallbackUsed,
+		FallbackChain: candidates,
+		CachePolicy:   cachePolicy,
+		Reason:        "authorized",
+		Telemetry: map[string]any{
+			"tenant":             req.Tenant,
+			"agent":              req.Agent,
+			"selected_model":     selected,
+			"fallback_used":      fallbackUsed,
+			"cache_policy":       cachePolicy,
+			"estimated_tokens":   req.EstimatedTokens,
+			"estimated_cost_usd": req.EstimatedCostUSD,
+		},
+	}, nil
+}
+
+// ReportUsage posts tenant-scoped latency, cache-hit and cost telemetry to the
+// configured gateway endpoint.
+func (c GatewayClient) ReportUsage(ctx context.Context, report GatewayUsageReport) error {
+	if strings.TrimSpace(report.Tenant) == "" || strings.TrimSpace(report.SelectedModel) == "" {
+		return errors.New("tenant and selected_model are required")
+	}
+	if strings.TrimSpace(c.Endpoint) == "" {
+		return errors.New("gateway endpoint is required")
+	}
+	body, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.Endpoint, "/")+"/v1/telemetry", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-HarnessMesh-Tenant", report.Tenant)
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("gateway telemetry returned %s", resp.Status)
+	}
+	return nil
 }
 
 type BrowserPolicy struct {
