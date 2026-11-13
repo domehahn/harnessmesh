@@ -6,7 +6,7 @@ require github.com/mattn/go-sqlite3 v1.14.52
 
 require github.com/lib/pq v1.12.3
 
-require github.com/klauspost/compress v1.20.3
+require github.com/klauspost/compress v1.20.4
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.4
