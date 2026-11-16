@@ -3,6 +3,8 @@ package executil
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +18,42 @@ type Result struct {
 	Stderr     string
 	ExitCode   int
 	DurationMS int64
+}
+
+// ExecutionReceipt is a tamper-evident cryptographic receipt of a sandboxed
+// command execution (compatible with local OS sandboxes and remote MicroVM
+// sandboxes such as E2B/Modal) suitable for change.evidence submission.
+type ExecutionReceipt struct {
+	ReceiptDigest   string `json:"receipt_digest"`
+	CommandDigest   string `json:"command_digest"`
+	OutputDigest    string `json:"output_digest"`
+	ExitCode        int    `json:"exit_code"`
+	DurationMS      int64  `json:"duration_ms"`
+	NetworkIsolated bool   `json:"network_isolated"`
+	SandboxDriver   string `json:"sandbox_driver"`
+}
+
+func BuildReceipt(res Result, policy SandboxPolicy, name string, args ...string) ExecutionReceipt {
+	cmdCanonical := strings.TrimSpace(name) + "\x00" + strings.Join(args, "\x00")
+	cmdSum := sha256.Sum256([]byte(cmdCanonical))
+	outSum := sha256.Sum256([]byte(res.Stdout + "\n---\n" + res.Stderr))
+	netIso := strings.EqualFold(strings.TrimSpace(policy.NetworkMode), "none")
+	driver := "host-policy"
+	if netIso {
+		driver = "os-isolated"
+	}
+	cmdHex := hex.EncodeToString(cmdSum[:])
+	outHex := hex.EncodeToString(outSum[:])
+	envSum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d|%t|%s", cmdHex, outHex, res.ExitCode, netIso, driver)))
+	return ExecutionReceipt{
+		ReceiptDigest:   hex.EncodeToString(envSum[:]),
+		CommandDigest:   cmdHex,
+		OutputDigest:    outHex,
+		ExitCode:        res.ExitCode,
+		DurationMS:      res.DurationMS,
+		NetworkIsolated: netIso,
+		SandboxDriver:   driver,
+	}
 }
 
 type SandboxPolicy struct {

@@ -38,9 +38,48 @@ type Graph struct {
 }
 
 var (
-	mentionPattern  = regexp.MustCompile(`(?:^|[\s(])@([a-zA-Z0-9_-]{2,64})`)
-	filePathPattern = regexp.MustCompile(`(?i)\b((?:[a-z0-9_.-]+/)+[a-z0-9_.-]+\.(?:go|py|ts|tsx|js|jsx|md|json|yaml|yml|toml|sql|sh)|[a-z0-9_.-]+\.(?:go|py|ts|tsx|md|json|yaml|yml|sql))\b`)
+	mentionPattern       = regexp.MustCompile(`(?:^|[\s(])@([a-zA-Z0-9_-]{2,64})`)
+	filePathPattern      = regexp.MustCompile(`(?i)\b((?:[a-z0-9_.-]+/)+[a-z0-9_.-]+\.(?:go|py|ts|tsx|js|jsx|md|json|yaml|yml|toml|sql|sh)|[a-z0-9_.-]+\.(?:go|py|ts|tsx|md|json|yaml|yml|sql))\b`)
+	ragInjectionPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)ignore\s+(all\s+)?previous\s+instructions`),
+		regexp.MustCompile(`(?i)(reveal|print|dump|show|read|exfiltrat).{0,80}(secret|password|api[_ -]?key|token|credential|\.env)`),
+		regexp.MustCompile(`(?i)(upload|send|post|transmit|forward).{0,80}(secret|password|api[_ -]?key|token|credential|\.env)`),
+		regexp.MustCompile(`(?i)(disable|bypass|turn\s+off).{0,40}(security|sandbox|approval|policy|guard)`),
+	}
 )
+
+// SanitizeRetrievedRecords enforces pre-retrieval tenant/project boundaries and
+// filters out retrieved records containing indirect prompt-injection payloads
+// before they enter an agent's RAG context window.
+func SanitizeRetrievedRecords(records []Record, allowedTenant, allowedProject string) (safe []Record, quarantinedIDs []string) {
+	wantTenant := strings.TrimSpace(allowedTenant)
+	wantProject := strings.TrimSpace(allowedProject)
+	for _, r := range records {
+		if wantTenant != "" && r.TenantID != "" && r.TenantID != wantTenant {
+			quarantinedIDs = append(quarantinedIDs, r.ID)
+			continue
+		}
+		if wantProject != "" && r.ProjectID != "" && r.ProjectID != wantProject {
+			quarantinedIDs = append(quarantinedIDs, r.ID)
+			continue
+		}
+		redacted := contextpack.RedactSecrets(r.Text)
+		poisoned := false
+		for _, pat := range ragInjectionPatterns {
+			if pat.MatchString(redacted) {
+				poisoned = true
+				break
+			}
+		}
+		if poisoned {
+			quarantinedIDs = append(quarantinedIDs, r.ID)
+			continue
+		}
+		r.Text = redacted
+		safe = append(safe, r)
+	}
+	return safe, quarantinedIDs
+}
 
 // Cognify runs the deterministic ECL (Extract, Cognify, Load) pipeline over
 // archive records, extracting agents, file scopes, tags, decisions and
