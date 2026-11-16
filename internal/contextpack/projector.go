@@ -2,11 +2,14 @@ package contextpack
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -655,4 +658,155 @@ func filterDiffContent(diff string, allowed, denied []string) string {
 		}
 	}
 	return strings.Join(kept, "")
+}
+
+// DisclosureLevel controls OKF-style progressive context disclosure.
+type DisclosureLevel string
+
+const (
+	// DisclosureL0 emits only file manifests (hashes, line counts and symbol headers).
+	DisclosureL0 DisclosureLevel = "L0"
+	// DisclosureL1 emits L0 manifests plus DiffStat, Findings and Evidence summaries.
+	DisclosureL1 DisclosureLevel = "L1"
+	// DisclosureL2 emits full file slices for focused files (or all files when focus is empty).
+	DisclosureL2 DisclosureLevel = "L2"
+)
+
+type ProgressiveFileEntry struct {
+	Path      string   `json:"path"`
+	SHA256    string   `json:"sha256"`
+	Lines     int      `json:"lines"`
+	Chars     int      `json:"chars"`
+	Symbols   []string `json:"symbols,omitempty"`
+	Content   string   `json:"content,omitempty"`
+	Disclosed string   `json:"disclosed"` // L0 or L2
+}
+
+type ProgressiveBundle struct {
+	Level                DisclosureLevel            `json:"level"`
+	Task                 string                     `json:"task,omitempty"`
+	Head                 string                     `json:"head,omitempty"`
+	Branch               string                     `json:"branch,omitempty"`
+	ChangedFiles         []string                   `json:"changed_files,omitempty"`
+	DiffStat             string                     `json:"diff_stat,omitempty"`
+	Diff                 string                     `json:"diff,omitempty"`
+	Files                []ProgressiveFileEntry     `json:"files,omitempty"`
+	Findings             []protocol.FindingPayload  `json:"findings,omitempty"`
+	Evidence             []protocol.EvidencePayload `json:"evidence,omitempty"`
+	FullTokensEstimate   int                        `json:"full_tokens_estimate"`
+	BundleTokensEstimate int                        `json:"bundle_tokens_estimate"`
+	TokenSavingsRatio    float64                    `json:"token_savings_ratio"`
+}
+
+var symbolLineRegex = regexp.MustCompile(`^(?:func\s+[^\n{]+|type\s+[A-Za-z0-9_]+\s+\w+|class\s+[A-Za-z0-9_]+|def\s+[A-Za-z0-9_]+\([^)]*\)|export\s+(?:interface|type|class|function|const)\s+[A-Za-z0-9_]+)`)
+
+// BuildProgressiveBundle transforms a ProjectedContext into an OKF-inspired
+// progressive-disclosure bundle (L0 manifest, L1 summary/diffstat, L2 full
+// slice) to prevent context window bloat.
+func BuildProgressiveBundle(proj ProjectedContext, level DisclosureLevel, focusFiles []string) ProgressiveBundle {
+	normLevel := DisclosureLevel(strings.ToUpper(strings.TrimSpace(string(level))))
+	switch normLevel {
+	case DisclosureL0, DisclosureL1, DisclosureL2:
+	default:
+		normLevel = DisclosureL1
+	}
+
+	focusSet := make(map[string]bool, len(focusFiles))
+	for _, f := range focusFiles {
+		clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(f)))
+		if clean != "" && clean != "." {
+			focusSet[clean] = true
+		}
+	}
+
+	paths := make([]string, 0, len(proj.Files))
+	for p := range proj.Files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	fullChars := len(proj.Task) + len(proj.DiffStat) + len(proj.Diff)
+	bundleChars := len(proj.Task)
+
+	entries := make([]ProgressiveFileEntry, 0, len(paths))
+	for _, p := range paths {
+		raw := RedactSecrets(proj.Files[p])
+		fullChars += len(raw)
+		sum := sha256.Sum256([]byte(raw))
+		lines := 0
+		if raw != "" {
+			lines = strings.Count(raw, "\n") + 1
+		}
+		symbols := extractSymbols(raw, 16)
+		discloseFull := normLevel == DisclosureL2 && (len(focusSet) == 0 || focusSet[filepath.ToSlash(filepath.Clean(p))])
+		entry := ProgressiveFileEntry{
+			Path:      p,
+			SHA256:    hex.EncodeToString(sum[:8]),
+			Lines:     lines,
+			Chars:     len(raw),
+			Symbols:   symbols,
+			Disclosed: string(DisclosureL0),
+		}
+		if discloseFull {
+			entry.Content = raw
+			entry.Disclosed = string(DisclosureL2)
+			bundleChars += len(raw)
+		} else {
+			bundleChars += len(p) + 24 + len(strings.Join(symbols, ";"))
+		}
+		entries = append(entries, entry)
+	}
+
+	bundle := ProgressiveBundle{
+		Level:        normLevel,
+		Task:         RedactSecrets(proj.Task),
+		Head:         proj.Head,
+		Branch:       proj.Branch,
+		ChangedFiles: proj.ChangedFiles,
+		Files:        entries,
+	}
+	if normLevel == DisclosureL1 || normLevel == DisclosureL2 {
+		bundle.DiffStat = RedactSecrets(proj.DiffStat)
+		bundle.Findings = proj.Findings
+		bundle.Evidence = proj.Evidence
+		bundleChars += len(bundle.DiffStat)
+	}
+	if normLevel == DisclosureL2 {
+		bundle.Diff = RedactSecrets(proj.Diff)
+		bundleChars += len(bundle.Diff)
+	}
+
+	fullTokens := (fullChars + 3) / 4
+	if fullTokens <= 0 {
+		fullTokens = 1
+	}
+	bundleTokens := (bundleChars + 3) / 4
+	if bundleTokens > fullTokens {
+		bundleTokens = fullTokens
+	}
+	savings := float64(fullTokens-bundleTokens) / float64(fullTokens)
+	if savings < 0 {
+		savings = 0
+	}
+	bundle.FullTokensEstimate = fullTokens
+	bundle.BundleTokensEstimate = bundleTokens
+	bundle.TokenSavingsRatio = savings
+	return bundle
+}
+
+func extractSymbols(content string, limit int) []string {
+	var out []string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if symbolLineRegex.MatchString(trimmed) {
+			if len(trimmed) > 100 {
+				trimmed = trimmed[:100]
+			}
+			out = append(out, trimmed)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out
 }

@@ -86,3 +86,39 @@ func TestRunScrubsControlPlaneSecrets(t *testing.T) {
 		t.Errorf("expected EXPLICIT to be present")
 	}
 }
+
+func TestBuildReceiptProducesDeterministicDigest(t *testing.T) {
+	policy := SandboxPolicy{AllowedCommands: []string{"go"}, NetworkMode: "none"}
+	res := Result{Stdout: "ok  \tpkg\t0.01s\n", ExitCode: 0, DurationMS: 12}
+	r1 := BuildReceipt(res, policy, "go", "test", "./...")
+	r2 := BuildReceipt(res, policy, "go", "test", "./...")
+	if r1.ReceiptDigest == "" || r1.ReceiptDigest != r2.ReceiptDigest {
+		t.Fatalf("expected deterministic receipt digest, got %+v vs %+v", r1, r2)
+	}
+	if !r1.NetworkIsolated || r1.SandboxDriver != "os-isolated" {
+		t.Fatalf("expected os-isolated receipt metadata, got %+v", r1)
+	}
+}
+
+func TestEgressProxyAndReadOnlyCredentialScoping(t *testing.T) {
+	policy := SandboxPolicy{
+		AllowedCommands: []string{"sh"},
+		EgressProxy:     "http://127.0.0.1:8888",
+		CredentialScope: "read-only",
+	}
+	env := map[string]string{
+		"GITHUB_TOKEN":          "ghp_write_token",
+		"AWS_SECRET_ACCESS_KEY": "aws_secret",
+		"SAFE_READ_VAR":         "allowed",
+	}
+	res, err := RunWithPolicy(context.Background(), ".", env, "", policy, "sh", "-c", "env")
+	if err != nil {
+		t.Fatalf("RunWithPolicy failed: %v", err)
+	}
+	if strings.Contains(res.Stdout, "GITHUB_TOKEN=") || strings.Contains(res.Stdout, "AWS_SECRET_ACCESS_KEY=") {
+		t.Fatalf("expected mutating credentials to be stripped in read-only scope: %s", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "HTTPS_PROXY=http://127.0.0.1:8888") || !strings.Contains(res.Stdout, "SAFE_READ_VAR=allowed") {
+		t.Fatalf("expected egress proxy and safe variable in env: %s", res.Stdout)
+	}
+}

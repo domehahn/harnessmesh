@@ -346,10 +346,82 @@ type ContextConfig struct {
 }
 
 type ChangeControlConfig struct {
-	Enabled       bool                `json:"enabled"`
-	DefaultProofs []string            `json:"default_proofs,omitempty"`
-	Rules         []ChangeControlRule `json:"rules,omitempty"`
-	AutoCommit    bool                `json:"auto_commit,omitempty"`
+	Enabled         bool                `json:"enabled"`
+	DefaultProofs   []string            `json:"default_proofs,omitempty"`
+	Rules           []ChangeControlRule `json:"rules,omitempty"`
+	AutoCommit      bool                `json:"auto_commit,omitempty"`
+	MaxChangedFiles int                 `json:"max_changed_files,omitempty"`
+	MaxChangedLines int                 `json:"max_changed_lines,omitempty"`
+	NeverTouchPaths []string            `json:"never_touch_paths,omitempty"`
+	CodeownersFile  string              `json:"codeowners_file,omitempty"`
+}
+
+// CodeownersEntry represents a single pattern->owners rule from a CODEOWNERS file.
+type CodeownersEntry struct {
+	Pattern string   `json:"pattern"`
+	Owners  []string `json:"owners"`
+}
+
+// ParseCodeowners parses a standard GitHub/GitLab CODEOWNERS file into ordered rules.
+func ParseCodeowners(raw string) []CodeownersEntry {
+	var entries []CodeownersEntry
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) < 2 {
+			continue
+		}
+		pattern := strings.TrimPrefix(fields[0], "/")
+		var owners []string
+		for _, o := range fields[1:] {
+			if strings.HasPrefix(o, "#") {
+				break
+			}
+			owners = append(owners, o)
+		}
+		if len(owners) > 0 {
+			entries = append(entries, CodeownersEntry{Pattern: pattern, Owners: owners})
+		}
+	}
+	return entries
+}
+
+// ResolveCodeowners maps each affected path to its last-matching CODEOWNERS rule.
+func ResolveCodeowners(entries []CodeownersEntry, affectedPaths []string) map[string][]string {
+	out := make(map[string][]string)
+	for _, p := range affectedPaths {
+		clean := filepath.ToSlash(filepath.Clean(p))
+		for _, entry := range entries {
+			if MatchPathPattern(entry.Pattern, clean) || strings.HasPrefix(clean, strings.TrimSuffix(entry.Pattern, "/")+"/") {
+				out[clean] = entry.Owners
+			}
+		}
+	}
+	return out
+}
+
+// CheckDiffBudgetAndNeverCut enforces SDD diff-budget ceilings and Never-Cut
+// zero-tolerance path rules before a change transaction can be committed.
+func (cc ChangeControlConfig) CheckDiffBudgetAndNeverCut(affectedPaths []string, changedLines int) []string {
+	var violations []string
+	if cc.MaxChangedFiles > 0 && len(affectedPaths) > cc.MaxChangedFiles {
+		violations = append(violations, fmt.Sprintf("diff budget exceeded: %d changed files exceeds max_changed_files=%d", len(affectedPaths), cc.MaxChangedFiles))
+	}
+	if cc.MaxChangedLines > 0 && changedLines > cc.MaxChangedLines {
+		violations = append(violations, fmt.Sprintf("diff budget exceeded: %d changed lines exceeds max_changed_lines=%d", changedLines, cc.MaxChangedLines))
+	}
+	for _, p := range affectedPaths {
+		clean := filepath.ToSlash(filepath.Clean(p))
+		for _, forbidden := range cc.NeverTouchPaths {
+			if MatchPathPattern(forbidden, clean) {
+				violations = append(violations, fmt.Sprintf("never-cut violation: path %q matches protected pattern %q", clean, forbidden))
+			}
+		}
+	}
+	return violations
 }
 
 type ChangeControlRule struct {

@@ -1165,8 +1165,9 @@ func (a *Archive) ImportText(ctx context.Context, text, kind, source, projectID 
 }
 
 func BuildContext(records []Record, maxChars int) string {
+	safe, _ := SanitizeRetrievedRecords(records, "", "")
 	var b strings.Builder
-	for _, r := range records {
+	for _, r := range safe {
 		line := fmt.Sprintf("[%s] %s (%s -> %s): %s\n", r.Timestamp.UTC().Format(time.RFC3339), r.Kind, r.From, r.To, r.Text)
 		if maxChars > 0 && b.Len()+len(line) > maxChars {
 			break

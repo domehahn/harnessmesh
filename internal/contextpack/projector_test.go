@@ -269,3 +269,31 @@ func TestProjector_StrictTaskTruncation(t *testing.T) {
 		t.Fatalf("expected includedChars <= 100, got %d", proj.IncludedChars)
 	}
 }
+
+func TestBuildProgressiveBundleLevels(t *testing.T) {
+	proj := ProjectedContext{
+		Task:     "Refactor authentication boundary",
+		DiffStat: " internal/auth/auth.go | 24 ++++++++++++++++--------",
+		Diff:     strings.Repeat("+ line added\n", 100),
+		Files: map[string]string{
+			"internal/auth/auth.go":  "package auth\n\nfunc VerifyToken(token string) bool {\n\treturn len(token) > 10\n}\n" + strings.Repeat("// comment\n", 80),
+			"internal/mcp/server.go": "package mcp\n\ntype Server struct{}\n" + strings.Repeat("// body\n", 80),
+		},
+	}
+
+	b0 := BuildProgressiveBundle(proj, DisclosureL0, nil)
+	if b0.Level != DisclosureL0 || b0.DiffStat != "" || b0.Diff != "" {
+		t.Fatalf("expected L0 bundle without diff/diffstat, got %+v", b0)
+	}
+	if len(b0.Files) != 2 || b0.Files[0].Content != "" || len(b0.Files[0].Symbols) == 0 {
+		t.Fatalf("expected L0 manifest with symbols and empty content, got %+v", b0.Files)
+	}
+	if b0.TokenSavingsRatio <= 0.5 {
+		t.Fatalf("expected significant token savings in L0, got %f", b0.TokenSavingsRatio)
+	}
+
+	b2 := BuildProgressiveBundle(proj, DisclosureL2, []string{"internal/auth/auth.go"})
+	if b2.Files[0].Content == "" || b2.Files[1].Content != "" {
+		t.Fatalf("expected selective L2 disclosure only for internal/auth/auth.go, got %+v", b2.Files)
+	}
+}
