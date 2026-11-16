@@ -86,3 +86,16 @@ func TestRunScrubsControlPlaneSecrets(t *testing.T) {
 		t.Errorf("expected EXPLICIT to be present")
 	}
 }
+
+func TestBuildReceiptProducesDeterministicDigest(t *testing.T) {
+	policy := SandboxPolicy{AllowedCommands: []string{"go"}, NetworkMode: "none"}
+	res := Result{Stdout: "ok  \tpkg\t0.01s\n", ExitCode: 0, DurationMS: 12}
+	r1 := BuildReceipt(res, policy, "go", "test", "./...")
+	r2 := BuildReceipt(res, policy, "go", "test", "./...")
+	if r1.ReceiptDigest == "" || r1.ReceiptDigest != r2.ReceiptDigest {
+		t.Fatalf("expected deterministic receipt digest, got %+v vs %+v", r1, r2)
+	}
+	if !r1.NetworkIsolated || r1.SandboxDriver != "os-isolated" {
+		t.Fatalf("expected os-isolated receipt metadata, got %+v", r1)
+	}
+}
