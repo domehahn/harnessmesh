@@ -1441,6 +1441,20 @@ func (s *Server) ListTools() []ToolDefinition {
 				"allowed_domains": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Allowed HTTPS domains when not preconfigured"},
 			}, "required": []string{"url"}},
 		},
+		ToolDefinition{
+			Name: "change.validate_spec", Description: "Validate an SDD specification against the 7 Spec Rules (intent, non-goals, bounded scope, diff budget, never-cut list, verification commands, zero open ambiguities) and return Grill-Me questions.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"title":                 map[string]any{"type": "string", "description": "Specification title"},
+				"intent":                map[string]any{"type": "string", "description": "Unambiguous goal statement"},
+				"non_goals":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Explicit non-goals to prevent over-engineering"},
+				"scope":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Bounded repository file paths in scope"},
+				"max_changed_files":     map[string]any{"type": "integer", "description": "Diff budget for maximum changed files"},
+				"max_changed_lines":     map[string]any{"type": "integer", "description": "Diff budget for maximum changed lines"},
+				"never_cut":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Protected paths or invariants that must never be cut"},
+				"verification_commands": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Deterministic test/build verification commands"},
+				"open_questions":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Unresolved design questions"},
+			}, "required": []string{"title", "intent"}},
+		},
 	)
 	if s.gateway != nil {
 		// Remote discovery is intentionally not performed during tools/list:
@@ -2490,16 +2504,27 @@ func (s *Server) executeToolUnsafe(ctx context.Context, toolName string, argsJSO
 			chgStatus = chg.Status
 		}
 		return map[string]any{
-			"change_id":     req.ChangeID,
-			"committable":   gate.Status == protocol.GateStatusCommittable,
-			"gate_status":   gate.Status,
-			"change_status": chgStatus,
-			"passed":        gate.PassedObligations,
-			"pending":       gate.PendingObligations,
-			"failed":        gate.FailedObligations,
-			"stale":         gate.StaleObligations,
-			"reasons":       gate.Reasons,
+			"change_id":         req.ChangeID,
+			"committable":       gate.Status == protocol.GateStatusCommittable,
+			"gate_status":       gate.Status,
+			"change_status":     chgStatus,
+			"trust_score":       gate.TrustScore,
+			"review_tier":       gate.ReviewTier,
+			"policy_violations": gate.PolicyViolations,
+			"codeowners":        gate.Codeowners,
+			"passed":            gate.PassedObligations,
+			"pending":           gate.PendingObligations,
+			"failed":            gate.FailedObligations,
+			"stale":             gate.StaleObligations,
+			"reasons":           gate.Reasons,
 		}, nil
+
+	case "change.validate_spec":
+		var spec collaboration.SpecContract
+		if err := json.Unmarshal(argsJSON, &spec); err != nil {
+			return nil, fmt.Errorf("parse change.validate_spec args: %w", err)
+		}
+		return collaboration.ValidateSpec(spec), nil
 
 	case "knowledge.cognify":
 		var req struct {

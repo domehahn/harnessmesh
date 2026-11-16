@@ -500,3 +500,72 @@ func verifyContent(e Entry, required, requireSignature bool, trusted []ed25519.P
 	}
 	return verified, ed25519.Verify(ed25519.PublicKey(pub), []byte(digest), sig)
 }
+
+// SkillRuleReport summarizes compliance with the 3 modular skill design rules:
+// 1. Progressive Disclosure & Size Budget (<= 500 lines and <= 5000 estimated tokens)
+// 2. Precise Triggers & Description (non-empty description and non-wildcard triggers)
+// 3. Single-Task Modular Isolation (1..12 tools, no wildcard "*" tool access)
+type SkillRuleReport struct {
+	Skill           string   `json:"skill"`
+	Compliant       bool     `json:"compliant"`
+	LineCount       int      `json:"line_count"`
+	EstimatedTokens int      `json:"estimated_tokens"`
+	PassedRules     []string `json:"passed_rules"`
+	Violations      []string `json:"violations,omitempty"`
+}
+
+func ValidateSkillRules(e Entry) SkillRuleReport {
+	var passed []string
+	var violations []string
+
+	lines := 0
+	if e.Content != "" {
+		lines = strings.Count(e.Content, "\n") + 1
+	}
+	contentTokens := (len(e.Content) + 3) / 4
+	totalTokens := contentTokens + e.SchemaTokenEstimate()
+	if lines <= 500 && totalTokens <= 5000 {
+		passed = append(passed, "rule_1_progressive_disclosure_budget")
+	} else {
+		violations = append(violations, fmt.Sprintf("skill exceeds size budget (lines=%d/500, tokens=%d/5000); move deep references into sub-files", lines, totalTokens))
+	}
+
+	desc := strings.TrimSpace(e.Manifest.Description)
+	hasWildcardTrigger := false
+	validTriggers := 0
+	for _, tr := range e.Manifest.Triggers {
+		norm := strings.ToLower(strings.TrimSpace(tr))
+		if norm == "*" || norm == "**" || norm == "all" || norm == "any" {
+			hasWildcardTrigger = true
+		} else if norm != "" {
+			validTriggers++
+		}
+	}
+	if len(desc) >= 15 && validTriggers > 0 && !hasWildcardTrigger {
+		passed = append(passed, "rule_2_precise_triggers_and_description")
+	} else {
+		violations = append(violations, "skill must declare a descriptive summary (>=15 chars) and specific non-wildcard triggers")
+	}
+
+	hasWildcardTool := false
+	for _, tl := range e.Manifest.Tools {
+		if strings.TrimSpace(tl) == "*" {
+			hasWildcardTool = true
+			break
+		}
+	}
+	if len(e.Manifest.Tools) >= 1 && len(e.Manifest.Tools) <= 12 && !hasWildcardTool {
+		passed = append(passed, "rule_3_single_task_modular_isolation")
+	} else {
+		violations = append(violations, fmt.Sprintf("skill must scope 1..12 explicit tools without '*' wildcard (got %d tools)", len(e.Manifest.Tools)))
+	}
+
+	return SkillRuleReport{
+		Skill:           e.Manifest.Name,
+		Compliant:       len(violations) == 0,
+		LineCount:       lines,
+		EstimatedTokens: totalTokens,
+		PassedRules:     passed,
+		Violations:      violations,
+	}
+}

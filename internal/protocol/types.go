@@ -1408,18 +1408,22 @@ const (
 )
 
 type GateResult struct {
-	ID                 string     `json:"id"`
-	ChangeID           string     `json:"change_id"`
-	Status             GateStatus `json:"status"`
-	CurrentTreeHash    string     `json:"current_tree_hash"`
-	VerifiedTreeHash   string     `json:"verified_tree_hash,omitempty"`
-	PassedObligations  []string   `json:"passed_obligations"`
-	PendingObligations []string   `json:"pending_obligations"`
-	FailedObligations  []string   `json:"failed_obligations"`
-	StaleObligations   []string   `json:"stale_obligations"`
-	OpenFindings       []string   `json:"open_findings,omitempty"`
-	Reasons            []string   `json:"reasons"`
-	EvaluatedAt        time.Time  `json:"evaluated_at"`
+	ID                 string              `json:"id"`
+	ChangeID           string              `json:"change_id"`
+	Status             GateStatus          `json:"status"`
+	CurrentTreeHash    string              `json:"current_tree_hash"`
+	VerifiedTreeHash   string              `json:"verified_tree_hash,omitempty"`
+	PassedObligations  []string            `json:"passed_obligations"`
+	PendingObligations []string            `json:"pending_obligations"`
+	FailedObligations  []string            `json:"failed_obligations"`
+	StaleObligations   []string            `json:"stale_obligations"`
+	OpenFindings       []string            `json:"open_findings,omitempty"`
+	PolicyViolations   []string            `json:"policy_violations,omitempty"`
+	Codeowners         map[string][]string `json:"codeowners,omitempty"`
+	TrustScore         int                 `json:"trust_score"`
+	ReviewTier         string              `json:"review_tier,omitempty"` // fast-track, standard-review, human-escalation
+	Reasons            []string            `json:"reasons"`
+	EvaluatedAt        time.Time           `json:"evaluated_at"`
 }
 
 // Typed MeshCommit Errors
