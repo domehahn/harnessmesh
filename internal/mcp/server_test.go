@@ -72,8 +72,8 @@ func TestMCPServerHandshakeAndTools(t *testing.T) {
 		t.Fatalf("unexpected tools/list result type: %T", resp.Result)
 	}
 	tools, ok := resMap["tools"].([]ToolDefinition)
-	if !ok || len(tools) != 46 {
-		t.Fatalf("expected 46 tools, got: %d", len(tools))
+	if !ok || len(tools) != 47 {
+		t.Fatalf("expected 47 tools, got: %d", len(tools))
 	}
 
 	// 3. tools/call peer.list
@@ -216,8 +216,8 @@ func TestMCPServer_StdioContract(t *testing.T) {
 	}
 	resMap := listResp.Result.(map[string]any)
 	toolsSlice := resMap["tools"].([]any)
-	if len(toolsSlice) != 46 {
-		t.Fatalf("expected 46 tools, got %d", len(toolsSlice))
+	if len(toolsSlice) != 47 {
+		t.Fatalf("expected 47 tools, got %d", len(toolsSlice))
 	}
 
 	// 3. Send peer.list over pipe
@@ -780,5 +780,16 @@ func TestMCPMemoryBlocksBrowserAuthorizeAndCognify(t *testing.T) {
 	tr = resp.Result.(ToolCallResult)
 	if tr.IsError || !strings.Contains(tr.Content[0].Text, "docs.example.test") || !strings.Contains(tr.Content[0].Text, "action_digest") {
 		t.Fatalf("unexpected browser.authorize output: %+v", tr)
+	}
+
+	// 5. change.validate_spec
+	specReq := []byte(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"change.validate_spec","arguments":{"title":"Add SDD gate","intent":"Enforce diff budget and never-cut list before commit","non_goals":["No UI redesign"],"scope":["internal/collaboration/meshcommit.go"],"max_changed_files":2,"max_changed_lines":120,"never_cut":[".github/workflows/**"],"verification_commands":["go test ./internal/collaboration/..."]}}}`)
+	resp, err = server.HandleMessage(ctx, specReq)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("change.validate_spec failed: err=%v resp=%+v", err, resp)
+	}
+	tr = resp.Result.(ToolCallResult)
+	if tr.IsError || !strings.Contains(tr.Content[0].Text, "\"ready\": true") {
+		t.Fatalf("unexpected change.validate_spec output: %+v", tr)
 	}
 }

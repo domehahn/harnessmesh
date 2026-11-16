@@ -62,7 +62,47 @@ type SandboxPolicy struct {
 	DeniedPaths     []string
 	MaxOutputBytes  int
 	NetworkMode     string // "host" (default) or "none"
+	EgressProxy     string // optional controlled HTTP/HTTPS egress proxy URL
+	CredentialScope string // "read-write" (default) or "read-only"
 	PassEnv         []string
+}
+
+var writeScopedCredentialKeys = map[string]bool{
+	"GITHUB_TOKEN":          true,
+	"GH_TOKEN":              true,
+	"GITLAB_TOKEN":          true,
+	"AWS_SECRET_ACCESS_KEY": true,
+	"AWS_SESSION_TOKEN":     true,
+	"NPM_TOKEN":             true,
+	"PYPI_TOKEN":            true,
+	"DOCKER_PASSWORD":       true,
+	"KUBECONFIG":            true,
+}
+
+// ScopeAgentEnv enforces read-only credential scoping (stripping mutating/deploy
+// tokens) and injects controlled EgressProxy variables when configured.
+func ScopeAgentEnv(extra map[string]string, policy SandboxPolicy) map[string]string {
+	out := make(map[string]string, len(extra)+5)
+	readOnly := strings.EqualFold(strings.TrimSpace(policy.CredentialScope), "read-only")
+	for k, v := range extra {
+		if isForbiddenControlPlaneKey(k) {
+			continue
+		}
+		if readOnly && writeScopedCredentialKeys[strings.ToUpper(strings.TrimSpace(k))] {
+			continue
+		}
+		out[k] = v
+	}
+	if proxy := strings.TrimSpace(policy.EgressProxy); proxy != "" {
+		out["HTTP_PROXY"] = proxy
+		out["HTTPS_PROXY"] = proxy
+		out["http_proxy"] = proxy
+		out["https_proxy"] = proxy
+		if _, ok := out["NO_PROXY"]; !ok {
+			out["NO_PROXY"] = "localhost,127.0.0.1"
+		}
+	}
+	return out
 }
 
 // DefaultSafeEnvKeys defines host environment variables permitted to be inherited
@@ -218,6 +258,7 @@ func RunWithPolicy(ctx context.Context, dir string, env map[string]string, stdin
 		return Result{}, err
 	}
 	baseEnv := SanitizeHostEnv(policy.PassEnv)
+	scopedEnv := ScopeAgentEnv(env, policy)
 	if policy.NetworkMode == "none" {
 		wrapper, err := exec.LookPath("bwrap")
 		if err != nil {
@@ -245,9 +286,9 @@ func RunWithPolicy(ctx context.Context, dir string, env map[string]string, stdin
 			"--chdir", "/workspace", "--", name,
 		)
 		wrappedArgs = append(wrappedArgs, args...)
-		return runWithBaseEnv(ctx, dir, baseEnv, env, stdin, wrapper, wrappedArgs...)
+		return runWithBaseEnv(ctx, dir, baseEnv, scopedEnv, stdin, wrapper, wrappedArgs...)
 	}
-	return runWithBaseEnv(ctx, dir, baseEnv, env, stdin, name, args...)
+	return runWithBaseEnv(ctx, dir, baseEnv, scopedEnv, stdin, name, args...)
 }
 
 func Run(ctx context.Context, dir string, env map[string]string, stdin string, name string, args ...string) (Result, error) {

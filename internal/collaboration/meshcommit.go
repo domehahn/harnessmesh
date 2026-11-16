@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -676,6 +678,34 @@ func (c *MeshCommitCoordinator) evaluateGateLocked(ctx context.Context, changeID
 	}
 
 	now := time.Now().UTC()
+	changePaths, _ := c.store.GetChangePaths(ctx, changeID)
+	var affectedPaths []string
+	for _, cp := range changePaths {
+		affectedPaths = append(affectedPaths, cp.Path)
+	}
+
+	var policyViolations []string
+	var codeownersMap map[string][]string
+	if c.config != nil {
+		policyViolations = c.config.ChangeControl.CheckDiffBudgetAndNeverCut(affectedPaths, 0)
+		if len(policyViolations) > 0 {
+			allRequiredPassed = false
+			reasons = append(reasons, policyViolations...)
+		}
+		coFile := strings.TrimSpace(c.config.ChangeControl.CodeownersFile)
+		if coFile == "" {
+			coFile = ".github/CODEOWNERS"
+		}
+		if c.repoPath != "" {
+			if raw, err := os.ReadFile(filepath.Join(c.repoPath, coFile)); err == nil {
+				entries := config.ParseCodeowners(string(raw))
+				codeownersMap = config.ResolveCodeowners(entries, affectedPaths)
+			}
+		}
+	}
+
+	trustScore, reviewTier := ComputeChangeTrustScore(len(obligations), len(passedObls), len(failedObls), len(affectedPaths), len(policyViolations))
+
 	gateStatus := protocol.GateStatusBlocked
 	if allRequiredPassed && len(obligations) > 0 {
 		gateStatus = protocol.GateStatusCommittable
@@ -711,6 +741,10 @@ func (c *MeshCommitCoordinator) evaluateGateLocked(ctx context.Context, changeID
 		PendingObligations: pendingObls,
 		FailedObligations:  failedObls,
 		StaleObligations:   staleObls,
+		PolicyViolations:   policyViolations,
+		Codeowners:         codeownersMap,
+		TrustScore:         trustScore,
+		ReviewTier:         reviewTier,
 		Reasons:            reasons,
 		EvaluatedAt:        now,
 	}

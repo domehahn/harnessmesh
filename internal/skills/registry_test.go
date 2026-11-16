@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -218,5 +219,36 @@ func TestEvaluationIsScopedToSkillVersion(t *testing.T) {
 	r.ObserveOutcomeVersion("review", "2.0.0", true)
 	if got := r.Evaluation("review"); got.Runs != 1 || got.Successful != 1 {
 		t.Fatalf("current version evaluation missing: %#v", got)
+	}
+}
+
+func TestValidateSkillRulesEnforcesThreeRules(t *testing.T) {
+	good := Entry{
+		Manifest: Manifest{
+			Name:        "security-review",
+			Version:     "1.0.0",
+			Description: "Audit repository diffs for injection, secret leaks and auth bypasses.",
+			Triggers:    []string{"security", "audit"},
+			Tools:       []string{"peer.request_review", "peer.submit_finding"},
+		},
+		Content: "# Security Review\nStep 1: Inspect diff.\nStep 2: Submit findings.\n",
+	}
+	repGood := ValidateSkillRules(good)
+	if !repGood.Compliant || len(repGood.PassedRules) != 3 {
+		t.Fatalf("expected compliant skill report, got %+v", repGood)
+	}
+
+	bad := Entry{
+		Manifest: Manifest{
+			Name:        "god-skill",
+			Description: "short",
+			Triggers:    []string{"*"},
+			Tools:       []string{"*"},
+		},
+		Content: strings.Repeat("line\n", 520),
+	}
+	repBad := ValidateSkillRules(bad)
+	if repBad.Compliant || len(repBad.Violations) != 3 {
+		t.Fatalf("expected 3 rule violations on bloated wildcard skill, got %+v", repBad)
 	}
 }
