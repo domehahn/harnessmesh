@@ -72,8 +72,8 @@ func TestMCPServerHandshakeAndTools(t *testing.T) {
 		t.Fatalf("unexpected tools/list result type: %T", resp.Result)
 	}
 	tools, ok := resMap["tools"].([]ToolDefinition)
-	if !ok || len(tools) != 47 {
-		t.Fatalf("expected 47 tools, got: %d", len(tools))
+	if !ok || len(tools) != 49 {
+		t.Fatalf("expected 49 tools, got: %d", len(tools))
 	}
 
 	// 3. tools/call peer.list
@@ -216,8 +216,8 @@ func TestMCPServer_StdioContract(t *testing.T) {
 	}
 	resMap := listResp.Result.(map[string]any)
 	toolsSlice := resMap["tools"].([]any)
-	if len(toolsSlice) != 47 {
-		t.Fatalf("expected 47 tools, got %d", len(toolsSlice))
+	if len(toolsSlice) != 49 {
+		t.Fatalf("expected 49 tools, got %d", len(toolsSlice))
 	}
 
 	// 3. Send peer.list over pipe
@@ -791,5 +791,24 @@ func TestMCPMemoryBlocksBrowserAuthorizeAndCognify(t *testing.T) {
 	tr = resp.Result.(ToolCallResult)
 	if tr.IsError || !strings.Contains(tr.Content[0].Text, "\"ready\": true") {
 		t.Fatalf("unexpected change.validate_spec output: %+v", tr)
+	}
+
+	// 6. task.bead.upsert & task.bead.ready
+	b1 := []byte(`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"task.bead.upsert","arguments":{"project_id":"mesh","id":"bd-1","title":"Create schema","status":"done","priority":1}}}`)
+	if resp, err = server.HandleMessage(ctx, b1); err != nil || resp.Error != nil {
+		t.Fatalf("task.bead.upsert bd-1 failed: %v %+v", err, resp)
+	}
+	b2 := []byte(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"task.bead.upsert","arguments":{"project_id":"mesh","id":"bd-2","title":"Implement handler","status":"open","priority":1,"depends_on":["bd-1"]}}}`)
+	if resp, err = server.HandleMessage(ctx, b2); err != nil || resp.Error != nil {
+		t.Fatalf("task.bead.upsert bd-2 failed: %v %+v", err, resp)
+	}
+	readyReq := []byte(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"task.bead.ready","arguments":{"project_id":"mesh"}}}`)
+	resp, err = server.HandleMessage(ctx, readyReq)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("task.bead.ready failed: %v %+v", err, resp)
+	}
+	tr = resp.Result.(ToolCallResult)
+	if tr.IsError || !strings.Contains(tr.Content[0].Text, "bd-2") {
+		t.Fatalf("expected bd-2 in task.bead.ready output, got %+v", tr)
 	}
 }

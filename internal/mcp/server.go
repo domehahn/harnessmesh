@@ -1414,27 +1414,27 @@ func (s *Server) ListTools() []ToolDefinition {
 			}},
 		},
 		ToolDefinition{
-			Name: "memory.block.put", Description: "Store a structured, hierarchical Letta/Cognee/Haystack memory block (core, archival, or recall tier) with secret redaction.",
+			Name: "memory.block.put", Description: "Store a structured, hierarchical Letta/Cognee/Mem0/Hindsight/Engram/Haystack memory block (core, archival, recall, or procedural tier) with secret redaction.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"project_id": map[string]any{"type": "string", "description": "Project identifier"},
-				"tier":       map[string]any{"type": "string", "enum": []string{"core", "archival", "recall"}, "description": "Memory tier"},
+				"tier":       map[string]any{"type": "string", "enum": []string{"core", "archival", "recall", "procedural"}, "description": "Memory tier"},
 				"label":      map[string]any{"type": "string", "description": "Memory block label"},
 				"value":      map[string]any{"type": "string", "description": "Memory block content"},
 				"read_only":  map[string]any{"type": "boolean", "description": "Whether the block is read-only"},
 			}, "required": []string{"label", "value"}},
 		},
 		ToolDefinition{
-			Name: "memory.block.list", Description: "List structured hierarchical memory blocks for a tier (core, archival, or recall).",
+			Name: "memory.block.list", Description: "List structured hierarchical memory blocks for a tier (core, archival, recall, or procedural).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"project_id": map[string]any{"type": "string", "description": "Project identifier"},
-				"tier":       map[string]any{"type": "string", "enum": []string{"core", "archival", "recall"}, "description": "Memory tier"},
+				"tier":       map[string]any{"type": "string", "enum": []string{"core", "archival", "recall", "procedural"}, "description": "Memory tier"},
 			}},
 		},
 		ToolDefinition{
-			Name: "browser.authorize", Description: "Authorize a Stagehand, Browser-Use, or Playwright web action against HTTPS, domain allowlists, approval gates, and the HarnessMesh Action Firewall.",
+			Name: "browser.authorize", Description: "Authorize a Stagehand, Browser-Use, Playwright, or Firecrawl web action against HTTPS, domain allowlists, approval gates, and the HarnessMesh Action Firewall.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"provider":        map[string]any{"type": "string", "enum": []string{"playwright", "browser-use", "stagehand"}, "description": "Browser automation provider"},
-				"kind":            map[string]any{"type": "string", "enum": []string{"navigate", "act", "extract", "observe"}, "description": "Browser step kind"},
+				"provider":        map[string]any{"type": "string", "enum": []string{"playwright", "browser-use", "stagehand", "firecrawl"}, "description": "Browser automation or scraping provider"},
+				"kind":            map[string]any{"type": "string", "enum": []string{"navigate", "act", "extract", "observe", "scrape"}, "description": "Browser step kind"},
 				"url":             map[string]any{"type": "string", "description": "Target HTTPS URL"},
 				"instruction":     map[string]any{"type": "string", "description": "Step instruction"},
 				"approved":        map[string]any{"type": "boolean", "description": "Whether an operator approved this step"},
@@ -1454,6 +1454,26 @@ func (s *Server) ListTools() []ToolDefinition {
 				"verification_commands": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Deterministic test/build verification commands"},
 				"open_questions":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Unresolved design questions"},
 			}, "required": []string{"title", "intent"}},
+		},
+		ToolDefinition{
+			Name: "task.bead.upsert", Description: "Create or update a Beads-style dependency-aware task node in the durable knowledge archive to prevent cross-session agentic amnesia.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"project_id":  map[string]any{"type": "string", "description": "Project identifier"},
+				"id":          map[string]any{"type": "string", "description": "Stable bead task ID (e.g. 'bd-1')"},
+				"title":       map[string]any{"type": "string", "description": "Task title"},
+				"status":      map[string]any{"type": "string", "enum": []string{"open", "in_progress", "blocked", "done"}, "description": "Task lifecycle status"},
+				"priority":    map[string]any{"type": "integer", "description": "Priority 1 (highest) to 5 (lowest)"},
+				"depends_on":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "IDs of prerequisite bead tasks"},
+				"assignee":    map[string]any{"type": "string", "description": "Assigned agent or participant"},
+				"file_scope":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Scoped file paths"},
+				"evidence_id": map[string]any{"type": "string", "description": "Verification evidence reference"},
+			}, "required": []string{"id", "title"}},
+		},
+		ToolDefinition{
+			Name: "task.bead.ready", Description: "Resolve the Beads task dependency graph and return tasks whose dependencies are all done and ready for execution.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"project_id": map[string]any{"type": "string", "description": "Project identifier"},
+			}},
 		},
 	)
 	if s.gateway != nil {
@@ -2525,6 +2545,63 @@ func (s *Server) executeToolUnsafe(ctx context.Context, toolName string, argsJSO
 			return nil, fmt.Errorf("parse change.validate_spec args: %w", err)
 		}
 		return collaboration.ValidateSpec(spec), nil
+
+	case "task.bead.upsert":
+		var req struct {
+			ProjectID string `json:"project_id"`
+			knowledge.BeadTask
+		}
+		if err := json.Unmarshal(argsJSON, &req); err != nil {
+			return nil, fmt.Errorf("parse task.bead.upsert args: %w", err)
+		}
+		if err := s.authorizeProject(req.ProjectID); err != nil {
+			return nil, err
+		}
+		projectID := strings.TrimSpace(req.ProjectID)
+		if projectID == "" {
+			projectID = "default"
+		}
+		req.BeadTask.UpdatedAt = time.Now().UTC()
+		if req.BeadTask.Assignee == "" {
+			req.BeadTask.Assignee = caller
+		}
+		task, err := knowledge.NormalizeBeadTask(req.BeadTask)
+		if err != nil {
+			return nil, err
+		}
+		raw, _ := json.Marshal(task)
+		rec, err := s.engine.KnowledgeRemember(ctx, string(raw), "task_bead", caller, projectID, []string{"bead:" + task.ID, "status:" + task.Status})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "upserted", "record_id": rec.ID, "bead": task}, nil
+
+	case "task.bead.ready":
+		var req struct {
+			ProjectID string `json:"project_id"`
+		}
+		if len(argsJSON) > 0 {
+			if err := json.Unmarshal(argsJSON, &req); err != nil {
+				return nil, fmt.Errorf("parse task.bead.ready args: %w", err)
+			}
+		}
+		if err := s.authorizeProject(req.ProjectID); err != nil {
+			return nil, err
+		}
+		projectID := strings.TrimSpace(req.ProjectID)
+		if projectID == "" {
+			projectID = "default"
+		}
+		records, err := s.engine.KnowledgeSearch(ctx, "", knowledge.SearchOptions{
+			ProjectID: projectID,
+			Kind:      "task_bead",
+			Limit:     500,
+		})
+		if err != nil {
+			return nil, err
+		}
+		tasks := knowledge.BeadsFromRecords(records)
+		return knowledge.ResolveBeads(tasks), nil
 
 	case "knowledge.cognify":
 		var req struct {
