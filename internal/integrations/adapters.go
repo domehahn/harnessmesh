@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,13 +21,15 @@ import (
 )
 
 const (
-	MemoryTierCore     = "core"
-	MemoryTierArchival = "archival"
-	MemoryTierRecall   = "recall"
+	MemoryTierCore       = "core"
+	MemoryTierArchival   = "archival"
+	MemoryTierRecall     = "recall"
+	MemoryTierProcedural = "procedural"
 )
 
 // MemoryBlock represents a structured, hierarchical memory block compatible
-// with stateful agent memory providers such as Letta, Cognee and Haystack.
+// with stateful agent memory providers such as Letta, Cognee, Mem0, Hindsight,
+// Engram and Haystack.
 type MemoryBlock struct {
 	Tier     string `json:"tier"`
 	Label    string `json:"label"`
@@ -40,10 +43,23 @@ func ValidateMemoryTier(tier string) (string, error) {
 		return MemoryTierCore, nil
 	}
 	switch norm {
-	case MemoryTierCore, MemoryTierArchival, MemoryTierRecall:
+	case MemoryTierCore, MemoryTierArchival, MemoryTierRecall, MemoryTierProcedural:
 		return norm, nil
 	default:
-		return "", fmt.Errorf("unsupported memory tier %q (expected core, archival or recall)", tier)
+		return "", fmt.Errorf("unsupported memory tier %q (expected core, archival, recall or procedural)", tier)
+	}
+}
+
+func ValidateMemoryProvider(provider string) (string, error) {
+	norm := strings.ToLower(strings.TrimSpace(provider))
+	if norm == "" {
+		return "letta", nil
+	}
+	switch norm {
+	case "letta", "cognee", "haystack", "mem0", "hindsight", "engram", "custom":
+		return norm, nil
+	default:
+		return "", fmt.Errorf("unsupported memory provider %q (expected letta, cognee, haystack, mem0, hindsight, engram or custom)", provider)
 	}
 }
 
@@ -422,11 +438,29 @@ func ValidateBrowserProvider(provider string) (string, error) {
 		return "playwright", nil
 	}
 	switch norm {
-	case "playwright", "browser-use", "stagehand":
+	case "playwright", "browser-use", "stagehand", "firecrawl":
 		return norm, nil
 	default:
-		return "", fmt.Errorf("unsupported browser provider %q (expected playwright, browser-use or stagehand)", provider)
+		return "", fmt.Errorf("unsupported browser provider %q (expected playwright, browser-use, stagehand or firecrawl)", provider)
 	}
+}
+
+var scrapedInjectionRegex = regexp.MustCompile(`(?i)(ignore\s+(all\s+)?previous\s+instructions|(reveal|print|dump|exfiltrat).{0,60}(secret|password|api[_ -]?key|token|\.env)|(disable|bypass).{0,40}(security|sandbox|approval|policy|guard))`)
+
+// SanitizeScrapedMarkdown scrubs secrets and strips lines containing indirect
+// prompt-injection payloads from web pages scraped via Firecrawl or browser
+// extraction before the markdown enters an agent's context window.
+func SanitizeScrapedMarkdown(raw string) (cleaned string, quarantinedLines int) {
+	redacted := contextpack.RedactSecrets(raw)
+	var kept []string
+	for _, line := range strings.Split(redacted, "\n") {
+		if scrapedInjectionRegex.MatchString(line) {
+			quarantinedLines++
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n"), quarantinedLines
 }
 
 // AuthorizeAction enforces HTTPS, domain allowlists, approval gates (always
@@ -442,9 +476,9 @@ func (p BrowserPolicy) AuthorizeAction(ctx context.Context, firewallPolicy assur
 		kind = "navigate"
 	}
 	switch kind {
-	case "navigate", "act", "extract", "observe":
+	case "navigate", "act", "extract", "observe", "scrape":
 	default:
-		return assurance.ActionDecision{}, fmt.Errorf("unsupported browser action kind %q (expected navigate, act, extract or observe)", action.Kind)
+		return assurance.ActionDecision{}, fmt.Errorf("unsupported browser action kind %q (expected navigate, act, extract, observe or scrape)", action.Kind)
 	}
 	if kind == "act" && !action.Approved {
 		return assurance.ActionDecision{}, errors.New("browser act step requires explicit approval")
