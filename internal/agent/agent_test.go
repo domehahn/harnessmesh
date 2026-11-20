@@ -108,6 +108,25 @@ func TestNewHarnessCapabilities(t *testing.T) {
 		t.Fatalf("unexpected a2a ID/type: %s/%s", hA2A.ID(), hA2A.AdapterType())
 	}
 
+	// OpenCode, Aider and Gemini CLI adapters test
+	for _, tc := range []struct {
+		name     string
+		adapter  string
+		wantType string
+	}{
+		{name: "opencode-peer", adapter: "opencode", wantType: "opencode"},
+		{name: "aider-peer", adapter: "aider", wantType: "aider"},
+		{name: "gemini-peer", adapter: "gemini-cli", wantType: "gemini-cli"},
+	} {
+		h, err := NewHarness(tc.name, config.AgentConfig{Adapter: tc.adapter, Role: "reviewer"}, config.SwitchyardConfig{})
+		if err != nil {
+			t.Fatalf("unexpected error creating %s harness: %v", tc.adapter, err)
+		}
+		if h.ID() != tc.name || h.AdapterType() != tc.wantType {
+			t.Fatalf("unexpected %s ID/type: %s/%s", tc.adapter, h.ID(), h.AdapterType())
+		}
+	}
+
 	// Fake adapter test
 	fakeCfg := config.AgentConfig{
 		Adapter: "fake",
