@@ -1,0 +1,15 @@
+{
+  "name": "harnessmesh-security-diff-review",
+  "version": "1.0.0",
+  "description": "Review security-sensitive code changes using the changed lines and their callers.",
+  "triggers": [
+    "security diff review",
+    "review security sensitive diff"
+  ],
+  "tools": [
+    "change.status",
+    "change.diff"
+  ],
+  "risk": "medium",
+  "sha256": "3da748ede8c5644b7ded09be275c2db5e03666d5654c6eaa96fb31e0fd3156c3"
+}

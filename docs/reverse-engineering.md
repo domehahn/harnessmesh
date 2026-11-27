@@ -100,7 +100,7 @@ Text alternative: the provider server is independent of the collaboration engine
 
 ## Technology and dependencies
 
-- Go 1.25; SQLite through `mattn/go-sqlite3`.
+- Go 1.26; SQLite through `mattn/go-sqlite3`.
 - AWS SDK v2 and Bedrock Runtime for Bedrock inference.
 - Gorilla WebSocket for bridge events.
 - TOML parsing via `pelletier/go-toml`.

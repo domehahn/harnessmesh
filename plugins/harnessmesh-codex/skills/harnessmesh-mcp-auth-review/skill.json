@@ -1,0 +1,15 @@
+{
+  "name": "harnessmesh-mcp-auth-review",
+  "version": "1.0.0",
+  "description": "Review MCP authentication and authorization changes.",
+  "triggers": [
+    "mcp authentication review",
+    "mcp authorization review"
+  ],
+  "tools": [
+    "change.status",
+    "change.diff"
+  ],
+  "risk": "medium",
+  "sha256": "0922e56ff55b7ee257cb651ef5e1a1042ca20887f80897daa37b37d1a11d9aaa"
+}

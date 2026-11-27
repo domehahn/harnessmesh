@@ -47,6 +47,10 @@ harnessmesh eval export --dataset ./evaluations/production.jsonl \
   --format golden --min-score 0.85 --out ./evaluations/golden.jsonl
 ```
 
+Use `harnessmesh eval compare --baseline <file> --candidate <file>` to compare
+paired JSONL cohorts by tenant and task. See [CI recovery](ci-recovery.md#measure-the-value-of-an-independent-reviewer)
+for the input format and a controlled comparison protocol.
+
 ## Browser, memory and LLM gateway adapters
 
 These are explicit integration boundaries, not implicit network access:

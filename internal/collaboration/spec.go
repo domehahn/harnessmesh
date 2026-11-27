@@ -40,16 +40,24 @@ func ComputeChangeTrustScore(totalObligations, passedObligations, failedObligati
 
 // SpecContract represents an SDD (Spec-Driven Development) pre-execution contract
 // checked against the 7 Spec Rules before an AI coding agent modifies files.
+type DecisionReference struct {
+	Path     string `json:"path"`
+	Revision string `json:"revision"`
+}
+
 type SpecContract struct {
-	Title                string   `json:"title"`
-	Intent               string   `json:"intent"`
-	NonGoals             []string `json:"non_goals"`
-	Scope                []string `json:"scope"`
-	MaxChangedFiles      int      `json:"max_changed_files"`
-	MaxChangedLines      int      `json:"max_changed_lines"`
-	NeverCut             []string `json:"never_cut"`
-	VerificationCommands []string `json:"verification_commands"`
-	OpenQuestions        []string `json:"open_questions,omitempty"`
+	AcceptanceProofs     map[string][]string `json:"acceptance_proofs,omitempty"`
+	DecisionReferences   []DecisionReference `json:"decision_references,omitempty"`
+	AcceptanceCriteria   []string            `json:"acceptance_criteria,omitempty"`
+	Title                string              `json:"title"`
+	Intent               string              `json:"intent"`
+	NonGoals             []string            `json:"non_goals"`
+	Scope                []string            `json:"scope"`
+	MaxChangedFiles      int                 `json:"max_changed_files"`
+	MaxChangedLines      int                 `json:"max_changed_lines"`
+	NeverCut             []string            `json:"never_cut"`
+	VerificationCommands []string            `json:"verification_commands"`
+	OpenQuestions        []string            `json:"open_questions,omitempty"`
 }
 
 // SpecValidationReport summarizes compliance with the 7 SDD Rules and lists

@@ -2472,15 +2472,14 @@ func (s *Server) executeToolUnsafe(ctx context.Context, toolName string, argsJSO
 		if req.ChangeID == "" || req.EvidenceType == "" || req.Result == "" {
 			return nil, fmt.Errorf("change_id, evidence_type, and result ('passed'/'failed') are required")
 		}
-		source := req.SourceParticipant
-		if source == "" {
-			source = caller
+		if req.SourceParticipant != "" && req.SourceParticipant != caller {
+			return nil, fmt.Errorf("cannot spoof participant identity %q (authenticated as %q)", req.SourceParticipant, caller)
 		}
 		ev := &protocol.ChangeEvidence{
 			ChangeID:          req.ChangeID,
 			ObligationID:      req.ObligationID,
 			TreeHash:          req.TreeHash,
-			SourceParticipant: source,
+			SourceParticipant: caller,
 			EvidenceType:      protocol.EvidenceType(req.EvidenceType),
 			Result:            req.Result,
 			Command:           req.Command,

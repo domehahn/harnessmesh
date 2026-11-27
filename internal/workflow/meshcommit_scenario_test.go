@@ -470,7 +470,12 @@ func TestScenarioJ_IdempotentProofExecutionCaching(t *testing.T) {
 	ctx := context.Background()
 	eng, repoDir, _, _ := setupMeshCommitEnv(t, nil)
 
-	_ = os.WriteFile(filepath.Join(repoDir, "src", "calc.go"), []byte("package calc\n// idempotent\n"), 0644)
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module example.com/idempotent-proof\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "src", "auth.go"), []byte("package calc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	chg, err := eng.CreateChange(ctx, &protocol.CreateChangeRequest{
 		Title:             "Idempotent proof test",
@@ -480,13 +485,25 @@ func TestScenarioJ_IdempotentProofExecutionCaching(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	obls, _ := eng.GetProofObligations(ctx, chg.ID)
-	oblID := obls[0].ID
+	obls, err := eng.GetProofObligations(ctx, chg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oblID string
+	for _, obligation := range obls {
+		if obligation.Type == "unit_tests" {
+			oblID = obligation.ID
+			break
+		}
+	}
+	if oblID == "" {
+		t.Fatal("missing unit test obligation")
+	}
 
 	// First execution
 	ev1, err := eng.ExecuteProof(ctx, chg.ID, oblID)
-	if err != nil {
-		t.Fatalf("first ExecuteProof failed: %v", err)
+	if err != nil || ev1.Result != "passed" {
+		t.Fatalf("expected successful proof, got %+v, %v", ev1, err)
 	}
 
 	// Second execution on same tree hash should return cached result

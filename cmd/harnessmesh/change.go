@@ -23,6 +23,10 @@ func changeCmd(args []string) error {
 	}
 
 	switch args[0] {
+	case "handoff":
+		return changeHandoff(args[1:])
+	case "plan":
+		return changePlan(args[1:])
 	case "create":
 		return changeCreate(args[1:])
 	case "list":
@@ -54,6 +58,8 @@ func changeUsage() {
 	fmt.Println(`Usage: harnessmesh change <subcommand> [flags]
 
 Subcommands:
+  handoff   Show the change, current checks, and approved plan
+  plan      Review, approve and launch a versioned change plan
   create    Propose a new change transaction and lock proof policy
   list      List change transactions
   show      Inspect change details, obligations, and gate status
@@ -101,6 +107,8 @@ func changeCreate(args []string) error {
 	branch := fs.String("branch", "", "target git branch")
 	author := fs.String("author", "operator", "author participant ID")
 	baseCommit := fs.String("base", "", "base git commit")
+	githubRun := fs.String("github-run", "", "failed GitHub Actions run JSON file")
+	githubJob := fs.String("github-job", "", "exact failed job name (required when multiple jobs failed)")
 	cfgPath := fs.String("config", "harnessmesh.json", "config file path")
 	jsonOut := fs.Bool("json", false, "output JSON")
 
@@ -110,6 +118,26 @@ func changeCreate(args []string) error {
 
 	if *title == "" {
 		return errors.New("--title is required")
+	}
+
+	if *githubJob != "" && *githubRun == "" {
+		return errors.New("--github-job requires --github-run")
+	}
+	if *githubRun != "" {
+		run, err := readFailedGitHubRun(*githubRun, *githubJob)
+		if err != nil {
+			return err
+		}
+		if *baseCommit == "" {
+			*baseCommit = run.HeadSHA
+		}
+		checkout, err := verifyRecoveryCheckout(*baseCommit)
+		if err != nil {
+			return err
+		}
+		*baseCommit = checkout
+		detail := fmt.Sprintf("GitHub Actions job %q failed in run %s (run head %s; checkout %s).", run.FailedJob, run.URL, run.HeadSHA, *baseCommit)
+		*intent = strings.TrimSpace(detail + " " + *intent)
 	}
 
 	eng, st, err := getChangeEngine(*cfgPath)

@@ -155,3 +155,42 @@ harnessmesh skills probe --root plugins --skill harnessmesh-review \
   --baseline ./evaluations/baseline.jsonl \
   --candidate ./evaluations/candidate.jsonl --min-score 0.80 --json
 ```
+
+## Security review pilot
+
+The Codex plugin includes two security review skills inspired by
+[Red Hat Product Security's catalog](https://github.com/RedHatProductSecurity/prodsec-skills).
+Each skill has a SHA-256 hash and exposes the read-only MeshCommit status and
+diff metadata tools. Use your native harness to inspect the source diff and
+surrounding files. Select a skill explicitly for the pilot:
+
+```sh
+harnessmesh skills plan --root plugins --require-hash --skill harnessmesh-mcp-auth-review
+harnessmesh skills plan --root plugins --require-hash --skill harnessmesh-security-diff-review
+```
+
+For MCP authentication, use a test-only diff that removes a tenant assertion
+from a mock handler. For security diff review, use a test-only diff that adds a
+raw credential to a fake log sink. Include a clean control for each case.
+Score confirmed findings, missed seeded regressions and false positives using
+the same model, task inputs and budget with and without the skill. Use
+`harnessmesh eval compare` to validate the paired datasets before running
+`harnessmesh skills probe --skill <name> --baseline <file> --candidate <file> --require-hash --json`.
+The probe recommendation requires an operator decision.
+
+For a live pilot, run the bundled Codex evaluator with an available model:
+
+```sh
+python3 scripts/evaluate-security-skills.py --model MODEL --output /tmp/harnessmesh-skill-eval
+harnessmesh eval compare --baseline /tmp/harnessmesh-skill-eval/baseline.jsonl \
+  --candidate /tmp/harnessmesh-skill-eval/candidate.jsonl
+```
+
+The script invokes the local Codex CLI in a temporary, read-only working
+directory. It sends four synthetic scenarios and the two skill documents to
+the configured model service, exposing the skill text in the candidate arm.
+Both arms use the same model and task text. Each skill has a seeded finding
+and a clean control, scored against fixed finding IDs. The pilot measures
+guidance supplied in the prompt and records elapsed time, observed tool use
+and confirmed findings. Run skill discovery and hash checks separately to
+verify packaging and routing.

@@ -482,7 +482,7 @@ docker compose -f compose.yaml -f compose.production.yaml \
 
 ### Native Installation
 
-Voraussetzungen sind Go 1.25 oder neuer, Git und optional Docker Compose.
+Voraussetzungen sind Go 1.26 oder neuer, Git und optional Docker Compose.
 Das Repository klonen und den lokalen Binär-Wrapper bauen:
 
 ```bash
@@ -2533,6 +2533,7 @@ The following rules define the architecture:
 - [Context Projection Engine](docs/context-projection.md)
 - [Sessions & Persistence](docs/sessions.md)
 - [Collaboration Patterns](docs/collaboration-patterns.md)
+- [CI recovery with MeshCommit](docs/ci-recovery.md)
 - [Capabilities](docs/capabilities.md)
 - [Economy Routing](docs/economy-routing.md)
 
