@@ -2533,6 +2533,7 @@ The following rules define the architecture:
 - [Context Projection Engine](docs/context-projection.md)
 - [Sessions & Persistence](docs/sessions.md)
 - [Collaboration Patterns](docs/collaboration-patterns.md)
+- [CI recovery with MeshCommit](docs/ci-recovery.md)
 - [Capabilities](docs/capabilities.md)
 - [Economy Routing](docs/economy-routing.md)
 

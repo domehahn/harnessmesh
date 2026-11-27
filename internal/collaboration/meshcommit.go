@@ -283,7 +283,14 @@ func (c *MeshCommitCoordinator) PrepareChange(ctx context.Context, changeID, act
 
 	now := time.Now().UTC()
 	if currentTreeHash != chg.CurrentTreeHash {
-		// Worktree changed while in draft
+		diff, _ := workspace.ComputeDiff(ctx, c.repoPath, chg.CurrentTreeHash, currentTreeHash)
+		changedPaths := make([]string, 0, len(diff))
+		for _, path := range diff {
+			changedPaths = append(changedPaths, path.Path)
+		}
+		if err := c.InvalidateStaleEvidence(ctx, changeID, currentTreeHash, changedPaths); err != nil {
+			return nil, fmt.Errorf("invalidate previous evidence: %w", err)
+		}
 		chg.CurrentTreeHash = currentTreeHash
 		paths, err := workspace.ComputeDiff(ctx, c.repoPath, chg.BaseCommit, currentTreeHash)
 		if err == nil && len(paths) > 0 {
@@ -335,8 +342,17 @@ func (c *MeshCommitCoordinator) SubmitEvidence(ctx context.Context, ev *protocol
 	}
 
 	// Anti-Spoofing / Independent Review Invariant
-	evType := string(ev.EvidenceType)
-	if evType == "peer_review" || evType == "security_audit" || evType == "independent_review" {
+	evType := config.NormalizeObligationType(string(ev.EvidenceType))
+	if ev.ObligationID != "" {
+		obl, err := c.store.GetProofObligation(ctx, ev.ObligationID)
+		if err != nil || obl == nil || obl.ChangeID != chg.ID {
+			return nil, &protocol.ProofObligationNotFoundError{ObligationID: ev.ObligationID}
+		}
+		if evType != config.NormalizeObligationType(obl.Type) {
+			return nil, fmt.Errorf("evidence type %q does not match obligation type %q", ev.EvidenceType, obl.Type)
+		}
+	}
+	if evType == "independent_review" || evType == "security_review" || evType == "architecture_review" {
 		if ev.SourceParticipant == chg.AuthorParticipant {
 			return nil, &protocol.SelfReviewForbiddenError{
 				ChangeID:    chg.ID,
@@ -403,8 +419,14 @@ func (c *MeshCommitCoordinator) ExecuteProof(ctx context.Context, changeID strin
 	}
 
 	obl, err := c.store.GetProofObligation(ctx, obligationID)
-	if err != nil || obl == nil {
+	if err != nil || obl == nil || obl.ChangeID != chg.ID {
 		return nil, &protocol.ProofObligationNotFoundError{ObligationID: obligationID}
+	}
+	if strings.TrimSpace(obl.Command) == "" {
+		return nil, fmt.Errorf("obligation %q requires submitted evidence", obligationID)
+	}
+	if chg.Status == protocol.ChangeStatusCommitted || chg.Status == protocol.ChangeStatusAborted {
+		return nil, fmt.Errorf("cannot verify finalized change in status %q", chg.Status)
 	}
 
 	currentTreeHash, err := workspace.ComputeTreeHash(ctx, c.repoPath)
@@ -434,26 +456,15 @@ func (c *MeshCommitCoordinator) ExecuteProof(ctx context.Context, changeID strin
 	_ = c.store.UpdateProofObligationStatus(ctx, obligationID, protocol.ProofStatusRunning, "")
 
 	now := time.Now().UTC()
-	var exitCode int
-	var stdout, stderr string
+	cmdCtx, cancel := context.WithTimeout(ctx, 300*time.Second)
+	defer cancel()
 
-	if obl.Command != "" {
-		timeout := 300 * time.Second
-		cmdCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-
-		runRes, runErr := executil.Run(cmdCtx, c.repoPath, nil, "", "sh", "-c", obl.Command)
-		exitCode = runRes.ExitCode
-		stdout = runRes.Stdout
-		stderr = runRes.Stderr
-		if runErr != nil && exitCode == 0 {
-			exitCode = 1
-			stderr += fmt.Sprintf("\nEXECUTION ERROR: %v", runErr)
-		}
-	} else {
-		// Mock/default success for automated verification if command is empty
-		exitCode = obl.ExpectedExitCode
-		stdout = "Automated verification completed successfully."
+	runRes, runErr := executil.Run(cmdCtx, c.repoPath, nil, "", "sh", "-c", obl.Command)
+	exitCode := runRes.ExitCode
+	stderr := runRes.Stderr
+	if runErr != nil && exitCode == 0 {
+		exitCode = 1
+		stderr += fmt.Sprintf("\nEXECUTION ERROR: %v", runErr)
 	}
 
 	resultStatus := "passed"
@@ -476,7 +487,7 @@ func (c *MeshCommitCoordinator) ExecuteProof(ctx context.Context, changeID strin
 		Result:            resultStatus,
 		Valid:             true,
 		Metadata: map[string]any{
-			"stdout": stdout,
+			"stdout": runRes.Stdout,
 			"stderr": stderr,
 		},
 		CreatedAt: now,

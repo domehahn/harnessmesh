@@ -30,6 +30,9 @@ type Step struct {
 }
 
 type Run struct {
+	WallTimeMS       *int64   `json:"wall_time_ms,omitempty"`
+	CostMicrousd     *int64   `json:"cost_microusd,omitempty"`
+	VerifiedFindings *int64   `json:"verified_findings,omitempty"`
 	Tenant           string   `json:"tenant"`
 	SessionID        string   `json:"session_id"`
 	TaskID           string   `json:"task_id"`

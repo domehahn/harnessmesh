@@ -32,3 +32,8 @@ Rules REST/GraphQL update APIs.
 - Create a protected GitHub Environment named `staging` and add the
   `HARNESSMESH_STAGING_BRIDGE_TOKEN` secret before running qualification.
 - Enable the merge queue for `main` in Settings → Rules → `main-quality-gates`.
+
+## Recover a failed check
+
+See [CI recovery with MeshCommit](ci-recovery.md) for a runnable fixture,
+review handoff and an evaluation protocol for comparing agent configurations.

@@ -149,7 +149,7 @@ Usage:
   harnessmesh integrate <antigravity|chatgpt|codex-provider> [--config <path>] [--repo <path>] [--dry-run]
   harnessmesh mcp serve [--repo <path>] [--config <path>] [--session <id>] [--caller <name>] [--endpoint <path>]
   harnessmesh mcp registry <list|validate|check> [options]
-  harnessmesh code <search|impact> [--repo <path>] [options]
+  harnessmesh code <search|impact|impact-pilot> [--repo <path>] [options]
   harnessmesh mcp install <claude|codex|antigravity|copilot> [--scope <project|user>]
   harnessmesh bridge serve [--repo <path>] [--config <path>] [--caller <name>] [--listen <addr>]
   harnessmesh provider serve [--config <path>] [--listen <addr>] [--token <token>]
@@ -174,6 +174,7 @@ Usage:
   harnessmesh smoke-test antigravity-codex [--config <path>]
   harnessmesh doctor [--config <path>]
   harnessmesh agent-platform <doctor|eval-export> [--config <path>] [options]
+  harnessmesh eval compare --baseline <path> --candidate <path>
   harnessmesh eval export --dataset <path> [--format deepeval|golden] [--min-score <float>] [--out <path>]
   harnessmesh print-config [--config <path>]
   harnessmesh version
@@ -208,10 +209,50 @@ func agentPlatformCmd(args []string) error {
 }
 
 func evalCmd(args []string) error {
-	if len(args) == 0 || args[0] != "export" {
-		return errors.New("usage: harnessmesh eval export --dataset <path> [--format deepeval|golden] [--min-score <float>] [--out <path>]")
+	if len(args) > 0 {
+		switch args[0] {
+		case "export":
+			return evalExportCmd(args[1:])
+		case "compare":
+			return evalCompareCmd(args[1:])
+		}
 	}
-	return evalExportCmd(args[1:])
+	return errors.New("usage: harnessmesh eval <export|compare> [options]")
+}
+
+func evalCompareCmd(args []string) error {
+	fs := flag.NewFlagSet("eval compare", flag.ContinueOnError)
+	basePath := fs.String("baseline", "", "baseline runs JSONL file")
+	candPath := fs.String("candidate", "", "candidate runs JSONL file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *basePath == "" || *candPath == "" || fs.NArg() != 0 {
+		return errors.New("usage: harnessmesh eval compare --baseline <path> --candidate <path>")
+	}
+	load := func(path string) ([]evaluation.Run, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return evaluation.LoadRunsJSONL(f)
+	}
+	baseline, err := load(*basePath)
+	if err != nil {
+		return fmt.Errorf("baseline: %w", err)
+	}
+	candidate, err := load(*candPath)
+	if err != nil {
+		return fmt.Errorf("candidate: %w", err)
+	}
+	report, err := evaluation.ComparePaired(baseline, candidate)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(report)
 }
 
 func evalExportCmd(args []string) error {
@@ -1209,11 +1250,13 @@ func mcpRegistryCmd(args []string) error {
 
 func codeCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: harnessmesh code <search|impact>")
+		return errors.New("usage: harnessmesh code <search|impact|impact-pilot>")
 	}
 	fs := flag.NewFlagSet("code "+args[0], flag.ContinueOnError)
 	repo := fs.String("repo", ".", "repository path")
 	query := fs.String("query", "", "symbol or file query")
+	expected := fs.String("expected", "", "expected paths JSON file for impact-pilot")
+	external := fs.String("external", "", "external analyzer paths JSON file for impact-pilot")
 	limit := fs.Int("limit", 20, "maximum results")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -1228,6 +1271,37 @@ func codeCmd(args []string) error {
 			return errors.New("--query is required")
 		}
 		return json.NewEncoder(os.Stdout).Encode(idx.Search(*query, *limit))
+	case "impact-pilot":
+		if strings.TrimSpace(*query) == "" {
+			return errors.New("--query is required")
+		}
+		loadPaths := func(path string) ([]string, error) {
+			if path == "" {
+				return nil, nil
+			}
+			var paths []string
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(raw, &paths); err != nil || paths == nil {
+				return nil, fmt.Errorf("%s must contain a JSON array of paths", path)
+			}
+			return paths, nil
+		}
+		target, err := loadPaths(*expected)
+		if err != nil {
+			return err
+		}
+		other, err := loadPaths(*external)
+		if err != nil {
+			return err
+		}
+		report, err := idx.CompareImpact(*query, target, other)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(report)
 	case "impact":
 		if strings.TrimSpace(*query) == "" {
 			return errors.New("--query is required")
