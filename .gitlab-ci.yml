@@ -9,7 +9,7 @@ variables:
   NPM_CONFIG_FUND: "false"
 
 go-validate:
-  image: golang:1.25-bookworm
+  image: golang:1.26-bookworm
   stage: validate
   script:
     - test "$(go version | awk '{print $3}')" != ""
@@ -19,7 +19,7 @@ go-validate:
     - go build ./cmd/harnessmesh
 
 go-test:
-  image: golang:1.25-bookworm
+  image: golang:1.26-bookworm
   stage: test
   script:
     - go test -race ./...
@@ -37,7 +37,7 @@ frontend-test:
     - npm run test:e2e
 
 release-artifacts:
-  image: golang:1.25-bookworm
+  image: golang:1.26-bookworm
   stage: release
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ && $CI_COMMIT_TAG == "v0.2.0"'

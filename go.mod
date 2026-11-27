@@ -1,6 +1,8 @@
 module github.com/domehahn/harnessmesh
 
-go 1.25
+go 1.26.0
+
+toolchain go1.26.11
 
 require github.com/mattn/go-sqlite3 v1.14.53
 
@@ -33,5 +35,5 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.53.0 // indirect
 	github.com/aws/smithy-go v1.28.9 // indirect
-	golang.org/x/net v0.26.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 )
