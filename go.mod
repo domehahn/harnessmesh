@@ -6,15 +6,15 @@ require github.com/mattn/go-sqlite3 v1.14.53
 
 require github.com/lib/pq v1.12.3
 
-require github.com/klauspost/compress v1.20.4
+require github.com/klauspost/compress v1.20.5
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.48.0
-	github.com/aws/aws-sdk-go-v2/config v1.33.19
-	github.com/aws/aws-sdk-go-v2/credentials v1.21.1
-	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.63.13
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.10
-	github.com/gorilla/websocket v1.5.3
+	github.com/aws/aws-sdk-go-v2/config v1.33.21
+	github.com/aws/aws-sdk-go-v2/credentials v1.21.3
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.64.0
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.0
+	github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4
 	github.com/pelletier/go-toml/v2 v2.4.3
 )
 
@@ -28,9 +28,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.12 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.12 // indirect
-	github.com/aws/aws-sdk-go-v2/service/signin v1.13.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.14.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.39.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.53.0 // indirect
 	github.com/aws/smithy-go v1.28.9 // indirect
+	golang.org/x/net v0.26.0 // indirect
 )
